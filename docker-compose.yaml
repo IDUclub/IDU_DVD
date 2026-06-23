@@ -1,0 +1,57 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      # В образе qdrant нет curl/wget, но есть bash: проверяем, что порт 6333 слушается.
+      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/6333"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  app:
+    build: .
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env.example
+    # Внутри контейнера localhost — это сам контейнер, поэтому адреса из .env.example
+    # (localhost) переопределяем: Qdrant/Redis — по именам сервисов compose-сети,
+    # Ollama — через host.docker.internal (локальная Ollama на хосте).
+    environment:
+      DVD_QDRANT_URL: http://qdrant:6333
+      DVD_REDIS_URL: redis://redis:6379/0
+      DVD_OLLAMA_BASE: http://host.docker.internal:11434
+    extra_hosts:
+      # На Linux host.docker.internal не резолвится по умолчанию (на Docker Desktop — резолвится).
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./_uploads:/app/_uploads
+    # healthcheck приложения задан в Dockerfile (HEALTHCHECK на /ping)
+
+volumes:
+  qdrant_data:
+  redis_data:

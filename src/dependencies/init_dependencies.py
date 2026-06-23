@@ -1,0 +1,69 @@
+"""Dependency initialization: building and wiring all modules at application startup.
+
+The container declaration and getters live in ``dependencies``; this module only builds the
+objects and stores them in the ``Dependencies`` singleton.
+"""
+
+from __future__ import annotations
+
+import structlog
+
+from src.common.config import Settings, settings
+from src.common.db.qdrant_client import QdrantRepository
+from src.common.db.redis_client import DocumentRegistry, JobStore, RedisClient
+from src.dependencies.dependencies import Dependencies
+from src.dvd_service.modules.doc_parsers import DocumentParser
+from src.dvd_service.modules.hierarchy import HierarchyBuilder
+from src.dvd_service.modules.structure import StructureTagger
+from src.dvd_service.modules.tagging import Tagger, VersionDetector
+from src.dvd_service.services.dvd_service import IngestionService, SearchService
+
+log = structlog.get_logger(__name__)
+
+
+def init_dependencies(s: Settings = settings) -> Dependencies:
+    """Initialize and wire all modules, then store them in the ``Dependencies`` singleton.
+
+    Called once at application startup (lifespan in ``src/main.py``).
+    """
+    qdrant = QdrantRepository(s)
+    qdrant.ensure_collection()
+    redis = RedisClient(s)
+    jobs = JobStore(redis)
+    registry = DocumentRegistry(redis)
+
+    parser = DocumentParser(s)
+    structure = StructureTagger(s)
+    hierarchy = HierarchyBuilder()
+    tagger = Tagger(s)
+    version_detector = VersionDetector()
+
+    ingestion = IngestionService(
+        parser,
+        structure,
+        hierarchy,
+        tagger,
+        version_detector,
+        qdrant,
+        registry,
+        jobs,
+        s,
+    )
+    search = SearchService(qdrant, s)
+
+    deps = Dependencies().set(
+        settings=s,
+        qdrant=qdrant,
+        redis=redis,
+        jobs=jobs,
+        registry=registry,
+        parser=parser,
+        structure=structure,
+        hierarchy=hierarchy,
+        tagger=tagger,
+        version_detector=version_detector,
+        ingestion=ingestion,
+        search=search,
+    )
+    log.info("dependencies_initialized", dependencies=repr(deps))
+    return deps

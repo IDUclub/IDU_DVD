@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.git/
+.idea/
+notebooks/
+notebooks.zip
+_uploads/
+*.json
+/docs_data
+docs/assets/logo.jpg
