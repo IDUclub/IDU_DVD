@@ -20,11 +20,26 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "commitizen>=4.16.4",
     "fakeredis>=2.36.2",
     "pre-commit>=4.6.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
 ]
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+# Read/write the canonical version from [project].version above.
+version_provider = "pep621"
+version_scheme = "pep440"
+tag_format = "v$version"
+# Also keep the in-code version literal in sync on every bump.
+version_files = [
+    "src/__version__.py:VERSION",
+]
+update_changelog_on_bump = true
+# Stay in 0.x: breaking changes bump the minor instead of jumping to 1.0.0.
+major_version_zero = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
