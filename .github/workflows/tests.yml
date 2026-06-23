@@ -40,7 +40,7 @@ jobs:
       - name: Check formatting
         id: check
         run: |
-          if uv run pre-commit run isort black --all-files --show-diff-on-failure; then
+          if uv run pre-commit run --all-files --show-diff-on-failure; then
             echo "clean=true" >> "$GITHUB_OUTPUT"
           else
             echo "clean=false" >> "$GITHUB_OUTPUT"
@@ -72,7 +72,7 @@ jobs:
       # black/isort cannot fix), fail the job → the PR is blocked.
       - name: Re-check formatting
         if: steps.check.outputs.clean == 'false'
-        run: uv run pre-commit run isort black --all-files --show-diff-on-failure
+        run: uv run pre-commit run --all-files --show-diff-on-failure
 
   unit-tests:
     name: Unit tests
