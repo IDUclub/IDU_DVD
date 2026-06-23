@@ -231,3 +231,6 @@ docs_data/
 # Env
 .env.development
 .env.production
+
+# Application logs
+/logs/
