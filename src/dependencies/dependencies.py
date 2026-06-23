@@ -17,6 +17,7 @@ from src.dvd_service.modules.hierarchy import HierarchyBuilder
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import Tagger, VersionDetector
 from src.dvd_service.services.dvd_service import IngestionService, SearchService
+from src.system_service.controllers import SystemController
 
 
 class Dependencies:
@@ -31,6 +32,7 @@ class Dependencies:
     # Field order = initialization order; used by as_dict/__repr__.
     _FIELDS: tuple[str, ...] = (
         "settings",
+        "logger",
         "qdrant",
         "redis",
         "jobs",
@@ -42,11 +44,13 @@ class Dependencies:
         "version_detector",
         "ingestion",
         "search",
+        "system",
     )
 
     _instance: "Dependencies | None" = None
 
     settings: Settings
+    logger: Any
     qdrant: QdrantRepository
     redis: RedisClient
     jobs: JobStore
@@ -58,6 +62,7 @@ class Dependencies:
     version_detector: VersionDetector
     ingestion: IngestionService
     search: SearchService
+    system: SystemController
 
     def __new__(cls) -> "Dependencies":
         if cls._instance is None:
@@ -69,6 +74,7 @@ class Dependencies:
         self,
         *,
         settings: Settings,
+        logger: Any,
         qdrant: QdrantRepository,
         redis: RedisClient,
         jobs: JobStore,
@@ -80,9 +86,11 @@ class Dependencies:
         version_detector: VersionDetector,
         ingestion: IngestionService,
         search: SearchService,
+        system: SystemController,
     ) -> "Dependencies":
         """Set all dependencies once (called from ``init_dependencies``)."""
         self.settings = settings
+        self.logger = logger
         self.qdrant = qdrant
         self.redis = redis
         self.jobs = jobs
@@ -94,6 +102,7 @@ class Dependencies:
         self.version_detector = version_detector
         self.ingestion = ingestion
         self.search = search
+        self.system = system
         return self
 
     # --- singleton access ---
@@ -115,6 +124,14 @@ class Dependencies:
     @classmethod
     def get_settings(cls) -> Settings:
         return cls.instance().settings
+
+    @classmethod
+    def get_logger(cls) -> Any:
+        return cls.instance().logger
+
+    @classmethod
+    def get_system(cls) -> SystemController:
+        return cls.instance().system
 
     @classmethod
     def get_qdrant(cls) -> QdrantRepository:
