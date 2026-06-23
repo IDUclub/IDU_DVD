@@ -22,9 +22,7 @@ from src.system_service.routers import system_router
 
 
 def _write_log(path, entries: list[dict]) -> None:
-    path.write_text(
-        "\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8"
-    )
+    path.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
 
 
 @pytest.fixture
@@ -83,7 +81,9 @@ class TestController:
     def test_filter_combined_day_and_request_id(self, controller):
         day = datetime.date(2026, 6, 20)
         assert list(controller.iter_formatted_logs(day=day, request_id="REQ-B")) == []
-        assert len(list(controller.iter_formatted_logs(day=day, request_id="REQ-A"))) == 2
+        assert (
+            len(list(controller.iter_formatted_logs(day=day, request_id="REQ-A"))) == 2
+        )
 
     def test_rendered_line_is_human_readable(self, controller):
         line = list(controller.iter_formatted_logs(request_id="REQ-A"))[0]
@@ -129,7 +129,9 @@ class TestEndpoint:
         assert len(resp.text.strip().splitlines()) == 2
 
     def test_invalid_date_returns_422(self, client):
-        assert client.get("/system/logs", params={"date": "not-a-date"}).status_code == 422
+        assert (
+            client.get("/system/logs", params={"date": "not-a-date"}).status_code == 422
+        )
 
     def test_missing_log_file_returns_404(self, client, controller):
         controller.log_path.unlink()

@@ -38,9 +38,7 @@ def _format_entry(entry: dict) -> str:
         head += f" (request_id={request_id})"
     head += f" {event}"
 
-    extras = " ".join(
-        f"{k}={entry[k]!r}" for k in entry if k not in _PRIMARY_KEYS
-    )
+    extras = " ".join(f"{k}={entry[k]!r}" for k in entry if k not in _PRIMARY_KEYS)
     return f"{head} {extras}".rstrip()
 
 
@@ -57,9 +55,7 @@ class SystemController:
     def log_file_exists(self) -> bool:
         return self._log_path.is_file()
 
-    def build_filename(
-        self, day: date | None, request_id: str | None
-    ) -> str:
+    def build_filename(self, day: date | None, request_id: str | None) -> str:
         """Suggested download filename reflecting the active filters."""
         parts = ["logs"]
         if day is not None:
