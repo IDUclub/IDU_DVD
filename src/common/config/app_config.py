@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     upload_dir: str = "./_uploads"
     allowed_extensions: list[str] = [".docx"]  # docx only for now; other formats later
 
+    # --- Logging ---
+    # Logs are written as JSON lines to a single growing file (filterable by date /
+    # request_id via /system/logs) and as human-readable lines to stdout.
+    log_dir: str = "./logs"
+    log_file: str = "app.log"
+    log_level: str = "INFO"
+
     def __repr__(self) -> str:
         return (
             f"{type(self).__name__}("
