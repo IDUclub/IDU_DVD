@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from src.dvd_service.dto.reference import DocumentRef
+
 
 class NodePayload(BaseModel):
     doc_id: str
@@ -30,5 +32,9 @@ class NodePayload(BaseModel):
 
     tags: list[str] = Field(default_factory=list)
     table_html: str | None = None  # table structure (for kind=table)
+
+    references: list[DocumentRef] = Field(
+        default_factory=list
+    )  # outgoing links to other documents/clauses
 
     text: str

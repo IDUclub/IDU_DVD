@@ -11,6 +11,7 @@ from fastmcp.exceptions import ToolError
 
 from src.dependencies import Dependencies
 from src.dvd_service.dto import SearchRequest, SearchResponse
+from src.dvd_service.modules.reference_patterns import normalize_designation
 
 mcp = FastMCP("dvd-idu")
 
@@ -87,3 +88,12 @@ def job_status(job_id: str) -> dict:
 def document_versions(name: str) -> list[str]:
     """List of document versions already loaded into the database, by its name/designation."""
     return Dependencies.get_registry().versions(name)
+
+
+@mcp.tool()
+def pending_references(name: str) -> list[dict]:
+    """Dangling references awaiting a not-yet-loaded document, by its name/designation.
+
+    These are completed automatically once that document is ingested.
+    """
+    return Dependencies.get_registry().peek_pending(normalize_designation(name))

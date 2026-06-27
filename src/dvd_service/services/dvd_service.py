@@ -22,6 +22,7 @@ from src.common.db.redis_client import DocumentRegistry, JobStore
 from src.dvd_service.dto import NodePayload, SearchHit, SearchRequest, SearchResponse
 from src.dvd_service.modules.doc_parsers import DocumentParser
 from src.dvd_service.modules.hierarchy import HierarchyBuilder
+from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import Tagger, VersionDetector
 
@@ -36,6 +37,8 @@ class IngestionService:
         hierarchy: HierarchyBuilder,
         tagger: Tagger,
         version_detector: VersionDetector,
+        reference_extractor: ReferenceExtractor,
+        reference_resolver: ReferenceResolver,
         qdrant: QdrantRepository,
         registry: DocumentRegistry,
         jobs: JobStore,
@@ -46,6 +49,8 @@ class IngestionService:
         self.hierarchy = hierarchy
         self.tagger = tagger
         self.version_detector = version_detector
+        self.reference_extractor = reference_extractor
+        self.reference_resolver = reference_resolver
         self.qdrant = qdrant
         self.registry = registry
         self.jobs = jobs
@@ -59,10 +64,22 @@ class IngestionService:
             f"hierarchy={type(self.hierarchy).__name__}, "
             f"tagger={type(self.tagger).__name__}, "
             f"version_detector={type(self.version_detector).__name__}, "
+            f"reference_extractor={type(self.reference_extractor).__name__}, "
+            f"reference_resolver={type(self.reference_resolver).__name__}, "
             f"qdrant={type(self.qdrant).__name__}, "
             f"registry={type(self.registry).__name__}, "
             f"jobs={type(self.jobs).__name__})"
         )
+
+    @staticmethod
+    def _numbering_index(nodes: list[dict]) -> dict[str, str]:
+        """Map each distinct numbering to its node id (first occurrence wins)."""
+        idx: dict[str, str] = {}
+        for n in nodes:
+            num = (n.get("numbering") or "").strip()
+            if num and num not in idx:
+                idx[num] = n["id"]
+        return idx
 
     def _embed_all(self, client: OllamaClient, texts: list[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
@@ -112,6 +129,16 @@ class IngestionService:
             version, other_versions = self._resolve_version(name, version, content_hash)
 
             node_tags = self.tagger.tag_nodes(nodes, client)
+
+            # Stage: extract + resolve references (links to other documents/clauses)
+            numbering_index = self._numbering_index(nodes)
+            node_refs: dict[str, list] = {}
+            if self.settings.enable_reference_linking:
+                raw_refs = self.reference_extractor.extract(nodes, client)
+                node_refs = self.reference_resolver.resolve(
+                    doc_id, name, raw_refs, numbering_index
+                )
+
             vectors = self._embed_all(client, [n["text"] for n in nodes])
 
             points = [
@@ -138,6 +165,7 @@ class IngestionService:
                         breadcrumb=n["breadcrumb"],
                         tags=node_tags.get(n["id"], []),
                         table_html=n["table_html"],
+                        references=node_refs.get(n["id"], []),
                         text=n["text"],
                     ).model_dump(),
                 )
@@ -150,6 +178,10 @@ class IngestionService:
             for v in other_versions:
                 self.qdrant.set_other_versions(name, v, sorted(all_versions - {v}))
             self.registry.register(content_hash, name, version, doc_id)
+
+            # Complete dangling references from earlier documents that pointed at this one
+            if self.settings.enable_reference_linking:
+                self.reference_resolver.backfill(name, doc_id, version, numbering_index)
 
             result = {
                 "doc_id": doc_id,
@@ -253,6 +285,7 @@ class SearchService:
                     prev_id=pl.get("prev_id"),
                     next_id=pl.get("next_id"),
                     tags=pl.get("tags", []) or [],
+                    references=pl.get("references", []) or [],
                     text=pl.get("text", ""),
                     context=context,
                     table_html=pl.get("table_html"),

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from src.dvd_service.dto.reference import DocumentRef
+
 
 class SearchRequest(BaseModel):
     query: str
@@ -29,6 +31,7 @@ class SearchHit(BaseModel):
     prev_id: str | None = None
     next_id: str | None = None
     tags: list[str] = Field(default_factory=list)
+    references: list[DocumentRef] = Field(default_factory=list)
     text: str
     context: str | None = (
         None  # expanded text with neighbours (when context_height > 0)
