@@ -83,7 +83,9 @@ class TestReferenceLinkingStores:
                     },
                 ]
             }
-            resolved = resolver.resolve(source_doc, "СП Текущий", node_refs, {})["src-node"]
+            resolved = resolver.resolve(source_doc, "СП Текущий", node_refs, {})[
+                "src-node"
+            ]
             loaded = next(r for r in resolved if r.target_name == target_name)
             missing = next(r for r in resolved if r.target_name == missing_name)
 

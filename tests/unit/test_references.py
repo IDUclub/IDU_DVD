@@ -63,9 +63,7 @@ def _extract_handler(refs_by_index: dict[int, list[dict]]):
 
         ids = [int(m) for m in re.findall(r"^\[(\d+)\]", user, re.M)]
         return {
-            "items": [
-                {"id": i, "references": refs_by_index.get(i, [])} for i in ids
-            ]
+            "items": [{"id": i, "references": refs_by_index.get(i, [])} for i in ids]
         }
 
     return handler
@@ -77,7 +75,11 @@ class TestExtractor:
             {"id": "node-a", "text": "Общие положения."},
             {"id": "node-b", "text": "В соответствии с СП 42.13330.2016."},
         ]
-        ref = {"raw": "СП 42.13330.2016", "target_name": "СП 42.13330.2016", "target_numbering": ""}
+        ref = {
+            "raw": "СП 42.13330.2016",
+            "target_name": "СП 42.13330.2016",
+            "target_numbering": "",
+        }
         ollama = _StubLLM(handler=_extract_handler({1: [ref]}))
         out = ReferenceExtractor(settings).extract(nodes, ollama)
         assert "node-b" in out and out["node-b"][0]["target_name"] == "СП 42.13330.2016"
@@ -85,7 +87,9 @@ class TestExtractor:
 
     def test_extract_skips_blank_raw(self, settings):
         nodes = [{"id": "n0", "text": "x"}]
-        ollama = _StubLLM(handler=_extract_handler({0: [{"raw": "  ", "target_name": "X"}]}))
+        ollama = _StubLLM(
+            handler=_extract_handler({0: [{"raw": "  ", "target_name": "X"}]})
+        )
         assert ReferenceExtractor(settings).extract(nodes, ollama) == {}
 
     def test_extract_survives_window_error(self, settings):
@@ -113,7 +117,9 @@ def resolver(fake_qdrant, registry, settings) -> ReferenceResolver:
 
 class TestResolveInternal:
     def test_internal_clause_resolves_to_local_node(self, resolver):
-        refs = {"src": [{"raw": "см. п. 1.2", "target_name": "", "target_numbering": "1.2"}]}
+        refs = {
+            "src": [{"raw": "см. п. 1.2", "target_name": "", "target_numbering": "1.2"}]
+        }
         out = resolver.resolve("doc-1", "СП Текущий", refs, {"1.2": "local-node"})
         ref = out["src"][0]
         assert ref.scope == "internal"
@@ -121,12 +127,22 @@ class TestResolveInternal:
         assert ref.target_doc_id == "doc-1"
 
     def test_internal_whole_document_is_resolved(self, resolver):
-        refs = {"src": [{"raw": "в текущем документе", "target_name": "", "target_numbering": ""}]}
+        refs = {
+            "src": [
+                {
+                    "raw": "в текущем документе",
+                    "target_name": "",
+                    "target_numbering": "",
+                }
+            ]
+        }
         ref = resolver.resolve("doc-1", "СП Текущий", refs, {})["src"][0]
         assert ref.scope == "internal" and ref.resolved is True
 
     def test_internal_missing_clause_unresolved(self, resolver):
-        refs = {"src": [{"raw": "см. п. 9.9", "target_name": "", "target_numbering": "9.9"}]}
+        refs = {
+            "src": [{"raw": "см. п. 9.9", "target_name": "", "target_numbering": "9.9"}]
+        }
         ref = resolver.resolve("doc-1", "СП Текущий", refs, {"1.2": "local"})["src"][0]
         assert ref.scope == "internal" and ref.resolved is False
 
@@ -136,11 +152,20 @@ class TestResolveExternal:
         registry.register("h", "СП 42.13330.2016", "v1", "tgt-doc")
         fake_qdrant.points["tgt-node"] = (
             [0.0],
-            {"name": "СП 42.13330.2016", "numbering": "7.5", "doc_id": "tgt-doc", "version": "v1"},
+            {
+                "name": "СП 42.13330.2016",
+                "numbering": "7.5",
+                "doc_id": "tgt-doc",
+                "version": "v1",
+            },
         )
         refs = {
             "src": [
-                {"raw": "СП 42.13330.2016, п. 7.5", "target_name": "СП 42.13330.2016", "target_numbering": "7.5"}
+                {
+                    "raw": "СП 42.13330.2016, п. 7.5",
+                    "target_name": "СП 42.13330.2016",
+                    "target_numbering": "7.5",
+                }
             ]
         }
         ref = resolver.resolve("doc-1", "СП Текущий", refs, {})["src"][0]
@@ -148,13 +173,28 @@ class TestResolveExternal:
         assert ref.target_node_id == "tgt-node"
         assert ref.target_doc_id == "tgt-doc" and ref.target_version == "v1"
 
-    def test_external_loaded_document_level_when_clause_absent(self, resolver, fake_qdrant, registry):
+    def test_external_loaded_document_level_when_clause_absent(
+        self, resolver, fake_qdrant, registry
+    ):
         registry.register("h", "СП 42.13330.2016", "v1", "tgt-doc")
         fake_qdrant.points["title"] = (
             [0.0],
-            {"name": "СП 42.13330.2016", "numbering": "", "doc_id": "tgt-doc", "version": "v1"},
+            {
+                "name": "СП 42.13330.2016",
+                "numbering": "",
+                "doc_id": "tgt-doc",
+                "version": "v1",
+            },
         )
-        refs = {"src": [{"raw": "см. СП 42.13330.2016", "target_name": "СП 42.13330.2016", "target_numbering": ""}]}
+        refs = {
+            "src": [
+                {
+                    "raw": "см. СП 42.13330.2016",
+                    "target_name": "СП 42.13330.2016",
+                    "target_numbering": "",
+                }
+            ]
+        }
         ref = resolver.resolve("doc-1", "СП Текущий", refs, {})["src"][0]
         assert ref.resolved is True
         assert ref.target_doc_id == "tgt-doc"
@@ -163,7 +203,11 @@ class TestResolveExternal:
     def test_external_missing_registers_pending(self, resolver, registry):
         refs = {
             "src": [
-                {"raw": "ГОСТ 9999, п. 5.1", "target_name": "ГОСТ 9999", "target_numbering": "5.1"}
+                {
+                    "raw": "ГОСТ 9999, п. 5.1",
+                    "target_name": "ГОСТ 9999",
+                    "target_numbering": "5.1",
+                }
             ]
         }
         ref = resolver.resolve("doc-1", "СП Текущий", refs, {})["src"][0]
@@ -175,11 +219,17 @@ class TestResolveExternal:
 
 
 class TestBackfill:
-    def test_backfill_completes_pending_reference(self, resolver, fake_qdrant, registry):
+    def test_backfill_completes_pending_reference(
+        self, resolver, fake_qdrant, registry
+    ):
         # 1) a document references a not-yet-loaded ГОСТ 9999 -> pending + unresolved ref stored
         refs = {
             "src": [
-                {"raw": "ГОСТ 9999, п. 5.1", "target_name": "ГОСТ 9999", "target_numbering": "5.1"}
+                {
+                    "raw": "ГОСТ 9999, п. 5.1",
+                    "target_name": "ГОСТ 9999",
+                    "target_numbering": "5.1",
+                }
             ]
         }
         resolved = resolver.resolve("src-doc", "СП Текущий", refs, {})
@@ -189,7 +239,9 @@ class TestBackfill:
         )
 
         # 2) ГОСТ 9999 is ingested later — back-fill links the dangling reference to its clause
-        updated = resolver.backfill("ГОСТ 9999", "gost-doc", "ГОСТ 9999 ред.1", {"5.1": "gost-node"})
+        updated = resolver.backfill(
+            "ГОСТ 9999", "gost-doc", "ГОСТ 9999 ред.1", {"5.1": "gost-node"}
+        )
         assert updated == 1
 
         stored = fake_qdrant.points["src"][1]["references"][0]

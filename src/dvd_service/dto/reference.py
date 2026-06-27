@@ -19,11 +19,17 @@ from pydantic import BaseModel
 class DocumentRef(BaseModel):
     raw: str  # the reference verbatim, as written in the source fragment
     target_name: str = ""  # normalized designation of the referenced document
-    target_numbering: str = ""  # clause/subclause inside the target ("" = whole document)
-    scope: str = "external"  # external | internal (a reference within the same document)
+    target_numbering: str = (
+        ""  # clause/subclause inside the target ("" = whole document)
+    )
+    scope: str = (
+        "external"  # external | internal (a reference within the same document)
+    )
 
     # Resolution against the store (filled when the target is present):
     target_doc_id: str | None = None
     target_version: str | None = None
-    target_node_id: str | None = None  # Qdrant point id of the exact clause (if pinpointed)
+    target_node_id: str | None = (
+        None  # Qdrant point id of the exact clause (if pinpointed)
+    )
     resolved: bool = False  # whether the target document was found in the store

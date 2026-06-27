@@ -161,9 +161,7 @@ class ReferenceResolver:
         result: dict[str, list[DocumentRef]] = {}
         for node_id, refs in node_refs.items():
             resolved = [
-                self._resolve_one(
-                    doc_id, norm_cur, node_id, r, local_index, known
-                )
+                self._resolve_one(doc_id, norm_cur, node_id, r, local_index, known)
                 for r in refs
             ]
             if resolved:
@@ -267,7 +265,5 @@ class ReferenceResolver:
                 ref["resolved"] = True
                 updated += 1
             self.qdrant.update_references(source_node_id, refs)
-        log.info(
-            "reference_backfill_done", document=name, refs_updated=updated
-        )
+        log.info("reference_backfill_done", document=name, refs_updated=updated)
         return updated
