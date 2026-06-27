@@ -15,6 +15,7 @@ from src.common.logger import configure_logging
 from src.dependencies.dependencies import Dependencies
 from src.dvd_service.modules.doc_parsers import DocumentParser
 from src.dvd_service.modules.hierarchy import HierarchyBuilder
+from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import Tagger, VersionDetector
 from src.dvd_service.services.dvd_service import IngestionService, SearchService
@@ -35,6 +36,8 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
 
     qdrant = QdrantRepository(s)
     qdrant.ensure_collection()
+    if s.enable_reference_linking:
+        qdrant.ensure_pattern_collection()
     redis = RedisClient(s)
     jobs = JobStore(redis)
     registry = DocumentRegistry(redis)
@@ -44,6 +47,8 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     hierarchy = HierarchyBuilder()
     tagger = Tagger(s)
     version_detector = VersionDetector()
+    reference_extractor = ReferenceExtractor(s)
+    reference_resolver = ReferenceResolver(qdrant, registry, s)
 
     ingestion = IngestionService(
         parser,
@@ -51,6 +56,8 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         hierarchy,
         tagger,
         version_detector,
+        reference_extractor,
+        reference_resolver,
         qdrant,
         registry,
         jobs,
@@ -72,6 +79,8 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         hierarchy=hierarchy,
         tagger=tagger,
         version_detector=version_detector,
+        reference_extractor=reference_extractor,
+        reference_resolver=reference_resolver,
         ingestion=ingestion,
         search=search,
         system=system,

@@ -134,14 +134,24 @@ vectorized. Payload contents (`NodePayload`):
 | `breadcrumb` | str | path from the root (section / clause) |
 | `tags` | list[str] | tags |
 | `table_html` | str | HTML representation of a table (for `kind=table`) |
+| `references` | list[DocumentRef] | outgoing links to other documents/clauses (see below) |
 | `text` | str | fragment text |
 
+Each entry of `references` is a `DocumentRef`: `raw` (verbatim text of the reference),
+`target_name` / `target_numbering` (the referenced designation and clause), `scope`
+(`internal`/`external`), the resolved `target_doc_id` / `target_version` / `target_node_id`
+(Qdrant point id of the exact clause), and `resolved`.
+
 Payload indexes are created on `doc_id`, `name`, `version`, `kind`, `type`, `block`, `parent_id`,
-`content_hash`, `tags`.
+`content_hash`, `tags`, `numbering`, and `references[].target_name`.
 
 ## Storage
 
 - Qdrant: a single collection (default `documents`), vector of size `vector_size`, cosine metric.
   Texts and tables live in the same collection and are distinguished by the `kind` field.
-- Redis: job statuses (`dvd:job:{job_id}`, with TTL), the hash registry (`dvd:hash:{hash}`) and
-  versions (`dvd:versions:{name}`).
+- Redis: job statuses (`dvd:job:{job_id}`, with TTL), the hash registry (`dvd:hash:{hash}`),
+  versions (`dvd:versions:{name}`), the set of all document names (`dvd:names`, for reference
+  matching) and the pending-reference queues (`dvd:pending_ref:{normalized_name}`).
+- Learned reference patterns live in a separate, durable Qdrant collection (default `ref_patterns`,
+  dummy 1-d vectors used as a key/value store), so they survive a Redis wipe; the seed patterns are
+  committed in `reference_patterns.py`.

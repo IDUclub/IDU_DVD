@@ -78,5 +78,37 @@ class TestDocumentRegistry:
         reg.register("h3", "Док", "v1", "d3")  # duplicate version
         assert reg.versions("Док") == ["v1", "v2"]
 
+    def test_register_tracks_names(self, client):
+        reg = DocumentRegistry(client)
+        reg.register("h1", "СП 1", "v1", "d1")
+        reg.register("h2", "ГОСТ 2", "v1", "d2")
+        assert reg.names() == ["ГОСТ 2", "СП 1"]
+        assert reg.has_name("СП 1") and not reg.has_name("СП 3")
+
     def test_repr(self, client):
         assert repr(DocumentRegistry(client)) == "DocumentRegistry()"
+
+
+class TestPendingReferences:
+    def test_add_peek_pop_roundtrip(self, client):
+        reg = DocumentRegistry(client)
+        entry = {
+            "source_doc_id": "d",
+            "source_node_id": "n",
+            "raw": "ГОСТ 9999",
+            "target_numbering": "5.1",
+        }
+        reg.add_pending("ГОСТ 9999", entry)
+        reg.add_pending("ГОСТ 9999", {**entry, "source_node_id": "n2"})
+
+        peeked = reg.peek_pending("ГОСТ 9999")
+        assert len(peeked) == 2 and peeked[0]["source_node_id"] == "n"
+        # peek does not consume
+        assert len(reg.peek_pending("ГОСТ 9999")) == 2
+
+        popped = reg.pop_pending("ГОСТ 9999")
+        assert len(popped) == 2
+        assert reg.peek_pending("ГОСТ 9999") == []  # drained
+
+    def test_pop_missing_returns_empty(self, client):
+        assert DocumentRegistry(client).pop_pending("nope") == []
