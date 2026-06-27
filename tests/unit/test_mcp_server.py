@@ -75,5 +75,6 @@ class TestServerObject:
             "search_all",
             "job_status",
             "document_versions",
+            "pending_references",
         ):
             assert hasattr(server, tool)

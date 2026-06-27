@@ -38,6 +38,15 @@ class Settings(BaseSettings):
     search_limit: int = 10
     max_context_height: int = 6  # cap on context height (neighbours before/after)
 
+    # --- Reference linking (extract links to other documents/clauses, resolve against the store) ---
+    enable_reference_linking: bool = True
+    ref_pattern_learning: bool = (
+        False  # let the LLM grow the regex base (self-improvement)
+    )
+    ref_pattern_collection: str = (
+        "ref_patterns"  # Qdrant collection for learned patterns
+    )
+
     # --- Parser pipeline (ported from notebooks/parser.ipynb) ---
     partition_strategy: str = "hi_res"  # 'fast' — for text formats without OCR
     languages: list[str] = ["rus", "eng"]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Iterable, Sequence
 
 import structlog
@@ -31,6 +32,8 @@ _PAYLOAD_INDEXES: dict[str, PayloadSchemaType] = {
     "parent_id": PayloadSchemaType.KEYWORD,
     "content_hash": PayloadSchemaType.KEYWORD,
     "tags": PayloadSchemaType.KEYWORD,
+    "numbering": PayloadSchemaType.KEYWORD,  # resolve a clause reference to a node
+    "references[].target_name": PayloadSchemaType.KEYWORD,  # find who references a document
 }
 
 
@@ -100,3 +103,76 @@ class QdrantRepository:
                 ]
             ),
         )
+
+    # --- reference resolution ---
+    def find_node(
+        self, name: str, numbering: str = "", version: str | None = None
+    ) -> dict | None:
+        """Locate a node by document name (+ optional clause numbering / version).
+
+        Returns ``{node_id, doc_id, version, numbering}`` of the best match, or ``None``. When
+        several versions match, the lexicographically latest version is preferred.
+        """
+        must = [FieldCondition(key="name", match=MatchValue(value=name))]
+        if numbering:
+            must.append(
+                FieldCondition(key="numbering", match=MatchValue(value=numbering))
+            )
+        if version:
+            must.append(FieldCondition(key="version", match=MatchValue(value=version)))
+        recs, _ = self.client.scroll(
+            self.collection,
+            scroll_filter=Filter(must=must),
+            limit=32,
+            with_payload=True,
+        )
+        if not recs:
+            return None
+        best = max(recs, key=lambda r: (r.payload or {}).get("version", ""))
+        pl = best.payload or {}
+        return {
+            "node_id": str(best.id),
+            "doc_id": pl.get("doc_id"),
+            "version": pl.get("version"),
+            "numbering": pl.get("numbering", ""),
+        }
+
+    def update_references(self, node_id: str, references: list[dict]) -> None:
+        """Replace the references payload of a single node (used by reference back-fill)."""
+        self.client.set_payload(
+            self.collection, payload={"references": references}, points=[node_id]
+        )
+
+    # --- learned reference patterns (durable, separate collection) ---
+    def ensure_pattern_collection(self) -> None:
+        """Create the learned-pattern collection if absent (dummy 1-d vectors — key/value store)."""
+        coll = self.settings.ref_pattern_collection
+        if not self.client.collection_exists(coll):
+            self.client.create_collection(
+                collection_name=coll,
+                vectors_config=VectorParams(size=1, distance=Distance.COSINE),
+            )
+            log.info("qdrant_pattern_collection_created", name=coll)
+
+    def add_pattern(self, pattern: dict) -> str:
+        """Persist a learned regex pattern; returns its point id."""
+        pid = str(uuid.uuid4())
+        self.client.upsert(
+            self.settings.ref_pattern_collection,
+            points=[PointStruct(id=pid, vector=[0.0], payload=pattern)],
+        )
+        return pid
+
+    def all_patterns(self) -> list[dict]:
+        """All learned patterns (scrolled out of the pattern collection)."""
+        coll = self.settings.ref_pattern_collection
+        out: list[dict] = []
+        offset = None
+        while True:
+            recs, offset = self.client.scroll(
+                coll, limit=256, offset=offset, with_payload=True
+            )
+            out.extend((r.payload or {}) for r in recs)
+            if offset is None:
+                break
+        return out

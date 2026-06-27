@@ -14,6 +14,7 @@ from src.common.db.qdrant_client import QdrantRepository
 from src.common.db.redis_client import DocumentRegistry, JobStore, RedisClient
 from src.dvd_service.modules.doc_parsers import DocumentParser
 from src.dvd_service.modules.hierarchy import HierarchyBuilder
+from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import Tagger, VersionDetector
 from src.dvd_service.services.dvd_service import IngestionService, SearchService
@@ -42,6 +43,8 @@ class Dependencies:
         "hierarchy",
         "tagger",
         "version_detector",
+        "reference_extractor",
+        "reference_resolver",
         "ingestion",
         "search",
         "system",
@@ -60,6 +63,8 @@ class Dependencies:
     hierarchy: HierarchyBuilder
     tagger: Tagger
     version_detector: VersionDetector
+    reference_extractor: ReferenceExtractor
+    reference_resolver: ReferenceResolver
     ingestion: IngestionService
     search: SearchService
     system: SystemController
@@ -84,6 +89,8 @@ class Dependencies:
         hierarchy: HierarchyBuilder,
         tagger: Tagger,
         version_detector: VersionDetector,
+        reference_extractor: ReferenceExtractor,
+        reference_resolver: ReferenceResolver,
         ingestion: IngestionService,
         search: SearchService,
         system: SystemController,
@@ -100,6 +107,8 @@ class Dependencies:
         self.hierarchy = hierarchy
         self.tagger = tagger
         self.version_detector = version_detector
+        self.reference_extractor = reference_extractor
+        self.reference_resolver = reference_resolver
         self.ingestion = ingestion
         self.search = search
         self.system = system
@@ -168,6 +177,14 @@ class Dependencies:
     @classmethod
     def get_version_detector(cls) -> VersionDetector:
         return cls.instance().version_detector
+
+    @classmethod
+    def get_reference_extractor(cls) -> ReferenceExtractor:
+        return cls.instance().reference_extractor
+
+    @classmethod
+    def get_reference_resolver(cls) -> ReferenceResolver:
+        return cls.instance().reference_resolver
 
     @classmethod
     def get_ingestion(cls) -> IngestionService:

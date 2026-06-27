@@ -105,6 +105,18 @@ curl -X POST http://localhost:8000/documents \
       "prev_id": "...",
       "next_id": "...",
       "tags": ["противопожарные расстояния", "здания"],
+      "references": [
+        {
+          "raw": "СП 42.13330.2016, п. 7.5",
+          "target_name": "СП 42.13330.2016",
+          "target_numbering": "7.5",
+          "scope": "external",
+          "target_doc_id": "c0ffee...",
+          "target_version": "СП 42.13330.2016",
+          "target_node_id": "b1ab1a...",
+          "resolved": true
+        }
+      ],
       "text": "Расстояния от зданий и сооружений ...",
       "context": "... предыдущий фрагмент ... целевой фрагмент ... следующий фрагмент ...",
       "table_html": null
