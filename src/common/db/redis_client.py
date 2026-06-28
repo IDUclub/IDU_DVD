@@ -64,6 +64,8 @@ class DocumentRegistry:
     Keys:
       dvd:hash:{content_hash} -> JSON {name, version, doc_id}   (presence = exact duplicate)
       dvd:versions:{name}     -> SET of versions of this document
+      dvd:names               -> SET of all document names/designations (for reference matching)
+      dvd:pending_ref:{key}   -> LIST of dangling references waiting for document `key` to arrive
     """
 
     def __init__(self, client: RedisClient) -> None:
@@ -93,3 +95,38 @@ class DocumentRegistry:
             ),
         )
         self.r.sadd(f"dvd:versions:{name}", version)
+        self.r.sadd("dvd:names", name)
+
+    # --- document names (for reference resolution) ---
+    def names(self) -> list[str]:
+        """All document names/designations ever registered (for reference matching)."""
+        return sorted(self.r.smembers("dvd:names"))
+
+    def has_name(self, name: str) -> bool:
+        return self.r.sismember("dvd:names", name)
+
+    # --- pending references (dangling links to not-yet-loaded documents) ---
+    @staticmethod
+    def _pending_key(norm_name: str) -> str:
+        return f"dvd:pending_ref:{norm_name}"
+
+    def add_pending(self, norm_name: str, entry: dict) -> None:
+        """Record a reference whose target document is not loaded yet, keyed by its normalized name."""
+        self.r.rpush(
+            self._pending_key(norm_name), json.dumps(entry, ensure_ascii=False)
+        )
+
+    def peek_pending(self, norm_name: str) -> list[dict]:
+        """Read the dangling references for a normalized name without removing them."""
+        return [
+            json.loads(v) for v in self.r.lrange(self._pending_key(norm_name), 0, -1)
+        ]
+
+    def pop_pending(self, norm_name: str) -> list[dict]:
+        """Read and atomically clear the dangling references for a normalized name."""
+        key = self._pending_key(norm_name)
+        pipe = self.r.pipeline()
+        pipe.lrange(key, 0, -1)
+        pipe.delete(key)
+        vals, _ = pipe.execute()
+        return [json.loads(v) for v in vals]

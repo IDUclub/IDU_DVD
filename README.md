@@ -35,9 +35,14 @@ entities.
   with links to parent, children and neighbouring fragments in reading order.
 - Automatic detection of the document name and version.
 - Fragment tagging.
+- Extraction and resolution of cross-document/cross-clause references (links to other documents'
+  clauses or to clauses within the same document), with a pending-reference queue that auto-resolves
+  once the referenced document is later ingested.
 - Vectorization with an embedding model and ingestion into Qdrant.
-- Vector search over texts and over tables with filters (name, version, tags) and a context-width
-  parameter.
+- Vector search over texts and over tables with filters (name, version, block, structural type,
+  tags) and a context-width parameter.
+- Document listing (aggregated by name + version) with metadata — node count, blocks present,
+  tag union, upload time — and filters (name, version, block, tags, upload-time range).
 - Full-text deduplication and versioning with a list of the document's other versions in the store.
 - Background processing status stored in Redis.
 

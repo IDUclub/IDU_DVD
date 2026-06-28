@@ -4,7 +4,12 @@ The models live in dedicated modules by concern (``node_payload``, ``upload``, `
 this file only marks the package and re-exports them.
 """
 
+from src.dvd_service.dto.document import (  # noqa: F401
+    DocumentInfo,
+    DocumentListResponse,
+)
 from src.dvd_service.dto.node_payload import NodePayload  # noqa: F401
+from src.dvd_service.dto.reference import DocumentRef  # noqa: F401
 from src.dvd_service.dto.search import (  # noqa: F401
     SearchHit,
     SearchRequest,
@@ -14,6 +19,9 @@ from src.dvd_service.dto.upload import JobStatusDTO, UploadResponse  # noqa: F40
 
 __all__ = [
     "NodePayload",
+    "DocumentRef",
+    "DocumentInfo",
+    "DocumentListResponse",
     "UploadResponse",
     "JobStatusDTO",
     "SearchRequest",

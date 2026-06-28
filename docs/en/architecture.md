@@ -36,7 +36,8 @@ Container contents:
 Dependencies(
     settings, qdrant, redis, jobs, registry,
     parser, structure, hierarchy, tagger, version_detector,
-    ingestion, search,
+    reference_extractor, reference_resolver,
+    ingestion, search, documents,
 )
 ```
 
@@ -53,8 +54,8 @@ Dependencies(
 | `src/dvd_service/modules/hierarchy.py` | `HierarchyBuilder` (Stage 4 and node flattening) |
 | `src/dvd_service/modules/tagging.py` | `Tagger`, `VersionDetector` |
 | `src/dvd_service/modules/windowing.py` | `make_windows`, `reconcile` |
-| `src/dvd_service/services/dvd_service.py` | `IngestionService`, `SearchService` |
-| `src/dvd_service/dto/` | `NodePayload` (`node_payload.py`) and request/response DTOs (`upload.py`, `search.py`) |
+| `src/dvd_service/services/dvd_service.py` | `IngestionService`, `SearchService`, `DocumentsService` |
+| `src/dvd_service/dto/` | `NodePayload` (`node_payload.py`) and request/response DTOs (`upload.py`, `search.py`, `document.py`, `reference.py`) |
 | `src/dvd_service/routers/` | HTTP endpoints (`documents.py`, `search.py`) |
 | `src/dependencies/dependencies.py` | `Dependencies` (singleton) and getters |
 | `src/dependencies/init_dependencies.py` | `init_dependencies` |
@@ -92,17 +93,23 @@ Dependencies(
 
 - `IngestionService.ingest(file_path, raw, content_hash, ...)` — the full processing pipeline and
   ingestion of nodes into Qdrant.
-- `SearchService.search(request, kind)` — query vectorization, filtering, search and context
-  assembly from neighbouring fragments.
+- `SearchService.search(request, kind)` — query vectorization, filtering (`name`, `version`,
+  `block`, `types`, `tags`), search and context assembly from neighbouring fragments.
+- `DocumentsService.list_documents(...)` — per-document view, aggregated by `(name, version)` from
+  Qdrant fragment payloads (node count, blocks present, tag union, upload time), filterable by
+  `name`, `version`, `block`, `tags` and an `uploaded_at` range.
 
 ## MCP
 
 `src/mcp_server/server.py` exposes the application's read-only getters as MCP tools (fastmcp) on top
 of the same `Dependencies` container — without a separate DB/Redis initialization:
 
-- `search_texts`, `search_tables`, `search_all` — wrappers over `SearchService.search`.
+- `search_texts`, `search_tables`, `search_all` — wrappers over `SearchService.search` (filters:
+  `name`, `version`, `block`, `types`, `tags`).
+- `list_documents` — a wrapper over `DocumentsService.list_documents`.
 - `job_status` — a wrapper over `JobStore.get`.
 - `document_versions` — a wrapper over `DocumentRegistry.versions`.
+- `pending_references` — a wrapper over `DocumentRegistry.peek_pending`.
 
 The MCP server's ASGI app (`src/mcp_server/app.py`) is mounted into the main FastAPI application
 (`src/main.py`) at the `/mcp` path (streamable HTTP transport); the MCP server's `lifespan` is
@@ -134,14 +141,25 @@ vectorized. Payload contents (`NodePayload`):
 | `breadcrumb` | str | path from the root (section / clause) |
 | `tags` | list[str] | tags |
 | `table_html` | str | HTML representation of a table (for `kind=table`) |
+| `references` | list[DocumentRef] | outgoing links to other documents/clauses (see below) |
+| `uploaded_at` | str | ISO 8601 UTC timestamp, set once per ingest call (same value for every node of that ingest) |
 | `text` | str | fragment text |
 
+Each entry of `references` is a `DocumentRef`: `raw` (verbatim text of the reference),
+`target_name` / `target_numbering` (the referenced designation and clause), `scope`
+(`internal`/`external`), the resolved `target_doc_id` / `target_version` / `target_node_id`
+(Qdrant point id of the exact clause), and `resolved`.
+
 Payload indexes are created on `doc_id`, `name`, `version`, `kind`, `type`, `block`, `parent_id`,
-`content_hash`, `tags`.
+`content_hash`, `tags`, `numbering`, and `references[].target_name`.
 
 ## Storage
 
 - Qdrant: a single collection (default `documents`), vector of size `vector_size`, cosine metric.
   Texts and tables live in the same collection and are distinguished by the `kind` field.
-- Redis: job statuses (`dvd:job:{job_id}`, with TTL), the hash registry (`dvd:hash:{hash}`) and
-  versions (`dvd:versions:{name}`).
+- Redis: job statuses (`dvd:job:{job_id}`, with TTL), the hash registry (`dvd:hash:{hash}`),
+  versions (`dvd:versions:{name}`), the set of all document names (`dvd:names`, for reference
+  matching) and the pending-reference queues (`dvd:pending_ref:{normalized_name}`).
+- Learned reference patterns live in a separate, durable Qdrant collection (default `ref_patterns`,
+  dummy 1-d vectors used as a key/value store), so they survive a Redis wipe; the seed patterns are
+  committed in `reference_patterns.py`.

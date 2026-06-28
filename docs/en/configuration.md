@@ -45,6 +45,14 @@ List fields (`languages`, `allowed_extensions`) are set in the environment in JS
 | `DVD_SEARCH_LIMIT` | `10` | default number of results |
 | `DVD_MAX_CONTEXT_HEIGHT` | `6` | cap on context width (neighbours before and after) |
 
+### Reference linking
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DVD_ENABLE_REFERENCE_LINKING` | `true` | extract and resolve links to other documents/clauses |
+| `DVD_REF_PATTERN_LEARNING` | `false` | let the LLM grow the regex pattern base (self-improvement) |
+| `DVD_REF_PATTERN_COLLECTION` | `ref_patterns` | Qdrant collection for learned patterns |
+
 ### Pipeline
 
 | Variable | Default | Description |

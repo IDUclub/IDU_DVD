@@ -17,9 +17,14 @@ from src.common.db.redis_client import DocumentRegistry, JobStore, RedisClient
 from src.dvd_service.dto import SearchRequest
 from src.dvd_service.modules.doc_parsers import DocumentParser
 from src.dvd_service.modules.hierarchy import HierarchyBuilder
+from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import Tagger, VersionDetector
-from src.dvd_service.services.dvd_service import IngestionService, SearchService
+from src.dvd_service.services.dvd_service import (
+    DocumentsService,
+    IngestionService,
+    SearchService,
+)
 
 
 @pytest.fixture
@@ -35,15 +40,19 @@ def wired(settings, fake_ollama, fake_qdrant, fake_redis, monkeypatch):
         HierarchyBuilder(),
         Tagger(settings),
         VersionDetector(),
+        ReferenceExtractor(settings),
+        ReferenceResolver(fake_qdrant, registry, settings),
         fake_qdrant,
         registry,
         jobs,
         settings,
     )
     search = SearchService(fake_qdrant, settings)
+    documents = DocumentsService(fake_qdrant)
     return SimpleNS(
         ingestion=ingestion,
         search=search,
+        documents=documents,
         jobs=jobs,
         registry=registry,
         qdrant=fake_qdrant,
@@ -104,6 +113,67 @@ class TestIngest:
             wired.ingestion.ingest("doc.docx", sample_raw, h, job_id="jerr")
         assert wired.jobs.get("jerr")["status"] == "error"
 
+    def test_references_attached_and_pending_registered(
+        self, wired, sample_raw, monkeypatch
+    ):
+        from src.dvd_service.modules.reference_patterns import normalize_designation
+
+        # Force the extractor to emit one external reference to a not-yet-loaded document.
+        monkeypatch.setattr(
+            wired.ingestion.reference_extractor,
+            "extract",
+            lambda nodes, client: {
+                nodes[1]["id"]: [
+                    {
+                        "raw": "ГОСТ 9999, п. 5.1",
+                        "target_name": "ГОСТ 9999",
+                        "target_numbering": "5.1",
+                    }
+                ]
+            },
+        )
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest("doc.docx", sample_raw, h)
+
+        refs = [
+            r
+            for _v, pl in wired.qdrant.points.values()
+            for r in pl.get("references", [])
+        ]
+        assert any(
+            r["target_name"] == "ГОСТ 9999" and r["resolved"] is False for r in refs
+        )
+        assert wired.registry.peek_pending(normalize_designation("ГОСТ 9999"))
+
+    def test_reference_linking_disabled_skips_stage(
+        self, settings, sample_raw, fake_ollama, fake_qdrant, fake_redis, monkeypatch
+    ):
+        monkeypatch.setattr(svc, "OllamaClient", lambda *a, **k: fake_ollama)
+        s = settings.model_copy(update={"enable_reference_linking": False})
+        redis_client = RedisClient(s)
+        ingestion = IngestionService(
+            DocumentParser(s),
+            StructureTagger(s),
+            HierarchyBuilder(),
+            Tagger(s),
+            VersionDetector(),
+            ReferenceExtractor(s),
+            ReferenceResolver(fake_qdrant, DocumentRegistry(redis_client), s),
+            fake_qdrant,
+            DocumentRegistry(redis_client),
+            JobStore(redis_client),
+            s,
+        )
+        called = {"v": False}
+        monkeypatch.setattr(
+            ingestion.reference_extractor,
+            "extract",
+            lambda *a, **k: called.__setitem__("v", True) or {},
+        )
+        h = DocumentParser.content_hash(sample_raw)
+        ingestion.ingest("doc.docx", sample_raw, h)
+        assert called["v"] is False  # extraction stage skipped when the flag is off
+
     def test_repr(self, wired):
         assert repr(wired.ingestion).startswith("IngestionService(")
 
@@ -129,8 +199,46 @@ class TestSearch:
         flt = wired.search._build_filter(req, kind="text")
         assert flt is not None and len(flt.must) == 4  # kind + name + version + tags
 
+    def test_build_filter_with_block_and_types(self, wired):
+        req = SearchRequest(query="q", block="amendment", types=["clause", "subclause"])
+        flt = wired.search._build_filter(req, kind=None)
+        assert flt is not None and len(flt.must) == 2  # block + types
+
     def test_build_filter_none_when_no_constraints(self, wired):
         assert wired.search._build_filter(SearchRequest(query="q"), kind=None) is None
 
     def test_repr(self, wired):
         assert repr(wired.search).startswith("SearchService(")
+
+
+class TestDocumentsService:
+    def test_lists_ingested_document_with_aggregated_metadata(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest("doc.docx", sample_raw, h)
+
+        resp = wired.documents.list_documents()
+        assert resp.count == 1
+        doc = resp.documents[0]
+        assert doc.name == res["name"] and doc.version == res["version"]
+        assert doc.node_count == res["nodes"]
+        assert doc.blocks == ["main"]
+        assert doc.uploaded_at  # populated by ingest()
+
+    def test_filters_by_name(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest("doc.docx", sample_raw, h)
+        assert wired.documents.list_documents(name="nope").count == 0
+        assert wired.documents.list_documents(name="ТЕСТ 1").count == 1
+
+    def test_filters_by_uploaded_range_excludes_out_of_range(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest("doc.docx", sample_raw, h)
+        future = "2999-01-01T00:00:00+00:00"
+        assert wired.documents.list_documents(uploaded_from=future).count == 0
+        assert wired.documents.list_documents(uploaded_to=future).count == 1
+
+    def test_empty_store_returns_no_documents(self, wired):
+        assert wired.documents.list_documents().count == 0
+
+    def test_repr(self, wired):
+        assert repr(wired.documents).startswith("DocumentsService(")

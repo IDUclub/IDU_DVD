@@ -10,7 +10,7 @@ import pytest
 
 import src.mcp_server.server as server
 from src.dependencies import Dependencies
-from src.dvd_service.dto import SearchHit, SearchResponse
+from src.dvd_service.dto import DocumentListResponse, SearchHit, SearchResponse
 
 
 class FakeSearch:
@@ -36,6 +36,15 @@ class FakeSearch:
         )
 
 
+class FakeDocuments:
+    def __init__(self):
+        self.calls = []
+
+    def list_documents(self, name, version, block, tags, uploaded_from, uploaded_to):
+        self.calls.append((name, version, block, tags, uploaded_from, uploaded_to))
+        return DocumentListResponse(count=0, documents=[])
+
+
 @pytest.fixture(autouse=True)
 def _reset_singleton():
     Dependencies.reset()
@@ -46,6 +55,12 @@ def _reset_singleton():
 def _set_singleton_with_search(fake_search) -> None:
     fields = {n: object() for n in Dependencies._FIELDS}
     fields["search"] = fake_search
+    Dependencies().set(**fields)
+
+
+def _set_singleton_with_documents(fake_documents) -> None:
+    fields = {n: object() for n in Dependencies._FIELDS}
+    fields["documents"] = fake_documents
     Dependencies().set(**fields)
 
 
@@ -64,6 +79,15 @@ class TestSearchHelper:
             server._search("q", None, None, None, 5, 0, None)
 
 
+class TestListDocumentsTool:
+    def test_forwards_filters(self):
+        fake = FakeDocuments()
+        _set_singleton_with_documents(fake)
+        resp = server.list_documents(name="СП 1", block="amendment")
+        assert resp.count == 0
+        assert fake.calls[-1] == ("СП 1", None, "amendment", None, None, None)
+
+
 class TestServerObject:
     def test_named(self):
         assert server.mcp.name == "dvd-idu"
@@ -75,5 +99,7 @@ class TestServerObject:
             "search_all",
             "job_status",
             "document_versions",
+            "pending_references",
+            "list_documents",
         ):
             assert hasattr(server, tool)
