@@ -37,4 +37,6 @@ class NodePayload(BaseModel):
         default_factory=list
     )  # outgoing links to other documents/clauses
 
+    uploaded_at: str = ""  # ISO 8601 UTC timestamp, set once per ingest call
+
     text: str

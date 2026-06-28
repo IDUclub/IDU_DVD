@@ -83,6 +83,25 @@ class QdrantRepository:
             with_payload=True,
         ).points
 
+    def scroll_payloads(
+        self, query_filter: Filter | None = None, batch: int = 256
+    ) -> list[dict]:
+        """All payloads matching ``query_filter`` (paginated scroll until exhausted)."""
+        out: list[dict] = []
+        offset = None
+        while True:
+            recs, offset = self.client.scroll(
+                self.collection,
+                scroll_filter=query_filter,
+                limit=batch,
+                offset=offset,
+                with_payload=True,
+            )
+            out.extend((r.payload or {}) for r in recs)
+            if offset is None:
+                break
+        return out
+
     def retrieve(self, ids: Sequence[str]) -> dict[str, dict]:
         if not ids:
             return {}

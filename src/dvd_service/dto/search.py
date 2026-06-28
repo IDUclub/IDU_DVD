@@ -11,6 +11,10 @@ class SearchRequest(BaseModel):
     query: str
     name: str | None = None  # filter by document name
     version: str | None = None  # filter by version
+    block: str | None = None  # filter by main/amendment
+    types: list[str] | None = (
+        None  # filter by structural level (chapter/clause/subclause/...)
+    )
     tags: list[str] | None = None  # filter by tags (any of)
     limit: int = 10
     context_height: int = 0  # how many neighbour fragments to attach before/after
@@ -25,6 +29,7 @@ class SearchHit(BaseModel):
     other_versions: list[str] = Field(default_factory=list)
     kind: str
     type: str
+    block: str = "main"
     numbering: str = ""
     breadcrumb: str = ""
     parent_id: str | None = None
