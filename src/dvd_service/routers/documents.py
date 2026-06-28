@@ -14,6 +14,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     UploadFile,
 )
 from fastapi.concurrency import run_in_threadpool
@@ -21,9 +22,9 @@ from fastapi.concurrency import run_in_threadpool
 from src.common.config import Settings
 from src.common.db.redis_client import DocumentRegistry, JobStore
 from src.dependencies import Dependencies
-from src.dvd_service.dto import JobStatusDTO, UploadResponse
+from src.dvd_service.dto import DocumentListResponse, JobStatusDTO, UploadResponse
 from src.dvd_service.modules.doc_parsers import DocumentParser
-from src.dvd_service.services.dvd_service import IngestionService
+from src.dvd_service.services.dvd_service import DocumentsService, IngestionService
 
 log = structlog.get_logger(__name__)
 router = APIRouter(tags=["documents"])
@@ -93,6 +94,25 @@ async def upload_document(
         _run_ingest, ingestion, job_id, path, raw, content_hash, version
     )
     return UploadResponse(job_id=job_id, status="queued")
+
+
+@router.get("/documents", response_model=DocumentListResponse)
+async def list_documents(
+    name: str | None = None,
+    version: str | None = None,
+    block: str | None = None,
+    tags: list[str] | None = Query(None),
+    uploaded_from: str | None = None,
+    uploaded_to: str | None = None,
+    documents: DocumentsService = Depends(Dependencies.get_documents),
+):
+    """Documents already in the store, aggregated by (name, version), with optional filters.
+
+    ``uploaded_from``/``uploaded_to`` are ISO 8601 timestamps (e.g. ``2026-06-01``).
+    """
+    return await run_in_threadpool(
+        documents.list_documents, name, version, block, tags, uploaded_from, uploaded_to
+    )
 
 
 @router.get("/documents/{job_id}", response_model=JobStatusDTO)

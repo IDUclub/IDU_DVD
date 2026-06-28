@@ -14,9 +14,15 @@ from src.common.db.qdrant_client import QdrantRepository
 from src.common.db.redis_client import DocumentRegistry, JobStore, RedisClient
 from src.dvd_service.modules.doc_parsers import DocumentParser
 from src.dvd_service.modules.hierarchy import HierarchyBuilder
+from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import Tagger, VersionDetector
-from src.dvd_service.services.dvd_service import IngestionService, SearchService
+from src.dvd_service.services.dvd_service import (
+    DocumentsService,
+    IngestionService,
+    SearchService,
+)
+from src.system_service.controllers import SystemController
 
 
 class Dependencies:
@@ -31,6 +37,7 @@ class Dependencies:
     # Field order = initialization order; used by as_dict/__repr__.
     _FIELDS: tuple[str, ...] = (
         "settings",
+        "logger",
         "qdrant",
         "redis",
         "jobs",
@@ -40,13 +47,18 @@ class Dependencies:
         "hierarchy",
         "tagger",
         "version_detector",
+        "reference_extractor",
+        "reference_resolver",
         "ingestion",
         "search",
+        "documents",
+        "system",
     )
 
     _instance: "Dependencies | None" = None
 
     settings: Settings
+    logger: Any
     qdrant: QdrantRepository
     redis: RedisClient
     jobs: JobStore
@@ -56,8 +68,12 @@ class Dependencies:
     hierarchy: HierarchyBuilder
     tagger: Tagger
     version_detector: VersionDetector
+    reference_extractor: ReferenceExtractor
+    reference_resolver: ReferenceResolver
     ingestion: IngestionService
     search: SearchService
+    documents: DocumentsService
+    system: SystemController
 
     def __new__(cls) -> "Dependencies":
         if cls._instance is None:
@@ -69,6 +85,7 @@ class Dependencies:
         self,
         *,
         settings: Settings,
+        logger: Any,
         qdrant: QdrantRepository,
         redis: RedisClient,
         jobs: JobStore,
@@ -78,11 +95,16 @@ class Dependencies:
         hierarchy: HierarchyBuilder,
         tagger: Tagger,
         version_detector: VersionDetector,
+        reference_extractor: ReferenceExtractor,
+        reference_resolver: ReferenceResolver,
         ingestion: IngestionService,
         search: SearchService,
+        documents: DocumentsService,
+        system: SystemController,
     ) -> "Dependencies":
         """Set all dependencies once (called from ``init_dependencies``)."""
         self.settings = settings
+        self.logger = logger
         self.qdrant = qdrant
         self.redis = redis
         self.jobs = jobs
@@ -92,8 +114,12 @@ class Dependencies:
         self.hierarchy = hierarchy
         self.tagger = tagger
         self.version_detector = version_detector
+        self.reference_extractor = reference_extractor
+        self.reference_resolver = reference_resolver
         self.ingestion = ingestion
         self.search = search
+        self.documents = documents
+        self.system = system
         return self
 
     # --- singleton access ---
@@ -115,6 +141,14 @@ class Dependencies:
     @classmethod
     def get_settings(cls) -> Settings:
         return cls.instance().settings
+
+    @classmethod
+    def get_logger(cls) -> Any:
+        return cls.instance().logger
+
+    @classmethod
+    def get_system(cls) -> SystemController:
+        return cls.instance().system
 
     @classmethod
     def get_qdrant(cls) -> QdrantRepository:
@@ -153,12 +187,24 @@ class Dependencies:
         return cls.instance().version_detector
 
     @classmethod
+    def get_reference_extractor(cls) -> ReferenceExtractor:
+        return cls.instance().reference_extractor
+
+    @classmethod
+    def get_reference_resolver(cls) -> ReferenceResolver:
+        return cls.instance().reference_resolver
+
+    @classmethod
     def get_ingestion(cls) -> IngestionService:
         return cls.instance().ingestion
 
     @classmethod
     def get_search(cls) -> SearchService:
         return cls.instance().search
+
+    @classmethod
+    def get_documents(cls) -> DocumentsService:
+        return cls.instance().documents
 
     # --- representations ---
     def as_dict(self) -> dict[str, Any]:

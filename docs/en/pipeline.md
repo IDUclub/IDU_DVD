@@ -86,8 +86,41 @@ well as `kind` (`text`/`table`) and `table_html`.
 - `VersionDetector.detect(parts, client)` determines `name` (short designation) and `version` (full
   revision, including amendments).
 - `Tagger.tag_nodes(nodes, client)` assigns each node tags — key topics and terms.
+- An `uploaded_at` timestamp (current UTC time, ISO 8601) is set once for the whole batch and
+  stamped onto every node of this ingest call — used by document listing (`GET /documents`) to
+  show and filter by upload time.
 - Node texts are vectorized by the embedding model (in batches).
 - Points are ingested into Qdrant; the hash and version are registered in Redis.
+
+## Stage 5.5. Reference extraction and linking
+
+Enabled by `enable_reference_linking` (default on). Runs after tagging, before vectorization.
+
+- `ReferenceExtractor.extract(nodes, client)` asks the LLM (windowed, strict JSON — same shape as
+  the structure/tagging stages) to pull out mentions of other documents: `raw` (verbatim, as
+  written), `target_name` (the referenced designation) and `target_numbering` (the clause it points
+  at, if any). Extraction is LLM-first by design.
+- `ReferenceResolver.resolve(...)` turns each mention into a `DocumentRef` and resolves it against
+  the store:
+  - **internal** — a reference to the current document's own clause (no other designation): resolved
+    against the freshly built `{numbering -> node_id}` index of the current document;
+  - **external, target loaded** — matched against the registry of document names (normalized) and
+    Qdrant; the exact clause becomes `target_node_id` (or, if only the document is found, a
+    document-level link with `target_doc_id`);
+  - **external, target missing** — left unresolved and pushed to the pending registry
+    (`dvd:pending_ref:{normalized_name}` in Redis), keyed by the normalized designation.
+
+Each reference is stored in two complementary forms: the human-readable `raw`/`target_name`/
+`target_numbering`, and the machine `target_node_id`/`target_doc_id` that uniquely identify the
+referenced part in the store.
+
+After upsert and registration, `ReferenceResolver.backfill(name, ...)` drains the pending queue for
+the just-ingested document and updates the source nodes' references in place — so a link written
+before its target existed becomes resolved once that document arrives.
+
+The regex seed (`reference_patterns.py`) and the durable learned-pattern collection in Qdrant are
+the substrate for the optional self-improvement step gated by `ref_pattern_learning` (off by
+default): the LLM generalizes new extraction patterns into the base over time.
 
 ## Deduplication
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import structlog
@@ -19,9 +20,17 @@ from src.api_clients import OllamaClient
 from src.common.config import Settings
 from src.common.db.qdrant_client import QdrantRepository
 from src.common.db.redis_client import DocumentRegistry, JobStore
-from src.dvd_service.dto import NodePayload, SearchHit, SearchRequest, SearchResponse
+from src.dvd_service.dto import (
+    DocumentInfo,
+    DocumentListResponse,
+    NodePayload,
+    SearchHit,
+    SearchRequest,
+    SearchResponse,
+)
 from src.dvd_service.modules.doc_parsers import DocumentParser
 from src.dvd_service.modules.hierarchy import HierarchyBuilder
+from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import Tagger, VersionDetector
 
@@ -36,6 +45,8 @@ class IngestionService:
         hierarchy: HierarchyBuilder,
         tagger: Tagger,
         version_detector: VersionDetector,
+        reference_extractor: ReferenceExtractor,
+        reference_resolver: ReferenceResolver,
         qdrant: QdrantRepository,
         registry: DocumentRegistry,
         jobs: JobStore,
@@ -46,6 +57,8 @@ class IngestionService:
         self.hierarchy = hierarchy
         self.tagger = tagger
         self.version_detector = version_detector
+        self.reference_extractor = reference_extractor
+        self.reference_resolver = reference_resolver
         self.qdrant = qdrant
         self.registry = registry
         self.jobs = jobs
@@ -59,10 +72,22 @@ class IngestionService:
             f"hierarchy={type(self.hierarchy).__name__}, "
             f"tagger={type(self.tagger).__name__}, "
             f"version_detector={type(self.version_detector).__name__}, "
+            f"reference_extractor={type(self.reference_extractor).__name__}, "
+            f"reference_resolver={type(self.reference_resolver).__name__}, "
             f"qdrant={type(self.qdrant).__name__}, "
             f"registry={type(self.registry).__name__}, "
             f"jobs={type(self.jobs).__name__})"
         )
+
+    @staticmethod
+    def _numbering_index(nodes: list[dict]) -> dict[str, str]:
+        """Map each distinct numbering to its node id (first occurrence wins)."""
+        idx: dict[str, str] = {}
+        for n in nodes:
+            num = (n.get("numbering") or "").strip()
+            if num and num not in idx:
+                idx[num] = n["id"]
+        return idx
 
     def _embed_all(self, client: OllamaClient, texts: list[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
@@ -112,6 +137,17 @@ class IngestionService:
             version, other_versions = self._resolve_version(name, version, content_hash)
 
             node_tags = self.tagger.tag_nodes(nodes, client)
+            uploaded_at = datetime.now(timezone.utc).isoformat()
+
+            # Stage: extract + resolve references (links to other documents/clauses)
+            numbering_index = self._numbering_index(nodes)
+            node_refs: dict[str, list] = {}
+            if self.settings.enable_reference_linking:
+                raw_refs = self.reference_extractor.extract(nodes, client)
+                node_refs = self.reference_resolver.resolve(
+                    doc_id, name, raw_refs, numbering_index
+                )
+
             vectors = self._embed_all(client, [n["text"] for n in nodes])
 
             points = [
@@ -138,6 +174,8 @@ class IngestionService:
                         breadcrumb=n["breadcrumb"],
                         tags=node_tags.get(n["id"], []),
                         table_html=n["table_html"],
+                        references=node_refs.get(n["id"], []),
+                        uploaded_at=uploaded_at,
                         text=n["text"],
                     ).model_dump(),
                 )
@@ -150,6 +188,10 @@ class IngestionService:
             for v in other_versions:
                 self.qdrant.set_other_versions(name, v, sorted(all_versions - {v}))
             self.registry.register(content_hash, name, version, doc_id)
+
+            # Complete dangling references from earlier documents that pointed at this one
+            if self.settings.enable_reference_linking:
+                self.reference_resolver.backfill(name, doc_id, version, numbering_index)
 
             result = {
                 "doc_id": doc_id,
@@ -193,6 +235,10 @@ class SearchService:
             must.append(
                 FieldCondition(key="version", match=MatchValue(value=req.version))
             )
+        if req.block:
+            must.append(FieldCondition(key="block", match=MatchValue(value=req.block)))
+        if req.types:
+            must.append(FieldCondition(key="type", match=MatchAny(any=req.types)))
         if req.tags:
             must.append(FieldCondition(key="tags", match=MatchAny(any=req.tags)))
         return Filter(must=must) if must else None
@@ -247,15 +293,111 @@ class SearchService:
                     other_versions=pl.get("other_versions", []) or [],
                     kind=pl.get("kind", "text"),
                     type=pl.get("type", ""),
+                    block=pl.get("block", "main"),
                     numbering=pl.get("numbering", ""),
                     breadcrumb=pl.get("breadcrumb", ""),
                     parent_id=pl.get("parent_id"),
                     prev_id=pl.get("prev_id"),
                     next_id=pl.get("next_id"),
                     tags=pl.get("tags", []) or [],
+                    references=pl.get("references", []) or [],
                     text=pl.get("text", ""),
                     context=context,
                     table_html=pl.get("table_html"),
                 )
             )
         return SearchResponse(count=len(hits), hits=hits)
+
+
+class DocumentsService:
+    """Lists documents already in the store, aggregated from their fragment payloads.
+
+    The registry (Redis) only tracks name/version existence; per-document facts shown here
+    (node count, blocks present, tag union, upload time) live on the fragments themselves, so
+    they are computed by scrolling Qdrant and grouping by ``(name, version)``.
+    """
+
+    def __init__(self, qdrant: QdrantRepository) -> None:
+        self.qdrant = qdrant
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(qdrant={type(self.qdrant).__name__})"
+
+    @staticmethod
+    def _build_filter(
+        name: str | None, version: str | None, block: str | None, tags: list[str] | None
+    ) -> Filter | None:
+        must = []
+        if name:
+            must.append(FieldCondition(key="name", match=MatchValue(value=name)))
+        if version:
+            must.append(FieldCondition(key="version", match=MatchValue(value=version)))
+        if block:
+            must.append(FieldCondition(key="block", match=MatchValue(value=block)))
+        if tags:
+            must.append(FieldCondition(key="tags", match=MatchAny(any=tags)))
+        return Filter(must=must) if must else None
+
+    def list_documents(
+        self,
+        name: str | None = None,
+        version: str | None = None,
+        block: str | None = None,
+        tags: list[str] | None = None,
+        uploaded_from: str | None = None,
+        uploaded_to: str | None = None,
+    ) -> DocumentListResponse:
+        """Aggregated, per-document view, optionally narrowed by the given filters.
+
+        ``uploaded_from``/``uploaded_to`` compare against the ISO 8601 ``uploaded_at`` timestamp
+        as plain strings (lexicographic order matches chronological order for ISO 8601) and are
+        applied after aggregation, since upload time is a per-document fact, not an indexed
+        per-fragment field.
+        """
+        payloads = self.qdrant.scroll_payloads(
+            self._build_filter(name, version, block, tags)
+        )
+
+        groups: dict[tuple[str, str], dict] = {}
+        for pl in payloads:
+            key = (pl.get("name", ""), pl.get("version", ""))
+            g = groups.get(key)
+            if g is None:
+                g = {
+                    "doc_id": pl.get("doc_id", ""),
+                    "other_versions": pl.get("other_versions", []) or [],
+                    "source": pl.get("source"),
+                    "uploaded_at": pl.get("uploaded_at") or None,
+                    "blocks": set(),
+                    "tags": set(),
+                    "node_count": 0,
+                }
+                groups[key] = g
+            g["blocks"].add(pl.get("block", "main"))
+            g["tags"].update(pl.get("tags", []) or [])
+            g["node_count"] += 1
+            if not g["uploaded_at"] and pl.get("uploaded_at"):
+                g["uploaded_at"] = pl["uploaded_at"]
+
+        documents = []
+        for (doc_name, doc_version), g in groups.items():
+            uploaded_at = g["uploaded_at"]
+            if uploaded_from and (not uploaded_at or uploaded_at < uploaded_from):
+                continue
+            if uploaded_to and (not uploaded_at or uploaded_at > uploaded_to):
+                continue
+            documents.append(
+                DocumentInfo(
+                    doc_id=g["doc_id"],
+                    name=doc_name,
+                    version=doc_version,
+                    other_versions=g["other_versions"],
+                    blocks=sorted(g["blocks"]),
+                    tags=sorted(g["tags"]),
+                    node_count=g["node_count"],
+                    uploaded_at=uploaded_at,
+                    source=g["source"],
+                )
+            )
+        documents.sort(key=lambda d: (d.name, d.version))
+        return DocumentListResponse(count=len(documents), documents=documents)

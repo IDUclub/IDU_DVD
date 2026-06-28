@@ -60,6 +60,8 @@ def pipeline_chat_handler(system: str, user: str, schema: dict) -> dict:
                 for i in ids
             ]
         }
+    if "items" in props:  # reference extraction — no references by default
+        return {"items": [{"id": i, "references": []} for i in ids]}
     if "name" in props and "version" in props:  # version detection
         return {"name": "ТЕСТ 1", "version": "ТЕСТ 1 ред. 1"}
     raise AssertionError(f"unexpected schema: {schema}")
@@ -133,6 +135,55 @@ class FakeQdrantRepo:
 
     def set_other_versions(self, name, version, other_versions) -> None:
         self.set_other_versions_calls.append((name, version, other_versions))
+
+    def find_node(self, name, numbering="", version=None):
+        best = None
+        for pid, (_vec, pl) in self.points.items():
+            if pl.get("name") != name:
+                continue
+            if numbering and pl.get("numbering") != numbering:
+                continue
+            if version and pl.get("version") != version:
+                continue
+            cand = {
+                "node_id": pid,
+                "doc_id": pl.get("doc_id"),
+                "version": pl.get("version"),
+                "numbering": pl.get("numbering", ""),
+            }
+            if best is None or (pl.get("version", "") > best[1]):
+                best = (cand, pl.get("version", ""))
+        return best[0] if best else None
+
+    def scroll_payloads(self, query_filter=None, batch=256):
+        payloads = [pl for _vec, pl in self.points.values()]
+        if query_filter is None:
+            return payloads
+        out = []
+        for pl in payloads:
+            ok = True
+            for cond in query_filter.must:
+                val = pl.get(cond.key)
+                m = cond.match
+                if hasattr(m, "value"):
+                    if val != m.value:
+                        ok = False
+                        break
+                elif hasattr(m, "any"):
+                    if not isinstance(val, list) or not any(v in val for v in m.any):
+                        ok = False
+                        break
+            if ok:
+                out.append(pl)
+        return out
+
+    def update_references(self, node_id, references) -> None:
+        nid = str(node_id)
+        if nid in self.points:
+            vec, pl = self.points[nid]
+            pl = dict(pl)
+            pl["references"] = references
+            self.points[nid] = (vec, pl)
 
 
 # --------------------------------------------------------------------------------------
