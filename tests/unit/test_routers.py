@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from src.common.config import Settings
 from src.dependencies import Dependencies
-from src.dvd_service.dto import SearchHit, SearchResponse
+from src.dvd_service.dto import DocumentListResponse, SearchHit, SearchResponse
 from src.dvd_service.routers import documents_router, search_router
 
 
@@ -79,6 +79,15 @@ class FakeSearch:
         )
 
 
+class FakeDocuments:
+    def __init__(self):
+        self.calls = []
+
+    def list_documents(self, name, version, block, tags, uploaded_from, uploaded_to):
+        self.calls.append((name, version, block, tags, uploaded_from, uploaded_to))
+        return DocumentListResponse(count=0, documents=[])
+
+
 @pytest.fixture
 def client(tmp_path):
     fakes = {
@@ -88,6 +97,7 @@ def client(tmp_path):
         "jobs": FakeJobs(),
         "ingestion": FakeIngestion(),
         "search": FakeSearch(),
+        "documents": FakeDocuments(),
     }
     app = FastAPI()
     app.include_router(documents_router)
@@ -98,6 +108,7 @@ def client(tmp_path):
     app.dependency_overrides[Dependencies.get_jobs] = lambda: fakes["jobs"]
     app.dependency_overrides[Dependencies.get_ingestion] = lambda: fakes["ingestion"]
     app.dependency_overrides[Dependencies.get_search] = lambda: fakes["search"]
+    app.dependency_overrides[Dependencies.get_documents] = lambda: fakes["documents"]
     with TestClient(app) as c:
         yield c, fakes
 
@@ -122,6 +133,33 @@ class TestUpload:
         c, _ = client
         resp = c.post("/documents", files={"file": ("doc.txt", b"data")})
         assert resp.status_code == 415
+
+
+class TestListDocuments:
+    def test_forwards_filters_to_service(self, client):
+        c, fakes = client
+        resp = c.get(
+            "/documents",
+            params={"name": "СП 1", "block": "amendment", "tags": ["a", "b"]},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["count"] == 0
+        assert fakes["documents"].calls[-1] == (
+            "СП 1",
+            None,
+            "amendment",
+            ["a", "b"],
+            None,
+            None,
+        )
+
+    def test_no_filters(self, client):
+        c, _ = client
+        resp = c.get("/documents")
+        assert resp.status_code == 200 and resp.json() == {
+            "count": 0,
+            "documents": [],
+        }
 
 
 class TestJobStatus:

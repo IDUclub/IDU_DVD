@@ -70,6 +70,21 @@ class TestSearchAndRetrieve:
         client.retrieve.assert_not_called()
 
 
+class TestScrollPayloads:
+    def test_scrolls_until_exhausted(self, repo_and_client):
+        repo, client = repo_and_client
+        client.scroll.side_effect = [
+            ([SimpleNamespace(payload={"name": "a"})], "offset1"),
+            ([SimpleNamespace(payload={"name": "b"})], None),
+        ]
+        assert repo.scroll_payloads(None) == [{"name": "a"}, {"name": "b"}]
+
+    def test_missing_payload_becomes_empty_dict(self, repo_and_client):
+        repo, client = repo_and_client
+        client.scroll.return_value = ([SimpleNamespace(payload=None)], None)
+        assert repo.scroll_payloads(None) == [{}]
+
+
 class TestSetOtherVersions:
     def test_updates_payload_for_version(self, repo_and_client):
         repo, client = repo_and_client

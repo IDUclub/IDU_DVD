@@ -20,7 +20,11 @@ from src.dvd_service.modules.hierarchy import HierarchyBuilder
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import Tagger, VersionDetector
-from src.dvd_service.services.dvd_service import IngestionService, SearchService
+from src.dvd_service.services.dvd_service import (
+    DocumentsService,
+    IngestionService,
+    SearchService,
+)
 
 
 @pytest.fixture
@@ -44,9 +48,11 @@ def wired(settings, fake_ollama, fake_qdrant, fake_redis, monkeypatch):
         settings,
     )
     search = SearchService(fake_qdrant, settings)
+    documents = DocumentsService(fake_qdrant)
     return SimpleNS(
         ingestion=ingestion,
         search=search,
+        documents=documents,
         jobs=jobs,
         registry=registry,
         qdrant=fake_qdrant,
@@ -193,8 +199,46 @@ class TestSearch:
         flt = wired.search._build_filter(req, kind="text")
         assert flt is not None and len(flt.must) == 4  # kind + name + version + tags
 
+    def test_build_filter_with_block_and_types(self, wired):
+        req = SearchRequest(query="q", block="amendment", types=["clause", "subclause"])
+        flt = wired.search._build_filter(req, kind=None)
+        assert flt is not None and len(flt.must) == 2  # block + types
+
     def test_build_filter_none_when_no_constraints(self, wired):
         assert wired.search._build_filter(SearchRequest(query="q"), kind=None) is None
 
     def test_repr(self, wired):
         assert repr(wired.search).startswith("SearchService(")
+
+
+class TestDocumentsService:
+    def test_lists_ingested_document_with_aggregated_metadata(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest("doc.docx", sample_raw, h)
+
+        resp = wired.documents.list_documents()
+        assert resp.count == 1
+        doc = resp.documents[0]
+        assert doc.name == res["name"] and doc.version == res["version"]
+        assert doc.node_count == res["nodes"]
+        assert doc.blocks == ["main"]
+        assert doc.uploaded_at  # populated by ingest()
+
+    def test_filters_by_name(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest("doc.docx", sample_raw, h)
+        assert wired.documents.list_documents(name="nope").count == 0
+        assert wired.documents.list_documents(name="ТЕСТ 1").count == 1
+
+    def test_filters_by_uploaded_range_excludes_out_of_range(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest("doc.docx", sample_raw, h)
+        future = "2999-01-01T00:00:00+00:00"
+        assert wired.documents.list_documents(uploaded_from=future).count == 0
+        assert wired.documents.list_documents(uploaded_to=future).count == 1
+
+    def test_empty_store_returns_no_documents(self, wired):
+        assert wired.documents.list_documents().count == 0
+
+    def test_repr(self, wired):
+        assert repr(wired.documents).startswith("DocumentsService(")

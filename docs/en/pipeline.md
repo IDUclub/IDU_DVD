@@ -86,6 +86,9 @@ well as `kind` (`text`/`table`) and `table_html`.
 - `VersionDetector.detect(parts, client)` determines `name` (short designation) and `version` (full
   revision, including amendments).
 - `Tagger.tag_nodes(nodes, client)` assigns each node tags — key topics and terms.
+- An `uploaded_at` timestamp (current UTC time, ISO 8601) is set once for the whole batch and
+  stamped onto every node of this ingest call — used by document listing (`GET /documents`) to
+  show and filter by upload time.
 - Node texts are vectorized by the embedding model (in batches).
 - Points are ingested into Qdrant; the hash and version are registered in Redis.
 

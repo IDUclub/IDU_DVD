@@ -18,7 +18,11 @@ from src.dvd_service.modules.hierarchy import HierarchyBuilder
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import Tagger, VersionDetector
-from src.dvd_service.services.dvd_service import IngestionService, SearchService
+from src.dvd_service.services.dvd_service import (
+    DocumentsService,
+    IngestionService,
+    SearchService,
+)
 from src.system_service.controllers import SystemController
 
 log = structlog.get_logger(__name__)
@@ -64,6 +68,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         s,
     )
     search = SearchService(qdrant, s)
+    documents = DocumentsService(qdrant)
 
     system = SystemController(s)
 
@@ -83,6 +88,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         reference_resolver=reference_resolver,
         ingestion=ingestion,
         search=search,
+        documents=documents,
         system=system,
     )
     log.info("dependencies_initialized", dependencies=repr(deps))

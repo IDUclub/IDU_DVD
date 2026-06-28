@@ -10,7 +10,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
 from src.dependencies import Dependencies
-from src.dvd_service.dto import SearchRequest, SearchResponse
+from src.dvd_service.dto import DocumentListResponse, SearchRequest, SearchResponse
 from src.dvd_service.modules.reference_patterns import normalize_designation
 
 mcp = FastMCP("dvd-idu")
@@ -24,11 +24,15 @@ def _search(
     limit: int,
     context_height: int,
     kind: str | None,
+    block: str | None = None,
+    types: list[str] | None = None,
 ) -> SearchResponse:
     req = SearchRequest(
         query=query,
         name=name,
         version=version,
+        block=block,
+        types=types,
         tags=tags,
         limit=limit,
         context_height=context_height,
@@ -41,12 +45,20 @@ def search_texts(
     query: str,
     name: str | None = None,
     version: str | None = None,
+    block: str | None = None,
+    types: list[str] | None = None,
     tags: list[str] | None = None,
     limit: int = 10,
     context_height: int = 0,
 ) -> SearchResponse:
-    """Vector search over text fragments (kind=text) with filters and context height."""
-    return _search(query, name, version, tags, limit, context_height, "text")
+    """Vector search over text fragments (kind=text) with filters and context height.
+
+    ``block`` filters by main/amendment, ``types`` by structural level (chapter/clause/
+    subclause/...).
+    """
+    return _search(
+        query, name, version, tags, limit, context_height, "text", block, types
+    )
 
 
 @mcp.tool()
@@ -54,12 +66,16 @@ def search_tables(
     query: str,
     name: str | None = None,
     version: str | None = None,
+    block: str | None = None,
+    types: list[str] | None = None,
     tags: list[str] | None = None,
     limit: int = 10,
     context_height: int = 0,
 ) -> SearchResponse:
     """Vector search over tables (kind=table) with filters and context height."""
-    return _search(query, name, version, tags, limit, context_height, "table")
+    return _search(
+        query, name, version, tags, limit, context_height, "table", block, types
+    )
 
 
 @mcp.tool()
@@ -67,12 +83,31 @@ def search_all(
     query: str,
     name: str | None = None,
     version: str | None = None,
+    block: str | None = None,
+    types: list[str] | None = None,
     tags: list[str] | None = None,
     limit: int = 10,
     context_height: int = 0,
 ) -> SearchResponse:
     """Vector search across all entities (texts and tables) with filters and context height."""
-    return _search(query, name, version, tags, limit, context_height, None)
+    return _search(
+        query, name, version, tags, limit, context_height, None, block, types
+    )
+
+
+@mcp.tool()
+def list_documents(
+    name: str | None = None,
+    version: str | None = None,
+    block: str | None = None,
+    tags: list[str] | None = None,
+    uploaded_from: str | None = None,
+    uploaded_to: str | None = None,
+) -> DocumentListResponse:
+    """Documents already in the store, aggregated by (name, version), with optional filters."""
+    return Dependencies.get_documents().list_documents(
+        name, version, block, tags, uploaded_from, uploaded_to
+    )
 
 
 @mcp.tool()
