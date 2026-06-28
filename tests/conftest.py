@@ -155,6 +155,28 @@ class FakeQdrantRepo:
                 best = (cand, pl.get("version", ""))
         return best[0] if best else None
 
+    def scroll_payloads(self, query_filter=None, batch=256):
+        payloads = [pl for _vec, pl in self.points.values()]
+        if query_filter is None:
+            return payloads
+        out = []
+        for pl in payloads:
+            ok = True
+            for cond in query_filter.must:
+                val = pl.get(cond.key)
+                m = cond.match
+                if hasattr(m, "value"):
+                    if val != m.value:
+                        ok = False
+                        break
+                elif hasattr(m, "any"):
+                    if not isinstance(val, list) or not any(v in val for v in m.any):
+                        ok = False
+                        break
+            if ok:
+                out.append(pl)
+        return out
+
     def update_references(self, node_id, references) -> None:
         nid = str(node_id)
         if nid in self.points:

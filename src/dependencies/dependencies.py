@@ -17,7 +17,11 @@ from src.dvd_service.modules.hierarchy import HierarchyBuilder
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import Tagger, VersionDetector
-from src.dvd_service.services.dvd_service import IngestionService, SearchService
+from src.dvd_service.services.dvd_service import (
+    DocumentsService,
+    IngestionService,
+    SearchService,
+)
 from src.system_service.controllers import SystemController
 
 
@@ -47,6 +51,7 @@ class Dependencies:
         "reference_resolver",
         "ingestion",
         "search",
+        "documents",
         "system",
     )
 
@@ -67,6 +72,7 @@ class Dependencies:
     reference_resolver: ReferenceResolver
     ingestion: IngestionService
     search: SearchService
+    documents: DocumentsService
     system: SystemController
 
     def __new__(cls) -> "Dependencies":
@@ -93,6 +99,7 @@ class Dependencies:
         reference_resolver: ReferenceResolver,
         ingestion: IngestionService,
         search: SearchService,
+        documents: DocumentsService,
         system: SystemController,
     ) -> "Dependencies":
         """Set all dependencies once (called from ``init_dependencies``)."""
@@ -111,6 +118,7 @@ class Dependencies:
         self.reference_resolver = reference_resolver
         self.ingestion = ingestion
         self.search = search
+        self.documents = documents
         self.system = system
         return self
 
@@ -193,6 +201,10 @@ class Dependencies:
     @classmethod
     def get_search(cls) -> SearchService:
         return cls.instance().search
+
+    @classmethod
+    def get_documents(cls) -> DocumentsService:
+        return cls.instance().documents
 
     # --- representations ---
     def as_dict(self) -> dict[str, Any]:
