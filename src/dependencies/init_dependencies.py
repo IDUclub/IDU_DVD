@@ -21,6 +21,7 @@ from src.dvd_service.modules.tagging import Tagger, VersionDetector
 from src.dvd_service.services.dvd_service import (
     DocumentsService,
     IngestionService,
+    LibraryService,
     SearchService,
 )
 from src.system_service.controllers import SystemController
@@ -69,6 +70,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     )
     search = SearchService(qdrant, s)
     documents = DocumentsService(qdrant)
+    library = LibraryService(qdrant, registry)
 
     system = SystemController(s)
 
@@ -89,6 +91,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         ingestion=ingestion,
         search=search,
         documents=documents,
+        library=library,
         system=system,
     )
     log.info("dependencies_initialized", dependencies=repr(deps))

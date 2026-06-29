@@ -59,7 +59,18 @@ class Settings(BaseSettings):
 
     # --- Upload ---
     upload_dir: str = "./_uploads"
-    allowed_extensions: list[str] = [".docx"]  # docx only for now; other formats later
+    # Lightweight, OCR-free formats handled by unstructured. Scanned PDF/OCR is deferred
+    # (heavy torch/poppler/tesseract backends); add ".pdf" once those are provisioned.
+    allowed_extensions: list[str] = [".docx", ".txt", ".md", ".html", ".htm"]
+
+    # --- Document identity defaults (general-purpose corpus metadata) ---
+    # Generic fallbacks for the cross-service payload fields when the uploader omits them.
+    # Domain consumers (e.g. MSI-TSIM) override per upload via form fields / external_ids.
+    default_doc_type: str = (
+        "document"  # document | regulation | article | book | web | …
+    )
+    default_corpus: str = "default"  # logical corpus/namespace a document belongs to
+    default_lang: str | None = None  # ISO-639 code; None = unknown / not detected
 
     # --- Logging ---
     # Logs are written as JSON lines to a single growing file (filterable by date /
