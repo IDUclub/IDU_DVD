@@ -11,6 +11,7 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    MatchAny,
     MatchValue,
     PayloadSchemaType,
     PointStruct,
@@ -26,6 +27,7 @@ _PAYLOAD_INDEXES: dict[str, PayloadSchemaType] = {
     "doc_id": PayloadSchemaType.KEYWORD,
     "name": PayloadSchemaType.KEYWORD,
     "version": PayloadSchemaType.KEYWORD,
+    "version_id": PayloadSchemaType.KEYWORD,
     "kind": PayloadSchemaType.KEYWORD,
     "type": PayloadSchemaType.KEYWORD,
     "block": PayloadSchemaType.KEYWORD,
@@ -34,6 +36,13 @@ _PAYLOAD_INDEXES: dict[str, PayloadSchemaType] = {
     "tags": PayloadSchemaType.KEYWORD,
     "numbering": PayloadSchemaType.KEYWORD,  # resolve a clause reference to a node
     "references[].target_name": PayloadSchemaType.KEYWORD,  # find who references a document
+    # general-purpose identity / corpus filters
+    "doc_type": PayloadSchemaType.KEYWORD,
+    "corpus": PayloadSchemaType.KEYWORD,
+    "lang": PayloadSchemaType.KEYWORD,
+    "lookup_keys": PayloadSchemaType.KEYWORD,
+    "span_id": PayloadSchemaType.KEYWORD,
+    "order": PayloadSchemaType.INTEGER,
 }
 
 
@@ -107,6 +116,43 @@ class QdrantRepository:
             return {}
         recs = self.client.retrieve(self.collection, ids=list(ids), with_payload=True)
         return {str(r.id): (r.payload or {}) for r in recs}
+
+    def list_by_doc(self, doc_id: str, limit: int = 10000) -> list[dict]:
+        """All point payloads of a document (for the document-level read API).
+
+        The point id (the node's stable id) is injected as ``id`` since it lives on the point,
+        not inside the payload.
+        """
+        flt = Filter(
+            must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]
+        )
+        points, _ = self.client.scroll(
+            self.collection,
+            scroll_filter=flt,
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+        )
+        return [{**(p.payload or {}), "id": str(p.id)} for p in points]
+
+    def doc_ids_by_lookup_key(self, key: str, limit: int = 1000) -> list[str]:
+        """Distinct doc_ids whose payload carries the given exact lookup key / external id."""
+        flt = Filter(
+            must=[FieldCondition(key="lookup_keys", match=MatchAny(any=[key]))]
+        )
+        points, _ = self.client.scroll(
+            self.collection,
+            scroll_filter=flt,
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+        )
+        seen: list[str] = []
+        for p in points:
+            did = (p.payload or {}).get("doc_id")
+            if did and did not in seen:
+                seen.append(did)
+        return seen
 
     def set_other_versions(
         self, name: str, version: str, other_versions: list[str]

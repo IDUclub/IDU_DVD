@@ -37,7 +37,7 @@ Dependencies(
     settings, qdrant, redis, jobs, registry,
     parser, structure, hierarchy, tagger, version_detector,
     reference_extractor, reference_resolver,
-    ingestion, search, documents,
+    ingestion, search, documents, library,
 )
 ```
 
@@ -54,9 +54,10 @@ Dependencies(
 | `src/dvd_service/modules/hierarchy.py` | `HierarchyBuilder` (Stage 4 and node flattening) |
 | `src/dvd_service/modules/tagging.py` | `Tagger`, `VersionDetector` |
 | `src/dvd_service/modules/windowing.py` | `make_windows`, `reconcile` |
-| `src/dvd_service/services/dvd_service.py` | `IngestionService`, `SearchService`, `DocumentsService` |
+| `src/dvd_service/services/dvd_service.py` | `IngestionService`, `SearchService`, `DocumentsService`, `LibraryService` |
+| `src/dvd_service/modules/identity.py` | document identity helpers (`normalize_key`, `make_version_id`, `make_span_id`, `build_aliases`, `build_lookup_keys`) |
 | `src/dvd_service/dto/` | `NodePayload` (`node_payload.py`) and request/response DTOs (`upload.py`, `search.py`, `document.py`, `reference.py`) |
-| `src/dvd_service/routers/` | HTTP endpoints (`documents.py`, `search.py`) |
+| `src/dvd_service/routers/` | HTTP endpoints (`documents.py`, `search.py`, `library.py`) |
 | `src/dependencies/dependencies.py` | `Dependencies` (singleton) and getters |
 | `src/dependencies/init_dependencies.py` | `init_dependencies` |
 | `src/mcp_server/server.py` | MCP server (fastmcp): getter tools |
@@ -98,6 +99,10 @@ Dependencies(
 - `DocumentsService.list_documents(...)` — per-document view, aggregated by `(name, version)` from
   Qdrant fragment payloads (node count, blocks present, tag union, upload time), filterable by
   `name`, `version`, `block`, `tags` and an `uploaded_at` range.
+- `LibraryService` — the document-level read API (consumer-facing, e.g. for the MSI-TSIM service):
+  `list_documents()` (from the Redis registry), `get_document(doc_id)` (assembled full text +
+  metadata + ordered fragments with source grounding, from Qdrant) and `find_documents(key)`
+  (resolve documents by an exact lookup key / external id value).
 
 ## MCP
 
@@ -110,6 +115,8 @@ of the same `Dependencies` container — without a separate DB/Redis initializat
 - `job_status` — a wrapper over `JobStore.get`.
 - `document_versions` — a wrapper over `DocumentRegistry.versions`.
 - `pending_references` — a wrapper over `DocumentRegistry.peek_pending`.
+- `get_document` — a wrapper over `LibraryService.get_document` (full text + metadata + fragments).
+- `find_document` — a wrapper over `LibraryService.find_documents` (resolve by lookup key / external id).
 
 The MCP server's ASGI app (`src/mcp_server/app.py`) is mounted into the main FastAPI application
 (`src/main.py`) at the `/mcp` path (streamable HTTP transport); the MCP server's `lifespan` is
@@ -124,15 +131,32 @@ vectorized. Payload contents (`NodePayload`):
 |-------|------|-------------|
 | `doc_id` | str | document upload identifier |
 | `name` | str | document designation (e.g. "SP 19.13330.2019") |
+| `title` | str | human-readable title, when distinct from `name` |
 | `version` | str | version/revision |
+| `version_id` | str | stable id of this concrete revision/source file (`<normalized name>__sha256_<12>`) |
 | `other_versions` | list[str] | other versions of this document in the store |
 | `content_hash` | str | full document-text hash |
+| `doc_type` | str | document class: `document` / `regulation` / `article` / `book` / `web` / … |
+| `corpus` | str | logical corpus/namespace the document belongs to |
+| `lang` | str | ISO-639 language code, when known |
+| `external_ids` | dict | caller-supplied ids (`{code, doi, isbn, url, …}`) — stored verbatim, not interpreted |
+| `aliases` | list[str] | human-readable designations (name + external id values) |
+| `lookup_keys` | list[str] | exact-match keys (normalized name + external id forms) for resolution |
+| `status` | str | `active` / `archived` |
+| `effective_date` | str | effective date, when supplied |
+| `supersedes` / `superseded_by` | list[str] | version-lifecycle links (reserved) |
 | `source` | str | source file name |
+| `source_uri` | str | source file path / URL |
+| `char_start` / `char_end` | int | offsets into the normalized source text — the fragment's source span |
+| `page_start` / `page_end` | int | source page(s), when the format exposes them (PDF/scan) |
+| `bbox` | list[float] | `[x0, y0, x1, y1]`, when available |
+| `span_id` | str | stable id of the source span |
 | `kind` | str | `text` or `table` |
 | `type` | str | structural element type |
 | `numbering` | str | the fragment's own number |
 | `block` | str | `main` or `amendment` |
 | `depth` | int | depth in the hierarchy |
+| `order` | int | position in document reading order (for reconstruction) |
 | `parent_id` | str | parent node identifier |
 | `parent_text` | str | parent text |
 | `child_ids` | list[str] | child node identifiers |
@@ -140,18 +164,29 @@ vectorized. Payload contents (`NodePayload`):
 | `next_id` | str | next fragment in reading order |
 | `breadcrumb` | str | path from the root (section / clause) |
 | `tags` | list[str] | tags |
+| `metadata` | dict | open extension slot for domain-specific attributes |
 | `table_html` | str | HTML representation of a table (for `kind=table`) |
 | `references` | list[DocumentRef] | outgoing links to other documents/clauses (see below) |
+| `payload_schema_version` | int | payload schema version (currently `2`) |
+| `parser_version` | str | parser version that produced the node |
+| `embedding_meta` | dict | the vectorizer that produced the stored vector (`{model, dim, metric, normalized}`) — a forward hook for multi-vector / multi-search |
 | `uploaded_at` | str | ISO 8601 UTC timestamp, set once per ingest call (same value for every node of that ingest) |
 | `text` | str | fragment text |
+
+The fields beyond the original core are general-purpose (domain-neutral): identity/lookup keys for
+cross-service joins, source grounding (`char_*` / `page_*` / `bbox` / `span_id`) so any consumer can
+cite the exact source, and the open `external_ids` / `metadata` slots that let a domain service
+(e.g. MSI-TSIM) attach its own data without DVD interpreting it. All of them have safe defaults, so
+points written before this schema keep validating.
 
 Each entry of `references` is a `DocumentRef`: `raw` (verbatim text of the reference),
 `target_name` / `target_numbering` (the referenced designation and clause), `scope`
 (`internal`/`external`), the resolved `target_doc_id` / `target_version` / `target_node_id`
 (Qdrant point id of the exact clause), and `resolved`.
 
-Payload indexes are created on `doc_id`, `name`, `version`, `kind`, `type`, `block`, `parent_id`,
-`content_hash`, `tags`, `numbering`, and `references[].target_name`.
+Payload indexes are created on `doc_id`, `name`, `version`, `version_id`, `kind`, `type`, `block`,
+`parent_id`, `content_hash`, `tags`, `numbering`, `references[].target_name`, `doc_type`, `corpus`,
+`lang`, `lookup_keys`, `span_id`, and `order`.
 
 ## Storage
 

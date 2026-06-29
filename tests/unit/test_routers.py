@@ -131,7 +131,7 @@ class TestUpload:
 
     def test_unsupported_extension_rejected(self, client):
         c, _ = client
-        resp = c.post("/documents", files={"file": ("doc.txt", b"data")})
+        resp = c.post("/documents", files={"file": ("scan.pdf", b"data")})
         assert resp.status_code == 415
 
 
