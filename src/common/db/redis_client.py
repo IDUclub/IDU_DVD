@@ -66,6 +66,8 @@ class DocumentRegistry:
       dvd:versions:{name}     -> SET of versions of this document
       dvd:names               -> SET of all document names/designations (for reference matching)
       dvd:pending_ref:{key}   -> LIST of dangling references waiting for document `key` to arrive
+      dvd:doc:{doc_id}        -> JSON document summary (for the document-level read API)
+      dvd:docs                -> SET of all doc_ids
     """
 
     def __init__(self, client: RedisClient) -> None:
@@ -130,3 +132,19 @@ class DocumentRegistry:
         pipe.delete(key)
         vals, _ = pipe.execute()
         return [json.loads(v) for v in vals]
+
+    # --- document summaries (for the document-level read API) ---
+    def register_document(self, doc_id: str, summary: dict) -> None:
+        self.r.set(f"dvd:doc:{doc_id}", json.dumps(summary, ensure_ascii=False))
+        self.r.sadd("dvd:docs", doc_id)
+
+    def get_document(self, doc_id: str) -> dict | None:
+        v = self.r.get(f"dvd:doc:{doc_id}")
+        return json.loads(v) if v else None
+
+    def doc_ids(self) -> list[str]:
+        return sorted(self.r.smembers("dvd:docs"))
+
+    def all_documents(self) -> list[dict]:
+        out = [self.get_document(d) for d in self.doc_ids()]
+        return [d for d in out if d]

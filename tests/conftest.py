@@ -185,6 +185,22 @@ class FakeQdrantRepo:
             pl["references"] = references
             self.points[nid] = (vec, pl)
 
+    def list_by_doc(self, doc_id, limit=10000):
+        out = []
+        for pid, (_vec, payload) in self.points.items():
+            if (payload or {}).get("doc_id") == doc_id:
+                out.append({**payload, "id": str(pid)})
+        return out
+
+    def doc_ids_by_lookup_key(self, key, limit=1000):
+        seen = []
+        for _pid, (_vec, payload) in self.points.items():
+            if key in (payload or {}).get("lookup_keys", []):
+                did = (payload or {}).get("doc_id")
+                if did and did not in seen:
+                    seen.append(did)
+        return seen
+
 
 # --------------------------------------------------------------------------------------
 # Fixtures

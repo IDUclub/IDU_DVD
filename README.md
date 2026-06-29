@@ -122,5 +122,6 @@ Russian documentation: [`README-ru.md`](README-ru.md) and `docs/ru/`.
 ## Status
 
 The core pipeline is implemented and verified end to end on a real regulatory document
-(SP 19.13330.2019) with a local Ollama. Only the `.docx` format is supported; support for other
-formats is planned.
+(SP 19.13330.2019) with a local Ollama. OCR-free text formats are supported out of the box
+(`.docx`, `.txt`, `.md`, `.html` — configurable via `DVD_ALLOWED_EXTENSIONS`); scanned PDF/OCR is
+planned.

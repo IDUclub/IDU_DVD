@@ -1,4 +1,12 @@
-"""API DTOs for the document listing endpoint — aggregated, per-document metadata."""
+"""API DTOs for document-level views.
+
+Two complementary surfaces:
+  * ``DocumentInfo`` / ``DocumentListResponse`` — the aggregated listing (per ``(name, version)``)
+    computed from fragment payloads;
+  * ``DocumentSummary`` / ``DocumentDetail`` / ``DocumentFragment`` / ``DocumentList`` — the
+    MSI-TSIM-facing read API: enumerate documents and fetch one by ``doc_id`` as assembled text +
+    metadata + ordered fragments (each with source grounding), instead of only semantic search.
+"""
 
 from __future__ import annotations
 
@@ -22,3 +30,53 @@ class DocumentInfo(BaseModel):
 class DocumentListResponse(BaseModel):
     count: int
     documents: list[DocumentInfo]
+
+
+class DocumentSummary(BaseModel):
+    doc_id: str
+    name: str
+    title: str | None = None
+    version: str
+    version_id: str | None = None
+    other_versions: list[str] = Field(default_factory=list)
+    doc_type: str = "document"
+    corpus: str = "default"
+    lang: str | None = None
+    status: str = "active"
+    external_ids: dict = Field(default_factory=dict)
+    source_uri: str | None = None
+    content_hash: str | None = None
+    node_count: int = 0
+    uploaded_at: str | None = None
+
+
+class DocumentFragment(BaseModel):
+    id: str
+    order: int = 0
+    kind: str = "text"
+    type: str = ""
+    numbering: str = ""
+    depth: int = 0
+    breadcrumb: str = ""
+    parent_id: str | None = None
+    prev_id: str | None = None
+    next_id: str | None = None
+    char_start: int | None = None
+    char_end: int | None = None
+    page_start: int | None = None
+    page_end: int | None = None
+    span_id: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    metadata: dict = Field(default_factory=dict)
+    text: str = ""
+    table_html: str | None = None
+
+
+class DocumentDetail(DocumentSummary):
+    text: str = ""  # full document text assembled in reading order
+    fragments: list[DocumentFragment] = Field(default_factory=list)
+
+
+class DocumentList(BaseModel):
+    count: int
+    documents: list[DocumentSummary]
