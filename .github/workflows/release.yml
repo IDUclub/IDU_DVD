@@ -1,3 +1,7 @@
+# Release workflow - on every push to master (e.g. after merging develop -> master) it bumps the
+# version + changelog from conventional commits and creates a draft pre-release.
+# The draft can later be promoted to a full release manually in the GitHub UI.
+
 name: Release
 
 on:
@@ -11,13 +15,14 @@ concurrency:
 
 jobs:
   bump:
-    name: Bump version + changelog
+    name: Bump version + generate changelog
     runs-on: ubuntu-latest
     # Don't react to commitizen's own bump commit (belt-and-suspenders: pushes
     # made with GITHUB_TOKEN don't trigger workflows anyway).
     if: ${{ !startsWith(github.event.head_commit.message, 'bump:') }}
     permissions:
-      contents: write    # commit the bump + changelog back to master
+      contents: write   # commit the bump, push the tag, and create the release
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,7 +49,7 @@ jobs:
 
       # Bump the version (pyproject + src/__version__.py) and regenerate the
       # changelog from conventional commits. Exit codes 3/21 mean "no eligible
-      # commits since the last release" — that's a no-op, not a failure.
+      # commits since the last release" - that's a no-op, not a failure.
       - name: Bump version and changelog
         id: bump
         run: |
@@ -55,12 +60,33 @@ jobs:
           if [ "$code" -eq 0 ]; then
             echo "bumped=true" >> "$GITHUB_OUTPUT"
           elif [ "$code" -eq 3 ] || [ "$code" -eq 21 ]; then
-            echo "No eligible commits to bump — skipping release."
+            echo "No eligible commits to bump - skipping release."
             echo "bumped=false" >> "$GITHUB_OUTPUT"
           else
             exit "$code"
           fi
 
+      # If a new version was created, push the commit + tag back to master,
+      # then create a draft pre-release that can be promoted later.
       - name: Push bump commit and tag
         if: steps.bump.outputs.bumped == 'true'
         run: git push --follow-tags origin HEAD:master
+
+      - name: Get newly created tag
+        if: steps.bump.outputs.bumped == 'true'
+        id: tag
+        run: |
+          TAG=$(git describe --tags --abbrev=0)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub draft pre-release
+        if: steps.bump.outputs.bumped == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Release ${{ steps.tag.outputs.tag }}
+          draft: true          # keep it a draft so you can edit before publishing
+          prerelease: true     # mark as a pre-release until promoted
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
