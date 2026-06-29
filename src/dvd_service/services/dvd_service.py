@@ -21,15 +21,25 @@ from src.common.config import Settings
 from src.common.db.qdrant_client import QdrantRepository
 from src.common.db.redis_client import DocumentRegistry, JobStore
 from src.dvd_service.dto import (
+    DocumentDetail,
+    DocumentFragment,
     DocumentInfo,
+    DocumentList,
     DocumentListResponse,
+    DocumentSummary,
     NodePayload,
     SearchHit,
     SearchRequest,
     SearchResponse,
 )
-from src.dvd_service.modules.doc_parsers import DocumentParser
+from src.dvd_service.modules.doc_parsers import PARSER_VERSION, DocumentParser
 from src.dvd_service.modules.hierarchy import HierarchyBuilder
+from src.dvd_service.modules.identity import (
+    build_aliases,
+    build_lookup_keys,
+    make_span_id,
+    make_version_id,
+)
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import Tagger, VersionDetector
@@ -110,6 +120,36 @@ class IngestionService:
         other_versions = sorted(v for v in existing if v != version)
         return version, other_versions
 
+    @staticmethod
+    def _grounding(node: dict, spans: list[dict], doc_id: str) -> dict:
+        """Source offsets/page/bbox/span_id for a node, derived from its source elements."""
+        ids = [
+            i
+            for i in node.get("src_ids", [])
+            if isinstance(i, int) and 0 <= i < len(spans)
+        ]
+        if not ids:
+            return {
+                "char_start": None,
+                "char_end": None,
+                "page_start": None,
+                "page_end": None,
+                "bbox": None,
+                "span_id": None,
+            }
+        char_start = min(spans[i]["start"] for i in ids)
+        char_end = max(spans[i]["end"] for i in ids)
+        pages = [spans[i]["page"] for i in ids if spans[i]["page"] is not None]
+        bbox = next((spans[i]["bbox"] for i in ids if spans[i]["bbox"]), None)
+        return {
+            "char_start": char_start,
+            "char_end": char_end,
+            "page_start": min(pages) if pages else None,
+            "page_end": max(pages) if pages else None,
+            "bbox": bbox,
+            "span_id": make_span_id(doc_id, char_start, char_end),
+        }
+
     def ingest(
         self,
         file_path: str,
@@ -118,6 +158,15 @@ class IngestionService:
         version_override: str | None = None,
         doc_id: str | None = None,
         job_id: str | None = None,
+        *,
+        doc_type: str | None = None,
+        corpus: str | None = None,
+        lang: str | None = None,
+        title: str | None = None,
+        source_uri: str | None = None,
+        external_ids: dict | None = None,
+        metadata: dict | None = None,
+        effective_date: str | None = None,
     ) -> dict:
         doc_id = doc_id or str(uuid.uuid4())
         if job_id:
@@ -150,22 +199,51 @@ class IngestionService:
 
             vectors = self._embed_all(client, [n["text"] for n in nodes])
 
+            # --- general-purpose identity + provenance (shared by all consumers) ---
+            _, spans = self.parser.source_index(raw)
+            external_ids = external_ids or {}
+            doc_type = doc_type or self.settings.default_doc_type
+            corpus = corpus or self.settings.default_corpus
+            lang = lang or self.settings.default_lang
+            version_id = make_version_id(name, content_hash)
+            aliases = build_aliases(name, external_ids)
+            lookup_keys = build_lookup_keys(name, external_ids)
+            embedding_meta = {
+                "model": self.settings.ollama_embed_model,
+                "dim": self.settings.vector_size,
+                "metric": "cosine",
+                "normalized": True,
+            }
+
             points = [
                 PointStruct(
                     id=n["id"],
                     vector=vec,
                     payload=NodePayload(
+                        parser_version=PARSER_VERSION,
+                        embedding_meta=embedding_meta,
                         doc_id=doc_id,
                         name=name,
+                        title=title,
                         version=version,
+                        version_id=version_id,
                         other_versions=other_versions,
                         content_hash=content_hash,
+                        doc_type=doc_type,
+                        corpus=corpus,
+                        lang=lang,
+                        external_ids=external_ids,
+                        aliases=aliases,
+                        lookup_keys=lookup_keys,
+                        effective_date=effective_date,
                         source=os.path.basename(file_path),
+                        source_uri=source_uri or os.path.basename(file_path),
                         kind=n["kind"],
                         type=n["type"],
                         numbering=n["numbering"],
                         block=n["block"],
                         depth=n["depth"],
+                        order=order,
                         parent_id=n["parent_id"],
                         parent_text=n["parent_text"],
                         child_ids=n["child_ids"],
@@ -173,13 +251,15 @@ class IngestionService:
                         next_id=n["next_id"],
                         breadcrumb=n["breadcrumb"],
                         tags=node_tags.get(n["id"], []),
+                        metadata=metadata or {},
                         table_html=n["table_html"],
                         references=node_refs.get(n["id"], []),
                         uploaded_at=uploaded_at,
                         text=n["text"],
+                        **self._grounding(n, spans, doc_id),
                     ).model_dump(),
                 )
-                for n, vec in zip(nodes, vectors)
+                for order, (n, vec) in enumerate(zip(nodes, vectors))
             ]
             count = self.qdrant.upsert(points)
 
@@ -188,6 +268,26 @@ class IngestionService:
             for v in other_versions:
                 self.qdrant.set_other_versions(name, v, sorted(all_versions - {v}))
             self.registry.register(content_hash, name, version, doc_id)
+            self.registry.register_document(
+                doc_id,
+                {
+                    "doc_id": doc_id,
+                    "name": name,
+                    "title": title,
+                    "version": version,
+                    "version_id": version_id,
+                    "other_versions": other_versions,
+                    "doc_type": doc_type,
+                    "corpus": corpus,
+                    "lang": lang,
+                    "status": "active",
+                    "external_ids": external_ids,
+                    "source_uri": source_uri or os.path.basename(file_path),
+                    "content_hash": content_hash,
+                    "node_count": count,
+                    "uploaded_at": uploaded_at,
+                },
+            )
 
             # Complete dangling references from earlier documents that pointed at this one
             if self.settings.enable_reference_linking:
@@ -239,6 +339,20 @@ class SearchService:
             must.append(FieldCondition(key="block", match=MatchValue(value=req.block)))
         if req.types:
             must.append(FieldCondition(key="type", match=MatchAny(any=req.types)))
+        if req.doc_id:
+            must.append(
+                FieldCondition(key="doc_id", match=MatchValue(value=req.doc_id))
+            )
+        if req.doc_type:
+            must.append(
+                FieldCondition(key="doc_type", match=MatchValue(value=req.doc_type))
+            )
+        if req.corpus:
+            must.append(
+                FieldCondition(key="corpus", match=MatchValue(value=req.corpus))
+            )
+        if req.lang:
+            must.append(FieldCondition(key="lang", match=MatchValue(value=req.lang)))
         if req.tags:
             must.append(FieldCondition(key="tags", match=MatchAny(any=req.tags)))
         return Filter(must=must) if must else None
@@ -289,17 +403,32 @@ class SearchService:
                     score=p.score,
                     doc_id=pl.get("doc_id", ""),
                     name=pl.get("name", ""),
+                    title=pl.get("title"),
                     version=pl.get("version", ""),
+                    version_id=pl.get("version_id"),
                     other_versions=pl.get("other_versions", []) or [],
+                    doc_type=pl.get("doc_type", "document"),
+                    corpus=pl.get("corpus", "default"),
+                    lang=pl.get("lang"),
+                    external_ids=pl.get("external_ids", {}) or {},
                     kind=pl.get("kind", "text"),
                     type=pl.get("type", ""),
                     block=pl.get("block", "main"),
                     numbering=pl.get("numbering", ""),
                     breadcrumb=pl.get("breadcrumb", ""),
+                    depth=pl.get("depth", 0) or 0,
+                    order=pl.get("order", 0) or 0,
                     parent_id=pl.get("parent_id"),
                     prev_id=pl.get("prev_id"),
                     next_id=pl.get("next_id"),
+                    source_uri=pl.get("source_uri"),
+                    char_start=pl.get("char_start"),
+                    char_end=pl.get("char_end"),
+                    page_start=pl.get("page_start"),
+                    page_end=pl.get("page_end"),
+                    span_id=pl.get("span_id"),
                     tags=pl.get("tags", []) or [],
+                    metadata=pl.get("metadata", {}) or {},
                     references=pl.get("references", []) or [],
                     text=pl.get("text", ""),
                     context=context,
@@ -401,3 +530,84 @@ class DocumentsService:
             )
         documents.sort(key=lambda d: (d.name, d.version))
         return DocumentListResponse(count=len(documents), documents=documents)
+
+
+class LibraryService:
+    """Document-level read API: enumerate documents and fetch one by ``doc_id``.
+
+    The MSI-TSIM-facing surface — returns a document as assembled text + metadata + ordered
+    fragments (each with source grounding), complementing semantic search.
+    """
+
+    def __init__(self, qdrant: QdrantRepository, registry: DocumentRegistry) -> None:
+        self.qdrant = qdrant
+        self.registry = registry
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}(qdrant={type(self.qdrant).__name__}, "
+            f"registry={type(self.registry).__name__})"
+        )
+
+    @staticmethod
+    def _summary_from_record(rec: dict) -> DocumentSummary:
+        return DocumentSummary(
+            **{k: rec[k] for k in DocumentSummary.model_fields if k in rec}
+        )
+
+    @staticmethod
+    def _summary_from_payload(pl: dict, node_count: int) -> DocumentSummary:
+        """Fallback summary for documents ingested before the registry stored a record."""
+        return DocumentSummary(
+            doc_id=pl.get("doc_id", ""),
+            name=pl.get("name", ""),
+            title=pl.get("title"),
+            version=pl.get("version", ""),
+            version_id=pl.get("version_id"),
+            other_versions=pl.get("other_versions", []) or [],
+            doc_type=pl.get("doc_type", "document"),
+            corpus=pl.get("corpus", "default"),
+            lang=pl.get("lang"),
+            status=pl.get("status", "active"),
+            external_ids=pl.get("external_ids", {}) or {},
+            source_uri=pl.get("source_uri"),
+            content_hash=pl.get("content_hash"),
+            node_count=node_count,
+            uploaded_at=pl.get("uploaded_at"),
+        )
+
+    def list_documents(self) -> DocumentList:
+        docs = [self._summary_from_record(r) for r in self.registry.all_documents()]
+        return DocumentList(count=len(docs), documents=docs)
+
+    def get_document(self, doc_id: str) -> DocumentDetail | None:
+        payloads = self.qdrant.list_by_doc(doc_id)
+        if not payloads:
+            return None
+        payloads.sort(key=lambda pl: pl.get("order", 0) or 0)
+
+        rec = self.registry.get_document(doc_id)
+        summary = (
+            self._summary_from_record({**rec, "node_count": len(payloads)})
+            if rec
+            else self._summary_from_payload(payloads[0], len(payloads))
+        )
+
+        fragments = [
+            DocumentFragment(
+                **{k: pl.get(k) for k in DocumentFragment.model_fields if k in pl}
+            )
+            for pl in payloads
+        ]
+        text = "\n".join(f.text for f in fragments if f.text)
+        return DocumentDetail(**summary.model_dump(), text=text, fragments=fragments)
+
+    def find_documents(self, key: str) -> DocumentList:
+        """Resolve documents by an exact lookup key / external id value."""
+        doc_ids = self.qdrant.doc_ids_by_lookup_key(key)
+        docs: list[DocumentSummary] = []
+        for did in doc_ids:
+            rec = self.registry.get_document(did)
+            if rec:
+                docs.append(self._summary_from_record(rec))
+        return DocumentList(count=len(docs), documents=docs)

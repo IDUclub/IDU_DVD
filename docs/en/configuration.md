@@ -6,7 +6,7 @@ pydantic-settings. Values are overridden by environment variables with the `DVD_
 `vector_size` field corresponds to `DVD_VECTOR_SIZE`).
 
 List fields (`languages`, `allowed_extensions`) are set in the environment in JSON format, e.g.
-`DVD_ALLOWED_EXTENSIONS='[".docx"]'`.
+`DVD_ALLOWED_EXTENSIONS='[".docx",".txt",".md"]'`.
 
 ## Variables
 
@@ -71,7 +71,18 @@ List fields (`languages`, `allowed_extensions`) are set in the environment in JS
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DVD_UPLOAD_DIR` | `./_uploads` | directory for temporary upload files |
-| `DVD_ALLOWED_EXTENSIONS` | `[".docx"]` | allowed extensions |
+| `DVD_ALLOWED_EXTENSIONS` | `[".docx",".txt",".md",".html",".htm"]` | allowed extensions (OCR-free formats handled by `unstructured`; scanned PDF/OCR is deferred — add `".pdf"` once the heavy backends are provisioned) |
+
+### Document identity defaults
+
+Generic fallbacks for the cross-service payload fields when the uploader omits them; domain
+consumers (e.g. MSI-TSIM) override these per upload via form fields / `external_ids`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DVD_DEFAULT_DOC_TYPE` | `document` | default `doc_type` (`document`/`regulation`/`article`/`book`/`web`/…) |
+| `DVD_DEFAULT_CORPUS` | `default` | default logical corpus/namespace |
+| `DVD_DEFAULT_LANG` | empty | default ISO-639 language code (none = unknown) |
 
 ## Important notes
 

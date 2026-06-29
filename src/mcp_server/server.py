@@ -10,7 +10,13 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
 from src.dependencies import Dependencies
-from src.dvd_service.dto import DocumentListResponse, SearchRequest, SearchResponse
+from src.dvd_service.dto import (
+    DocumentDetail,
+    DocumentList,
+    DocumentListResponse,
+    SearchRequest,
+    SearchResponse,
+)
 from src.dvd_service.modules.reference_patterns import normalize_designation
 
 mcp = FastMCP("dvd-idu")
@@ -132,3 +138,18 @@ def pending_references(name: str) -> list[dict]:
     These are completed automatically once that document is ingested.
     """
     return Dependencies.get_registry().peek_pending(normalize_designation(name))
+
+
+@mcp.tool()
+def get_document(doc_id: str) -> DocumentDetail:
+    """A document by doc_id: assembled text + metadata + ordered fragments with source grounding."""
+    detail = Dependencies.get_library().get_document(doc_id)
+    if detail is None:
+        raise ToolError(f"document not found: {doc_id}")
+    return detail
+
+
+@mcp.tool()
+def find_document(key: str) -> DocumentList:
+    """Resolve documents by an exact lookup key or external id value (e.g. a normative code)."""
+    return Dependencies.get_library().find_documents(key)
