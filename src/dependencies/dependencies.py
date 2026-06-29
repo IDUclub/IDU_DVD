@@ -20,6 +20,7 @@ from src.dvd_service.modules.tagging import Tagger, VersionDetector
 from src.dvd_service.services.dvd_service import (
     DocumentsService,
     IngestionService,
+    LibraryService,
     SearchService,
 )
 from src.system_service.controllers import SystemController
@@ -52,6 +53,7 @@ class Dependencies:
         "ingestion",
         "search",
         "documents",
+        "library",
         "system",
     )
 
@@ -73,6 +75,7 @@ class Dependencies:
     ingestion: IngestionService
     search: SearchService
     documents: DocumentsService
+    library: LibraryService
     system: SystemController
 
     def __new__(cls) -> "Dependencies":
@@ -100,6 +103,7 @@ class Dependencies:
         ingestion: IngestionService,
         search: SearchService,
         documents: DocumentsService,
+        library: LibraryService,
         system: SystemController,
     ) -> "Dependencies":
         """Set all dependencies once (called from ``init_dependencies``)."""
@@ -119,6 +123,7 @@ class Dependencies:
         self.ingestion = ingestion
         self.search = search
         self.documents = documents
+        self.library = library
         self.system = system
         return self
 
@@ -205,6 +210,10 @@ class Dependencies:
     @classmethod
     def get_documents(cls) -> DocumentsService:
         return cls.instance().documents
+
+    @classmethod
+    def get_library(cls) -> LibraryService:
+        return cls.instance().library
 
     # --- representations ---
     def as_dict(self) -> dict[str, Any]:

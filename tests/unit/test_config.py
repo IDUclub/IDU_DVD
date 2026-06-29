@@ -13,7 +13,8 @@ class TestDefaults:
         s = Settings()
         assert s.qdrant_collection == "documents"
         assert s.vector_size == 1024  # must match bge-m3
-        assert s.allowed_extensions == [".docx"]
+        assert ".docx" in s.allowed_extensions  # OCR-free formats; PDF deferred
+        assert ".pdf" not in s.allowed_extensions
         assert s.redis_job_ttl == 86400
 
     def test_module_singleton_is_settings_instance(self):

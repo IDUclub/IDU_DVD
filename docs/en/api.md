@@ -7,12 +7,15 @@ request and response models are pydantic-based and defined under `src/dvd_servic
 
 | Method and path | Purpose |
 |-----------------|---------|
-| `POST /documents` | upload a `.docx` document and queue it for processing |
+| `POST /documents` | upload a document and queue it for processing |
 | `GET /documents` | list ingested documents, aggregated by (name, version), with filters |
 | `GET /documents/{job_id}` | processing job status |
 | `POST /search/texts` | search relevant text fragments |
 | `POST /search/tables` | search relevant tables |
 | `POST /search` | search across all entities (texts and tables) |
+| `GET /library/documents` | list documents from the registry (identity/corpus metadata) |
+| `GET /library/documents/{doc_id}` | one document: assembled text + metadata + ordered fragments |
+| `GET /library/lookup` | resolve documents by an exact lookup key / external id |
 | `GET /ping` | health check |
 | `GET /` | redirect to `/docs` |
 
@@ -22,12 +25,24 @@ Upload a document. The body is a multipart form.
 
 Form fields:
 
-- `file` — a `.docx` file (required);
-- `version` — a version string to override auto-detection (optional).
+- `file` — the document file (required);
+- `version` — a version string to override auto-detection (optional);
+- `doc_type` — document class (`document` / `regulation` / `article` / `book` / `web` / …) (optional);
+- `corpus` — logical corpus/namespace the document belongs to (optional);
+- `lang` — ISO-639 language code (optional);
+- `title` — human-readable title (optional);
+- `source_uri` — source file path / URL (optional);
+- `effective_date` — effective date (optional);
+- `external_ids` — JSON object of caller-supplied ids, e.g. `{"code": "SP 19.13330.2019", "doi": "..."}` (optional);
+- `metadata` — JSON object of free-form domain attributes (optional).
+
+All optional metadata is stored on every node of the document, so consumer services can join,
+filter, and cite without re-parsing. `external_ids` / `metadata` must be JSON objects (otherwise `422`).
 
 Behaviour:
 
-- Only `.docx` is accepted. Any other format — `415`.
+- Accepted formats are governed by `DVD_ALLOWED_EXTENSIONS` (default `.docx`, `.txt`, `.md`, `.html`,
+  `.htm` — OCR-free formats handled by `unstructured`). Any other format — `415`.
 - A file whose text fully matches an already-loaded one is rejected — `400`.
 - A file that could not be parsed — `422`.
 - On success — `202` and a job identifier; processing runs in the background.
@@ -135,6 +150,10 @@ Request body (`SearchRequest`):
 | `version` | str | null | filter by version |
 | `block` | str | null | filter by `main`/`amendment` |
 | `types` | list[str] | null | filter by structural level (`chapter`/`clause`/`subclause`/...; any of) |
+| `doc_id` | str | null | filter by a specific document |
+| `doc_type` | str | null | filter by document type (`regulation`/`article`/…) |
+| `corpus` | str | null | filter by logical corpus/namespace |
+| `lang` | str | null | filter by language |
 | `tags` | list[str] | null | filter by tags (any of) |
 | `limit` | int | 10 | number of results |
 | `context_height` | int | 0 | how many fragments before and after to attach |
@@ -184,6 +203,11 @@ Response (`SearchResponse`):
 Results are sorted by descending relevance (`score` — cosine similarity). The `context` field is
 filled only when `context_height > 0`. For tables, `table_html` is filled.
 
+Besides the fields shown above, each hit also carries the general-purpose identity and grounding
+fields from the payload: `title`, `version_id`, `doc_type`, `corpus`, `lang`, `external_ids`,
+`order`, `metadata`, and the source span (`source_uri`, `char_start`, `char_end`, `page_start`,
+`page_end`, `span_id`) — so a caller can cite the exact source location of every hit.
+
 Examples:
 
 ```
@@ -206,3 +230,83 @@ curl -X POST http://localhost:8000/search/texts \
 
 Typing Cyrillic into `-d` from a Windows console may be mangled by the encoding; for manual checks
 it is more convenient to use Swagger (`/docs`).
+
+## Library (document read API)
+
+A consumer-facing read API (e.g. for the MSI-TSIM service) that complements semantic search with
+direct, per-document access: enumerate documents and fetch one by `doc_id` as assembled text +
+metadata + ordered fragments, each with its source grounding.
+
+### GET /library/documents
+
+All documents registered in the store, from the Redis registry. Response (`DocumentList`):
+
+```json
+{
+  "count": 1,
+  "documents": [
+    {
+      "doc_id": "9f63...",
+      "name": "СП 19.13330.2019",
+      "title": null,
+      "version": "СП 19.13330.2019 (с Изменением N 1)",
+      "version_id": "сп_19_13330_2019__sha256_ab12cd34ef56",
+      "other_versions": [],
+      "doc_type": "regulation",
+      "corpus": "norms",
+      "lang": "ru",
+      "status": "active",
+      "external_ids": { "code": "СП 19.13330.2019" },
+      "source_uri": "СП_19.13330.2019_с_И1.docx",
+      "content_hash": "…",
+      "node_count": 266,
+      "uploaded_at": "2026-06-28T12:34:56.789012+00:00"
+    }
+  ]
+}
+```
+
+### GET /library/lookup
+
+Resolve documents by an exact lookup key / external id value (e.g. a normative code). Query
+parameter `key` (required). Returns the same `DocumentList` shape.
+
+```
+curl "http://localhost:8000/library/lookup?key=СП%2019.13330.2019"
+```
+
+### GET /library/documents/{doc_id}
+
+One document as `DocumentDetail` — the `DocumentSummary` fields above plus the assembled full `text`
+(fragments joined in reading order) and the `fragments` array. If the document is not found — `404`.
+
+Each fragment carries `id`, `order`, `kind`, `type`, `numbering`, `depth`, `breadcrumb`,
+`parent_id`/`prev_id`/`next_id`, the source grounding (`char_start`, `char_end`, `page_start`,
+`page_end`, `span_id`), `tags`, `metadata`, `text` and `table_html`.
+
+```json
+{
+  "doc_id": "9f63...",
+  "name": "СП 19.13330.2019",
+  "version": "СП 19.13330.2019 (с Изменением N 1)",
+  "node_count": 266,
+  "text": "… full document text in reading order …",
+  "fragments": [
+    {
+      "id": "a1b2...",
+      "order": 0,
+      "kind": "text",
+      "type": "title_page",
+      "numbering": "",
+      "char_start": 0,
+      "char_end": 38,
+      "span_id": "9f63...:span:0:38",
+      "text": "СП 19.13330.2019 …"
+    }
+  ]
+}
+```
+
+```
+curl "http://localhost:8000/library/documents/9f63..."
+```

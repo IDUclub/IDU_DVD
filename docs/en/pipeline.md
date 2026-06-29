@@ -89,8 +89,16 @@ well as `kind` (`text`/`table`) and `table_html`.
 - An `uploaded_at` timestamp (current UTC time, ISO 8601) is set once for the whole batch and
   stamped onto every node of this ingest call — used by document listing (`GET /documents`) to
   show and filter by upload time.
+- General-purpose identity is derived once: `version_id` (`<normalized name>__sha256_<12>`),
+  `aliases`, `lookup_keys` (from `name` + any `external_ids`), plus the caller-supplied
+  `doc_type` / `corpus` / `lang` / `title` / `metadata` (defaults from `Settings`).
+- Source grounding is attached per node from the source elements it was built from (tracked as
+  `src_ids` through Stages 1–4): `char_start` / `char_end` (offsets into the normalized source text
+  from `DocumentParser.source_index`), `page_start` / `page_end` and `bbox` (when the format exposes
+  them), and a derived `span_id`. `embedding_meta` records the vectorizer used.
 - Node texts are vectorized by the embedding model (in batches).
-- Points are ingested into Qdrant; the hash and version are registered in Redis.
+- Points are ingested into Qdrant; the hash and version are registered in Redis, and a per-document
+  summary is stored (`dvd:doc:{doc_id}`) for the document read API.
 
 ## Stage 5.5. Reference extraction and linking
 

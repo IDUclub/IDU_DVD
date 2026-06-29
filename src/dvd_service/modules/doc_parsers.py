@@ -17,6 +17,8 @@ from src.dvd_service.modules.windowing import make_windows, reconcile
 
 log = structlog.get_logger(__name__)
 
+PARSER_VERSION = "dvd-parser-2"  # 2: adds source grounding (offsets/page/bbox/span_id)
+
 SKIP_CATEGORIES = {"Header", "Footer", "PageBreak"}
 
 LIST_MARKER = re.compile(
@@ -160,16 +162,69 @@ class DocumentParser:
             text = (el.text or "").strip()
             if not text or el.category in SKIP_CATEGORIES:
                 continue
+            md = getattr(el, "metadata", None)
             html = None
-            if el.category == "Table" and getattr(el, "metadata", None) is not None:
-                html = getattr(el.metadata, "text_as_html", None)
-            raw.append({"text": text, "category": el.category, "html": html})
+            if el.category == "Table" and md is not None:
+                html = getattr(md, "text_as_html", None)
+            raw.append(
+                {
+                    "text": text,
+                    "category": el.category,
+                    "html": html,
+                    "page": self._element_page(md),
+                    "bbox": self._element_bbox(md),
+                }
+            )
         return raw
+
+    @staticmethod
+    def _element_page(md) -> int | None:
+        """Page number from unstructured metadata (PDF/scan); None for paginationless docx."""
+        return getattr(md, "page_number", None) if md is not None else None
+
+    @staticmethod
+    def _element_bbox(md) -> list[float] | None:
+        """Axis-aligned [x0, y0, x1, y1] from element coordinates, when the format exposes them."""
+        coords = getattr(md, "coordinates", None) if md is not None else None
+        points = getattr(coords, "points", None) if coords is not None else None
+        if not points:
+            return None
+        try:
+            xs = [float(p[0]) for p in points]
+            ys = [float(p[1]) for p in points]
+            return [min(xs), min(ys), max(xs), max(ys)]
+        except (TypeError, ValueError, IndexError):
+            return None
 
     @staticmethod
     def content_hash(raw: list[dict]) -> str:
         joined = "\n".join(b["text"] for b in raw)
         return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def source_index(raw: list[dict]) -> tuple[str, list[dict]]:
+        """Normalized source text + per-element spans, format-agnostic source grounding.
+
+        The text is the same ``"\\n"``-join used by ``content_hash``, so each raw element maps to
+        a stable ``[start, end)`` char range. Nodes later inherit offsets from the source
+        elements they were built from (``src_ids``).
+        """
+        spans: list[dict] = []
+        parts: list[str] = []
+        pos = 0
+        for b in raw:
+            t = b["text"]
+            spans.append(
+                {
+                    "start": pos,
+                    "end": pos + len(t),
+                    "page": b.get("page"),
+                    "bbox": b.get("bbox"),
+                }
+            )
+            parts.append(t)
+            pos += len(t) + 1  # +1 for the "\n" join separator
+        return "\n".join(parts), spans
 
     # --- heuristics and splitting ---
     def _heuristic_boundary(self, prev, cur, prev_cat=None, cur_cat=None) -> str:
@@ -217,7 +272,7 @@ class DocumentParser:
 
     def _split_into_segments(self, raw):
         blocks = []
-        for b in raw:
+        for ri, b in enumerate(raw):
             if b["category"] == "Table":
                 segs = [b["text"]]
             else:
@@ -226,6 +281,7 @@ class DocumentParser:
                 blocks.append(
                     {
                         "id": len(blocks),
+                        "src": ri,  # index of the source raw element (for char offsets)
                         "text": seg,
                         "category": b["category"],
                         "html": b.get("html") if b["category"] == "Table" else None,
@@ -269,15 +325,19 @@ class DocumentParser:
     def _merge_blocks(blocks, boundaries):
         parts, cur = [], None
         for i, b in enumerate(blocks):
+            src = b.get("src")
             if boundaries[i] == "continuation" and cur is not None:
                 cur["text"] += " " + b["text"]
                 cur["source_ids"].append(b["id"])
+                if src is not None:
+                    cur["src_ids"].append(src)
             else:
                 if cur is not None:
                     parts.append(cur)
                 cur = {
                     "text": b["text"],
                     "source_ids": [b["id"]],
+                    "src_ids": [src] if src is not None else [],
                     "category": b["category"],
                     "html": b.get("html"),
                 }
@@ -318,12 +378,14 @@ class DocumentParser:
             if join:
                 cur["text"] += " " + p["text"]
                 cur["source_ids"] += list(p.get("source_ids", [p["id"]]))
+                cur["src_ids"] += list(p.get("src_ids", []))
             else:
                 if cur is not None:
                     merged.append(cur)
                 cur = {
                     "text": p["text"],
                     "source_ids": list(p.get("source_ids", [p["id"]])),
+                    "src_ids": list(p.get("src_ids", [])),
                     "category": p.get("category", ""),
                     "html": p.get("html"),
                 }

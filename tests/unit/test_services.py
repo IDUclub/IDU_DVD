@@ -23,6 +23,7 @@ from src.dvd_service.modules.tagging import Tagger, VersionDetector
 from src.dvd_service.services.dvd_service import (
     DocumentsService,
     IngestionService,
+    LibraryService,
     SearchService,
 )
 
@@ -49,10 +50,12 @@ def wired(settings, fake_ollama, fake_qdrant, fake_redis, monkeypatch):
     )
     search = SearchService(fake_qdrant, settings)
     documents = DocumentsService(fake_qdrant)
+    library = LibraryService(fake_qdrant, registry)
     return SimpleNS(
         ingestion=ingestion,
         search=search,
         documents=documents,
+        library=library,
         jobs=jobs,
         registry=registry,
         qdrant=fake_qdrant,
@@ -242,3 +245,69 @@ class TestDocumentsService:
 
     def test_repr(self, wired):
         assert repr(wired.documents).startswith("DocumentsService(")
+
+
+class TestGeneralPurposeFields:
+    def test_payload_carries_identity_grounding_and_provenance(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest(
+            "doc.docx",
+            sample_raw,
+            h,
+            doc_type="regulation",
+            corpus="norms",
+            lang="ru",
+            external_ids={"code": "СП 99.99999.2099"},
+        )
+        # inspect any stored point payload
+        _vec, payload = next(iter(wired.qdrant.points.values()))
+        assert payload["doc_id"] == res["doc_id"]
+        assert payload["doc_type"] == "regulation" and payload["corpus"] == "norms"
+        assert payload["lang"] == "ru"
+        assert payload["external_ids"] == {"code": "СП 99.99999.2099"}
+        assert payload["version_id"] and payload["version_id"].endswith(h[:12])
+        assert "сп_99_99999_2099" in payload["lookup_keys"]
+        assert payload["parser_version"] and payload["embedding_meta"]["dim"] == 1024
+        # a content-bearing fragment is grounded back to the source text
+        grounded = [
+            p
+            for _v, p in wired.qdrant.points.values()
+            if p.get("char_start") is not None
+        ]
+        assert grounded, "at least one fragment must carry source offsets"
+        g = grounded[0]
+        assert g["char_end"] > g["char_start"] and g["span_id"]
+
+
+class TestLibrary:
+    def test_list_and_get_document(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest(
+            "doc.docx", sample_raw, h, external_ids={"code": "X-1"}
+        )
+
+        listing = wired.library.list_documents()
+        assert listing.count == 1
+        assert listing.documents[0].doc_id == res["doc_id"]
+
+        detail = wired.library.get_document(res["doc_id"])
+        assert detail is not None
+        assert detail.text  # assembled in reading order
+        assert detail.fragments and detail.fragments[0].id
+        # fragments are returned in document reading order
+        orders = [f.order for f in detail.fragments]
+        assert orders == sorted(orders)
+
+    def test_get_missing_document_returns_none(self, wired):
+        assert wired.library.get_document("nope") is None
+
+    def test_find_by_external_id(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest(
+            "doc.docx", sample_raw, h, external_ids={"code": "X-1"}
+        )
+        found = wired.library.find_documents("X-1")
+        assert found.count == 1 and found.documents[0].doc_id == res["doc_id"]
+
+    def test_repr(self, wired):
+        assert repr(wired.library).startswith("LibraryService(")
