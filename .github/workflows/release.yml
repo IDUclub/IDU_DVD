@@ -48,13 +48,25 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      # Bump the version (pyproject + src/__version__.py) and regenerate the
-      # changelog from conventional commits, then refresh uv.lock so it stays in
-      # sync with the new [project].version - the Dockerfile installs from the
-      # lock with `uv sync --frozen`, so a stale lock would break the image.
-      # --version-files-only updates the files without committing, so we can fold
-      # the refreshed lock into the same bump commit + tag. Exit codes 3/21 mean
-      # "no eligible commits since the last release" - that's a no-op.
+      # Commitizen needs a baseline tag to compute the version and the incremental changelog
+      # (`update_changelog_on_bump = true`). On a brand-new repo with no v* tag yet, seed one at the
+      # previous release state (the merge's first parent) so the first run doesn't fail with
+      # "No tag found to do an incremental changelog". Later runs already have real tags and skip this.
+      - name: Seed baseline tag if none exists
+        run: |
+          if [ -z "$(git tag -l 'v*')" ]; then
+            base="$(uv run cz version --project)"
+            # annotated so `git push --follow-tags` actually pushes it
+            git tag -a "v${base}" -m "baseline v${base}" HEAD^ 2>/dev/null \
+              || git tag -a "v${base}" -m "baseline v${base}" HEAD
+            echo "Seeded baseline tag v${base}"
+          fi
+
+      # Bump the version (pyproject + src/__version__.py) and the changelog, then refresh uv.lock so it
+      # stays in sync with the new [project].version - the Dockerfile installs from the lock with
+      # `uv sync --frozen`, so a stale lock would break the image. --version-files-only writes the
+      # files without committing, so we fold the refreshed lock into one bump commit + tag.
+      # Exit codes 3/21 mean "no eligible commits since the last release" - that's a no-op.
       - name: Bump version, changelog and lock
         id: bump
         run: |
@@ -74,7 +86,7 @@ jobs:
           uv lock                                  # sync uv.lock to the bumped version
           git add -A
           git commit -m "bump: version ${old} -> ${new}"
-          git tag "v${new}"
+          git tag -a "v${new}" -m "release v${new}"   # annotated so --follow-tags pushes it
           echo "bumped=true" >> "$GITHUB_OUTPUT"
           echo "tag=v${new}" >> "$GITHUB_OUTPUT"
 
