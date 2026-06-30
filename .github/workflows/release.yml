@@ -1,5 +1,6 @@
 # Release workflow - on every push to master (e.g. after merging develop -> master) it bumps the
-# version + changelog from conventional commits, refreshes uv.lock, and creates a draft pre-release.
+# version + changelog from conventional commits, refreshes uv.lock, tags the version, and creates a
+# draft pre-release. The bump is synced back to develop via a separate master -> develop PR.
 # The draft can later be promoted to a full release manually in the GitHub UI.
 
 name: Release
