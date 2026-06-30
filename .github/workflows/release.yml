@@ -90,11 +90,14 @@ jobs:
           echo "bumped=true" >> "$GITHUB_OUTPUT"
           echo "tag=v${new}" >> "$GITHUB_OUTPUT"
 
-      # If a new version was created, push the commit + tag back to master,
-      # then create a draft pre-release that can be promoted later.
+      # If a new version was created, push the commit + the NEW release tag back to master, then
+      # create a draft pre-release that can be promoted later. Push the branch and the new tag in
+      # one atomic push (not --follow-tags): the seeded baseline tag must NOT be pushed - it points
+      # at an old commit and trips GitHub's workflow-file protection on the GITHUB_TOKEN, and it is
+      # only needed locally in this runner for the changelog.
       - name: Push bump commit and tag
         if: steps.bump.outputs.bumped == 'true'
-        run: git push --follow-tags origin HEAD:master
+        run: git push origin HEAD:master "refs/tags/${{ steps.bump.outputs.tag }}"
 
       - name: Create GitHub draft pre-release
         if: steps.bump.outputs.bumped == 'true'
