@@ -1,14 +1,15 @@
 # Auto-fill the title and body of pull requests targeting develop:
 #   * master -> develop (release sync-back): title = the current version, body = commit list;
 #   * feature/fix -> develop:                title = the source branch name, body = commit list.
-# The body is the PR's commit subjects as a dash list. Runs only for same-repo branches (fork PRs
-# get a read-only token and are skipped).
+# The body is the PR's commit subjects as a dash list. Re-runs on every new push to the PR
+# (synchronize), so the title/body always reflect the current commits - note this overwrites manual
+# edits to the title/body. Runs only for same-repo branches (fork PRs get a read-only token).
 
 name: PR autofill
 
 on:
   pull_request:
-    types: [opened, reopened]
+    types: [opened, reopened, synchronize]
     branches: [develop]
 
 permissions:
