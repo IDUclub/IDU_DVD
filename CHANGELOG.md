@@ -1,3 +1,9 @@
+## v0.4.1 (2026-06-30)
+
+### Fix
+
+- **release**: - fixed release action
+
 ## v0.4.0 (2026-06-28)
 
 ### Feat
