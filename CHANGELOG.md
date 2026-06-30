@@ -1,3 +1,9 @@
+## v0.4.2 (2026-06-30)
+
+### Fix
+
+- **release**: - fixed release action on master
+
 ## v0.4.1 (2026-06-30)
 
 ### Fix
