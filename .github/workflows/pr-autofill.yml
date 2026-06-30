@@ -1,0 +1,49 @@
+# Auto-fill the title and body of pull requests targeting develop:
+#   * master -> develop (release sync-back): title = the current version, body = commit list;
+#   * feature/fix -> develop:                title = the source branch name, body = commit list.
+# The body is the PR's commit subjects as a dash list. Re-runs on every new push to the PR
+# (synchronize), so the title/body always reflect the current commits - note this overwrites manual
+# edits to the title/body. Runs only for same-repo branches (fork PRs get a read-only token).
+
+name: PR autofill
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    branches: [develop]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  autofill:
+    name: Fill PR title and body
+    runs-on: ubuntu-latest
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so we can list the PR's commits
+
+      - name: Compute and apply title + body
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Body: the PR's commit subjects as a dash list (oldest first).
+          body="$(git log --reverse --format='- %s' "${BASE_SHA}..${HEAD_SHA}")"
+          [ -z "$body" ] && body="- (no commits)"
+
+          # Title: version for the release sync-back from master, branch name otherwise.
+          if [ "$HEAD_REF" = "master" ]; then
+            title="$(git show "${HEAD_SHA}:pyproject.toml" | sed -nE 's/^version = "(.*)"/\1/p' | head -1)"
+            [ -z "$title" ] && title="master -> develop"
+          else
+            title="$HEAD_REF"
+          fi
+
+          gh pr edit "$PR" --title "$title" --body "$body"

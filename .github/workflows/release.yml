@@ -1,3 +1,8 @@
+# Release workflow - on every push to master (e.g. after merging develop -> master) it bumps the
+# version + changelog from conventional commits, refreshes uv.lock, tags the version, and creates a
+# draft pre-release. The bump is synced back to develop via a separate master -> develop PR.
+# The draft can later be promoted to a full release manually in the GitHub UI.
+
 name: Release
 
 on:
@@ -11,13 +16,14 @@ concurrency:
 
 jobs:
   bump:
-    name: Bump version + changelog
+    name: Bump version + generate changelog
     runs-on: ubuntu-latest
     # Don't react to commitizen's own bump commit (belt-and-suspenders: pushes
     # made with GITHUB_TOKEN don't trigger workflows anyway).
     if: ${{ !startsWith(github.event.head_commit.message, 'bump:') }}
     permissions:
-      contents: write    # commit the bump + changelog back to master
+      contents: write   # commit the bump, push the tag, and create the release
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,24 +49,49 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       # Bump the version (pyproject + src/__version__.py) and regenerate the
-      # changelog from conventional commits. Exit codes 3/21 mean "no eligible
-      # commits since the last release" — that's a no-op, not a failure.
-      - name: Bump version and changelog
+      # changelog from conventional commits, then refresh uv.lock so it stays in
+      # sync with the new [project].version - the Dockerfile installs from the
+      # lock with `uv sync --frozen`, so a stale lock would break the image.
+      # --version-files-only updates the files without committing, so we can fold
+      # the refreshed lock into the same bump commit + tag. Exit codes 3/21 mean
+      # "no eligible commits since the last release" - that's a no-op.
+      - name: Bump version, changelog and lock
         id: bump
         run: |
+          old="$(uv run cz version --project)"
           set +e
-          uv run cz bump --yes --changelog
+          uv run cz bump --yes --changelog --version-files-only
           code=$?
           set -e
-          if [ "$code" -eq 0 ]; then
-            echo "bumped=true" >> "$GITHUB_OUTPUT"
-          elif [ "$code" -eq 3 ] || [ "$code" -eq 21 ]; then
-            echo "No eligible commits to bump — skipping release."
+          if [ "$code" -eq 3 ] || [ "$code" -eq 21 ]; then
+            echo "No eligible commits to bump - skipping release."
             echo "bumped=false" >> "$GITHUB_OUTPUT"
-          else
+            exit 0
+          elif [ "$code" -ne 0 ]; then
             exit "$code"
           fi
+          new="$(uv run cz version --project)"
+          uv lock                                  # sync uv.lock to the bumped version
+          git add -A
+          git commit -m "bump: version ${old} -> ${new}"
+          git tag "v${new}"
+          echo "bumped=true" >> "$GITHUB_OUTPUT"
+          echo "tag=v${new}" >> "$GITHUB_OUTPUT"
 
+      # If a new version was created, push the commit + tag back to master,
+      # then create a draft pre-release that can be promoted later.
       - name: Push bump commit and tag
         if: steps.bump.outputs.bumped == 'true'
         run: git push --follow-tags origin HEAD:master
+
+      - name: Create GitHub draft pre-release
+        if: steps.bump.outputs.bumped == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.bump.outputs.tag }}
+          name: Release ${{ steps.bump.outputs.tag }}
+          draft: true          # keep it a draft so you can edit before publishing
+          prerelease: true     # mark as a pre-release until promoted
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
