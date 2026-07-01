@@ -13,6 +13,7 @@ request and response models are pydantic-based and defined under `src/dvd_servic
 | `POST /search/texts` | search relevant text fragments |
 | `POST /search/tables` | search relevant tables |
 | `POST /search` | search across all entities (texts and tables) |
+| `GET /tags` | all unique tags present in the document collection |
 | `GET /library/documents` | list documents from the registry (identity/corpus metadata) |
 | `GET /library/documents/{doc_id}` | one document: assembled text + metadata + ordered fragments |
 | `GET /library/lookup` | resolve documents by an exact lookup key / external id |
@@ -147,6 +148,7 @@ Request body (`SearchRequest`):
 |-------|------|---------|-------------|
 | `query` | str | — | the search query |
 | `name` | str | null | filter by document name |
+| `document_names` | list[str] | null | filter results to documents matching any of these names |
 | `version` | str | null | filter by version |
 | `block` | str | null | filter by `main`/`amendment` |
 | `types` | list[str] | null | filter by structural level (`chapter`/`clause`/`subclause`/...; any of) |
@@ -230,6 +232,27 @@ curl -X POST http://localhost:8000/search/texts \
 
 Typing Cyrillic into `-d` from a Windows console may be mangled by the encoding; for manual checks
 it is more convenient to use Swagger (`/docs`).
+
+## GET /tags
+
+All unique tags present in the document collection, sorted alphabetically. Built by scrolling
+Qdrant payloads and unioning the `tags` field across every fragment — same source as the `tags`
+values returned by `GET /documents` and search hits.
+
+Response (`TagsResponse`):
+
+```json
+{
+  "count": 2,
+  "tags": ["зонирование", "противопожарные расстояния"]
+}
+```
+
+Example:
+
+```
+curl "http://localhost:8000/tags"
+```
 
 ## Library (document read API)
 
