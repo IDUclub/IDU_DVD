@@ -10,7 +10,12 @@ import pytest
 
 import src.mcp_server.server as server
 from src.dependencies import Dependencies
-from src.dvd_service.dto import DocumentListResponse, SearchHit, SearchResponse
+from src.dvd_service.dto import (
+    DocumentListResponse,
+    SearchHit,
+    SearchResponse,
+    TagsResponse,
+)
 
 
 class FakeSearch:
@@ -64,6 +69,12 @@ def _set_singleton_with_documents(fake_documents) -> None:
     Dependencies().set(**fields)
 
 
+def _set_singleton_with_tags(fake_tags) -> None:
+    fields = {n: object() for n in Dependencies._FIELDS}
+    fields["tags"] = fake_tags
+    Dependencies().set(**fields)
+
+
 class TestSearchHelper:
     def test_forwards_kind_and_query(self):
         fake = FakeSearch()
@@ -79,6 +90,11 @@ class TestSearchHelper:
             server._search("q", None, None, None, 5, 0, None)
 
 
+class FakeTags:
+    def get_tags(self):
+        return TagsResponse(count=1, tags=["alpha"])
+
+
 class TestListDocumentsTool:
     def test_forwards_filters(self):
         fake = FakeDocuments()
@@ -86,6 +102,14 @@ class TestListDocumentsTool:
         resp = server.list_documents(name="СП 1", block="amendment")
         assert resp.count == 0
         assert fake.calls[-1] == ("СП 1", None, "amendment", None, None, None)
+
+
+class TestGetTagsTool:
+    def test_returns_tags(self):
+        fake = FakeTags()
+        _set_singleton_with_tags(fake)
+        resp = server.get_tags()
+        assert resp.count == 1 and resp.tags == ["alpha"]
 
 
 class TestServerObject:
@@ -101,5 +125,6 @@ class TestServerObject:
             "document_versions",
             "pending_references",
             "list_documents",
+            "get_tags",
         ):
             assert hasattr(server, tool)

@@ -22,6 +22,7 @@ from src.dvd_service.services.dvd_service import (
     IngestionService,
     LibraryService,
     SearchService,
+    TagsService,
 )
 from src.system_service.controllers import SystemController
 
@@ -54,6 +55,7 @@ class Dependencies:
         "search",
         "documents",
         "library",
+        "tags",
         "system",
     )
 
@@ -76,6 +78,7 @@ class Dependencies:
     search: SearchService
     documents: DocumentsService
     library: LibraryService
+    tags: TagsService
     system: SystemController
 
     def __new__(cls) -> "Dependencies":
@@ -104,6 +107,7 @@ class Dependencies:
         search: SearchService,
         documents: DocumentsService,
         library: LibraryService,
+        tags: TagsService,
         system: SystemController,
     ) -> "Dependencies":
         """Set all dependencies once (called from ``init_dependencies``)."""
@@ -124,6 +128,7 @@ class Dependencies:
         self.search = search
         self.documents = documents
         self.library = library
+        self.tags = tags
         self.system = system
         return self
 
@@ -214,6 +219,10 @@ class Dependencies:
     @classmethod
     def get_library(cls) -> LibraryService:
         return cls.instance().library
+
+    @classmethod
+    def get_tags(cls) -> TagsService:
+        return cls.instance().tags
 
     # --- representations ---
     def as_dict(self) -> dict[str, Any]:
