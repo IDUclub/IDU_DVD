@@ -13,7 +13,12 @@ from fastapi.testclient import TestClient
 
 from src.common.config import Settings
 from src.dependencies import Dependencies
-from src.dvd_service.dto import DocumentListResponse, SearchHit, SearchResponse
+from src.dvd_service.dto import (
+    DocumentListResponse,
+    SearchHit,
+    SearchResponse,
+    TagsResponse,
+)
 from src.dvd_service.routers import documents_router, search_router
 
 
@@ -88,6 +93,15 @@ class FakeDocuments:
         return DocumentListResponse(count=0, documents=[])
 
 
+class FakeTags:
+    def __init__(self):
+        self.calls = []
+
+    def get_tags(self):
+        self.calls.append(())
+        return TagsResponse(count=2, tags=["fire", "water"])
+
+
 @pytest.fixture
 def client(tmp_path):
     fakes = {
@@ -98,6 +112,7 @@ def client(tmp_path):
         "ingestion": FakeIngestion(),
         "search": FakeSearch(),
         "documents": FakeDocuments(),
+        "tags": FakeTags(),
     }
     app = FastAPI()
     app.include_router(documents_router)
@@ -109,6 +124,7 @@ def client(tmp_path):
     app.dependency_overrides[Dependencies.get_ingestion] = lambda: fakes["ingestion"]
     app.dependency_overrides[Dependencies.get_search] = lambda: fakes["search"]
     app.dependency_overrides[Dependencies.get_documents] = lambda: fakes["documents"]
+    app.dependency_overrides[Dependencies.get_tags] = lambda: fakes["tags"]
     with TestClient(app) as c:
         yield c, fakes
 
@@ -172,6 +188,20 @@ class TestJobStatus:
     def test_missing_returns_404(self, client):
         c, _ = client
         assert c.get("/documents/nope").status_code == 404
+
+
+class TestGetTags:
+    def test_returns_tags(self, client):
+        c, _ = client
+        resp = c.get("/tags")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["count"] == 2 and body["tags"] == ["fire", "water"]
+
+    def test_calls_service_once(self, client):
+        c, fakes = client
+        c.get("/tags")
+        assert len(fakes["tags"].calls) == 1
 
 
 class TestSearchEndpoints:

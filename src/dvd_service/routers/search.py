@@ -6,8 +6,8 @@ from fastapi import APIRouter, Depends
 from fastapi.concurrency import run_in_threadpool
 
 from src.dependencies import Dependencies
-from src.dvd_service.dto import SearchRequest, SearchResponse
-from src.dvd_service.services.dvd_service import SearchService
+from src.dvd_service.dto import SearchRequest, SearchResponse, TagsResponse
+from src.dvd_service.services.dvd_service import SearchService, TagsService
 
 router = APIRouter(tags=["search"])
 
@@ -34,3 +34,9 @@ async def search_all(
 ):
     """Search across all entities (texts and tables)."""
     return await run_in_threadpool(search.search, req, None)
+
+
+@router.get("/tags", response_model=TagsResponse)
+async def get_tags(tags_svc: TagsService = Depends(Dependencies.get_tags)):
+    """All unique tags present in the document collection, sorted alphabetically."""
+    return await run_in_threadpool(tags_svc.get_tags)

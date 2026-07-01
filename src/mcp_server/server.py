@@ -16,6 +16,7 @@ from src.dvd_service.dto import (
     DocumentListResponse,
     SearchRequest,
     SearchResponse,
+    TagsResponse,
 )
 from src.dvd_service.modules.reference_patterns import normalize_designation
 
@@ -32,6 +33,7 @@ def _search(
     kind: str | None,
     block: str | None = None,
     types: list[str] | None = None,
+    document_names: list[str] | None = None,
 ) -> SearchResponse:
     req = SearchRequest(
         query=query,
@@ -40,6 +42,7 @@ def _search(
         block=block,
         types=types,
         tags=tags,
+        document_names=document_names,
         limit=limit,
         context_height=context_height,
     )
@@ -50,6 +53,7 @@ def _search(
 def search_texts(
     query: str,
     name: str | None = None,
+    document_names: list[str] | None = None,
     version: str | None = None,
     block: str | None = None,
     types: list[str] | None = None,
@@ -60,10 +64,19 @@ def search_texts(
     """Vector search over text fragments (kind=text) with filters and context height.
 
     ``block`` filters by main/amendment, ``types`` by structural level (chapter/clause/
-    subclause/...).
+    subclause/...). ``document_names`` restricts results to any of the given document names.
     """
     return _search(
-        query, name, version, tags, limit, context_height, "text", block, types
+        query,
+        name,
+        version,
+        tags,
+        limit,
+        context_height,
+        "text",
+        block,
+        types,
+        document_names,
     )
 
 
@@ -71,6 +84,7 @@ def search_texts(
 def search_tables(
     query: str,
     name: str | None = None,
+    document_names: list[str] | None = None,
     version: str | None = None,
     block: str | None = None,
     types: list[str] | None = None,
@@ -78,9 +92,21 @@ def search_tables(
     limit: int = 10,
     context_height: int = 0,
 ) -> SearchResponse:
-    """Vector search over tables (kind=table) with filters and context height."""
+    """Vector search over tables (kind=table) with filters and context height.
+
+    ``document_names`` restricts results to any of the given document names.
+    """
     return _search(
-        query, name, version, tags, limit, context_height, "table", block, types
+        query,
+        name,
+        version,
+        tags,
+        limit,
+        context_height,
+        "table",
+        block,
+        types,
+        document_names,
     )
 
 
@@ -88,6 +114,7 @@ def search_tables(
 def search_all(
     query: str,
     name: str | None = None,
+    document_names: list[str] | None = None,
     version: str | None = None,
     block: str | None = None,
     types: list[str] | None = None,
@@ -95,9 +122,21 @@ def search_all(
     limit: int = 10,
     context_height: int = 0,
 ) -> SearchResponse:
-    """Vector search across all entities (texts and tables) with filters and context height."""
+    """Vector search across all entities (texts and tables) with filters and context height.
+
+    ``document_names`` restricts results to any of the given document names.
+    """
     return _search(
-        query, name, version, tags, limit, context_height, None, block, types
+        query,
+        name,
+        version,
+        tags,
+        limit,
+        context_height,
+        None,
+        block,
+        types,
+        document_names,
     )
 
 
@@ -153,3 +192,9 @@ def get_document(doc_id: str) -> DocumentDetail:
 def find_document(key: str) -> DocumentList:
     """Resolve documents by an exact lookup key or external id value (e.g. a normative code)."""
     return Dependencies.get_library().find_documents(key)
+
+
+@mcp.tool()
+def get_tags() -> TagsResponse:
+    """All unique tags present in the document collection, sorted alphabetically."""
+    return Dependencies.get_tags().get_tags()

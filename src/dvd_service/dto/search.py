@@ -9,7 +9,8 @@ from src.dvd_service.dto.reference import DocumentRef
 
 class SearchRequest(BaseModel):
     query: str
-    name: str | None = None  # filter by document name
+    name: str | None = None  # filter by a single document name
+    document_names: list[str] | None = None  # filter by any of these document names
     version: str | None = None  # filter by version
     block: str | None = None  # filter by main/amendment
     types: list[str] | None = (
@@ -71,3 +72,8 @@ class SearchHit(BaseModel):
 class SearchResponse(BaseModel):
     count: int
     hits: list[SearchHit]
+
+
+class TagsResponse(BaseModel):
+    count: int
+    tags: list[str]

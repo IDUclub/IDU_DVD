@@ -333,3 +333,32 @@ Each fragment carries `id`, `order`, `kind`, `type`, `numbering`, `depth`, `brea
 ```
 curl "http://localhost:8000/library/documents/9f63..."
 ```
+
+## MCP tools
+
+The MCP server at `/mcp` (mounted via `FastMCP`) exposes the same capabilities as the REST API.
+All tools are synchronous and share the same `Dependencies` singleton as the HTTP routers.
+
+| Tool | Description |
+|------|-------------|
+| `search_texts` | vector search over text fragments; accepts the same filters as `POST /search/texts`, including `document_names` |
+| `search_tables` | vector search over table fragments; same filters as `POST /search/tables` |
+| `search_all` | vector search across all entities; same filters as `POST /search` |
+| `list_documents` | list documents aggregated by `(name, version)` with optional filters |
+| `job_status` | background job status by `job_id` |
+| `document_versions` | list of versions already loaded for a document `name` |
+| `pending_references` | dangling references awaiting a not-yet-loaded document `name` |
+| `get_document` | a document by `doc_id`: assembled text + metadata + ordered fragments |
+| `find_document` | resolve documents by lookup key / external id (`key`) |
+| `get_tags` | all unique tags in the collection, sorted alphabetically — no parameters |
+
+### get_tags
+
+No parameters. Returns `TagsResponse`:
+
+```json
+{
+  "count": 2,
+  "tags": ["зонирование", "противопожарные расстояния"]
+}
+```
