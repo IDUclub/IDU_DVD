@@ -18,6 +18,7 @@ from src.dvd_service.dto.search import (  # noqa: F401
     SearchHit,
     SearchRequest,
     SearchResponse,
+    TagsResponse,
 )
 from src.dvd_service.dto.upload import JobStatusDTO, UploadResponse  # noqa: F401
 
@@ -35,4 +36,5 @@ __all__ = [
     "SearchRequest",
     "SearchHit",
     "SearchResponse",
+    "TagsResponse",
 ]

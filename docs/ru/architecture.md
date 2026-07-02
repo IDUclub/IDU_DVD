@@ -96,8 +96,9 @@ Dependencies(
 
 - `IngestionService.ingest(file_path, raw, content_hash, ...)` — полный конвейер обработки и
   загрузка узлов в Qdrant.
-- `SearchService.search(request, kind)` — векторизация запроса, фильтрация (`name`, `version`,
-  `block`, `types`, `tags`), поиск и сборка контекста по соседним фрагментам.
+- `SearchService.search(request, kind)` — векторизация запроса, фильтрация (`name`,
+  `document_names`, `version`, `block`, `types`, `tags`), поиск и сборка контекста по соседним
+  фрагментам.
 - `DocumentsService.list_documents(...)` — представление по документам, агрегированное по
   `(name, version)` из payload фрагментов Qdrant (число узлов, присутствующие блоки, объединение
   тегов, время загрузки), с фильтрами по `name`, `version`, `block`, `tags` и диапазону
@@ -113,13 +114,15 @@ Dependencies(
 поверх того же контейнера `Dependencies` — без отдельной инициализации БД/Redis:
 
 - `search_texts`, `search_tables`, `search_all` — обёртки над `SearchService.search` (фильтры:
-  `name`, `version`, `block`, `types`, `tags`).
+  `name`, `document_names`, `version`, `block`, `types`, `tags`).
 - `list_documents` — обёртка над `DocumentsService.list_documents`.
 - `job_status` — обёртка над `JobStore.get`.
 - `document_versions` — обёртка над `DocumentRegistry.versions`.
 - `pending_references` — обёртка над `DocumentRegistry.peek_pending`.
 - `get_document` — обёртка над `LibraryService.get_document` (полный текст + метадата + фрагменты).
 - `find_document` — обёртка над `LibraryService.find_documents` (резолв по ключу/внешнему id).
+- `get_tags` — обёртка над `TagsService.get_tags` (без параметров; все уникальные теги коллекции,
+  отсортированные по алфавиту).
 
 ASGI-приложение MCP-сервера (`src/mcp_server/app.py`) монтируется в основное FastAPI-приложение
 (`src/main.py`) на пути `/mcp` (streamable HTTP transport); `lifespan` MCP-сервера объединён с
