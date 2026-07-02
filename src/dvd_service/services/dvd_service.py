@@ -31,6 +31,7 @@ from src.dvd_service.dto import (
     SearchHit,
     SearchRequest,
     SearchResponse,
+    TagsResponse,
 )
 from src.dvd_service.modules.doc_parsers import PARSER_VERSION, DocumentParser
 from src.dvd_service.modules.hierarchy import HierarchyBuilder
@@ -355,6 +356,10 @@ class SearchService:
             must.append(FieldCondition(key="lang", match=MatchValue(value=req.lang)))
         if req.tags:
             must.append(FieldCondition(key="tags", match=MatchAny(any=req.tags)))
+        if req.document_names:
+            must.append(
+                FieldCondition(key="name", match=MatchAny(any=req.document_names))
+            )
         return Filter(must=must) if must else None
 
     def _expand_context(self, payload: dict, height: int) -> str:
@@ -611,3 +616,22 @@ class LibraryService:
             if rec:
                 docs.append(self._summary_from_record(rec))
         return DocumentList(count=len(docs), documents=docs)
+
+
+class TagsService:
+    """Aggregate all unique tags from the fragment collection."""
+
+    def __init__(self, qdrant: QdrantRepository) -> None:
+        self.qdrant = qdrant
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(qdrant={type(self.qdrant).__name__})"
+
+    def get_tags(self) -> TagsResponse:
+        """Return a sorted list of all distinct tag values across the collection."""
+        payloads = self.qdrant.scroll_payloads()
+        tags: set[str] = set()
+        for pl in payloads:
+            tags.update(pl.get("tags", []) or [])
+        sorted_tags = sorted(tags)
+        return TagsResponse(count=len(sorted_tags), tags=sorted_tags)

@@ -25,6 +25,7 @@ from src.dvd_service.services.dvd_service import (
     IngestionService,
     LibraryService,
     SearchService,
+    TagsService,
 )
 
 
@@ -51,11 +52,13 @@ def wired(settings, fake_ollama, fake_qdrant, fake_redis, monkeypatch):
     search = SearchService(fake_qdrant, settings)
     documents = DocumentsService(fake_qdrant)
     library = LibraryService(fake_qdrant, registry)
+    tags = TagsService(fake_qdrant)
     return SimpleNS(
         ingestion=ingestion,
         search=search,
         documents=documents,
         library=library,
+        tags=tags,
         jobs=jobs,
         registry=registry,
         qdrant=fake_qdrant,
@@ -207,6 +210,13 @@ class TestSearch:
         flt = wired.search._build_filter(req, kind=None)
         assert flt is not None and len(flt.must) == 2  # block + types
 
+    def test_build_filter_document_names(self, wired):
+        req = SearchRequest(query="q", document_names=["СП 1", "СП 2"])
+        flt = wired.search._build_filter(req, kind=None)
+        assert flt is not None and len(flt.must) == 1
+        cond = flt.must[0]
+        assert cond.key == "name" and set(cond.match.any) == {"СП 1", "СП 2"}
+
     def test_build_filter_none_when_no_constraints(self, wired):
         assert wired.search._build_filter(SearchRequest(query="q"), kind=None) is None
 
@@ -311,3 +321,27 @@ class TestLibrary:
 
     def test_repr(self, wired):
         assert repr(wired.library).startswith("LibraryService(")
+
+
+class TestTagsService:
+    def test_returns_sorted_unique_tags(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest("doc.docx", sample_raw, h)
+        resp = wired.tags.get_tags()
+        assert isinstance(resp.tags, list)
+        assert resp.count == len(resp.tags)
+        assert resp.tags == sorted(resp.tags)
+
+    def test_deduplicates_tags_across_fragments(self, wired, fake_qdrant):
+        fake_qdrant.points["a"] = ([0.1], {"tags": ["fire", "water"], "text": "x"})
+        fake_qdrant.points["b"] = ([0.2], {"tags": ["fire", "earth"], "text": "y"})
+        resp = wired.tags.get_tags()
+        assert set(resp.tags) == {"earth", "fire", "water"}
+        assert resp.count == 3
+
+    def test_empty_store_returns_no_tags(self, wired):
+        resp = wired.tags.get_tags()
+        assert resp.count == 0 and resp.tags == []
+
+    def test_repr(self, wired):
+        assert repr(wired.tags).startswith("TagsService(")

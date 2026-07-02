@@ -94,8 +94,8 @@ Dependencies(
 
 - `IngestionService.ingest(file_path, raw, content_hash, ...)` — the full processing pipeline and
   ingestion of nodes into Qdrant.
-- `SearchService.search(request, kind)` — query vectorization, filtering (`name`, `version`,
-  `block`, `types`, `tags`), search and context assembly from neighbouring fragments.
+- `SearchService.search(request, kind)` — query vectorization, filtering (`name`, `document_names`,
+  `version`, `block`, `types`, `tags`), search and context assembly from neighbouring fragments.
 - `DocumentsService.list_documents(...)` — per-document view, aggregated by `(name, version)` from
   Qdrant fragment payloads (node count, blocks present, tag union, upload time), filterable by
   `name`, `version`, `block`, `tags` and an `uploaded_at` range.
@@ -110,13 +110,15 @@ Dependencies(
 of the same `Dependencies` container — without a separate DB/Redis initialization:
 
 - `search_texts`, `search_tables`, `search_all` — wrappers over `SearchService.search` (filters:
-  `name`, `version`, `block`, `types`, `tags`).
+  `name`, `document_names`, `version`, `block`, `types`, `tags`).
 - `list_documents` — a wrapper over `DocumentsService.list_documents`.
 - `job_status` — a wrapper over `JobStore.get`.
 - `document_versions` — a wrapper over `DocumentRegistry.versions`.
 - `pending_references` — a wrapper over `DocumentRegistry.peek_pending`.
 - `get_document` — a wrapper over `LibraryService.get_document` (full text + metadata + fragments).
 - `find_document` — a wrapper over `LibraryService.find_documents` (resolve by lookup key / external id).
+- `get_tags` — a wrapper over `TagsService.get_tags` (no params; all unique tags across the
+  collection, sorted alphabetically).
 
 The MCP server's ASGI app (`src/mcp_server/app.py`) is mounted into the main FastAPI application
 (`src/main.py`) at the `/mcp` path (streamable HTTP transport); the MCP server's `lifespan` is
