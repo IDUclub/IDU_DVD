@@ -33,7 +33,9 @@ def _settings_with_dim(base_settings):
 
 
 class TestTagsServiceIntegration:
-    def test_get_tags_aggregates_across_collection(self, temp_collection, require_qdrant):
+    def test_get_tags_aggregates_across_collection(
+        self, temp_collection, require_qdrant
+    ):
         s = _settings_with_dim(temp_collection)
         repo = QdrantRepository(s)
         repo.ensure_collection()
@@ -43,17 +45,32 @@ class TestTagsServiceIntegration:
                 PointStruct(
                     id=str(uuid.uuid4()),
                     vector=_vec(0),
-                    payload={"name": "СП 1", "version": "v1", "tags": ["пожарная безопасность", "строительство"], "text": "а"},
+                    payload={
+                        "name": "СП 1",
+                        "version": "v1",
+                        "tags": ["пожарная безопасность", "строительство"],
+                        "text": "а",
+                    },
                 ),
                 PointStruct(
                     id=str(uuid.uuid4()),
                     vector=_vec(1),
-                    payload={"name": "СП 1", "version": "v1", "tags": ["строительство", "нагрузки"], "text": "б"},
+                    payload={
+                        "name": "СП 1",
+                        "version": "v1",
+                        "tags": ["строительство", "нагрузки"],
+                        "text": "б",
+                    },
                 ),
                 PointStruct(
                     id=str(uuid.uuid4()),
                     vector=_vec(2),
-                    payload={"name": "СП 2", "version": "v1", "tags": ["нагрузки", "грунты"], "text": "в"},
+                    payload={
+                        "name": "СП 2",
+                        "version": "v1",
+                        "tags": ["нагрузки", "грунты"],
+                        "text": "в",
+                    },
                 ),
             ]
         )
@@ -62,9 +79,13 @@ class TestTagsServiceIntegration:
         resp = svc.get_tags()
 
         assert resp.count == 4
-        assert resp.tags == sorted({"пожарная безопасность", "строительство", "нагрузки", "грунты"})
+        assert resp.tags == sorted(
+            {"пожарная безопасность", "строительство", "нагрузки", "грунты"}
+        )
 
-    def test_get_tags_empty_collection_returns_no_tags(self, temp_collection, require_qdrant):
+    def test_get_tags_empty_collection_returns_no_tags(
+        self, temp_collection, require_qdrant
+    ):
         s = _settings_with_dim(temp_collection)
         repo = QdrantRepository(s)
         repo.ensure_collection()
@@ -74,7 +95,9 @@ class TestTagsServiceIntegration:
 
         assert resp.count == 0 and resp.tags == []
 
-    def test_get_tags_handles_fragments_with_no_tags_field(self, temp_collection, require_qdrant):
+    def test_get_tags_handles_fragments_with_no_tags_field(
+        self, temp_collection, require_qdrant
+    ):
         s = _settings_with_dim(temp_collection)
         repo = QdrantRepository(s)
         repo.ensure_collection()
@@ -89,7 +112,12 @@ class TestTagsServiceIntegration:
                 PointStruct(
                     id=str(uuid.uuid4()),
                     vector=_vec(1),
-                    payload={"name": "СП 1", "version": "v1", "tags": ["климат"], "text": "с тегом"},
+                    payload={
+                        "name": "СП 1",
+                        "version": "v1",
+                        "tags": ["климат"],
+                        "text": "с тегом",
+                    },
                 ),
             ]
         )
@@ -101,7 +129,9 @@ class TestTagsServiceIntegration:
 
 
 class TestDocumentNamesFilterIntegration:
-    def test_document_names_filter_restricts_search_results(self, temp_collection, require_qdrant):
+    def test_document_names_filter_restricts_search_results(
+        self, temp_collection, require_qdrant
+    ):
         s = _settings_with_dim(temp_collection)
         repo = QdrantRepository(s)
         repo.ensure_collection()
@@ -115,24 +145,34 @@ class TestDocumentNamesFilterIntegration:
                 PointStruct(
                     id=id_sp1,
                     vector=query_vec,
-                    payload={"name": "СП 1", "version": "v1", "kind": "text", "text": "первый"},
+                    payload={
+                        "name": "СП 1",
+                        "version": "v1",
+                        "kind": "text",
+                        "text": "первый",
+                    },
                 ),
                 PointStruct(
                     id=id_sp2,
                     vector=_vec(1),
-                    payload={"name": "СП 2", "version": "v1", "kind": "text", "text": "второй"},
+                    payload={
+                        "name": "СП 2",
+                        "version": "v1",
+                        "kind": "text",
+                        "text": "второй",
+                    },
                 ),
             ]
         )
 
-        flt = Filter(
-            must=[FieldCondition(key="name", match=MatchAny(any=["СП 1"]))]
-        )
+        flt = Filter(must=[FieldCondition(key="name", match=MatchAny(any=["СП 1"]))])
         hits = repo.search(query_vec, flt, limit=10)
 
         assert len(hits) == 1 and str(hits[0].id) == id_sp1
 
-    def test_document_names_filter_with_multiple_names(self, temp_collection, require_qdrant):
+    def test_document_names_filter_with_multiple_names(
+        self, temp_collection, require_qdrant
+    ):
         s = _settings_with_dim(temp_collection)
         repo = QdrantRepository(s)
         repo.ensure_collection()
@@ -143,9 +183,15 @@ class TestDocumentNamesFilterIntegration:
 
         repo.upsert(
             [
-                PointStruct(id=id_sp1, vector=_vec(0), payload={"name": "СП 1", "text": "a"}),
-                PointStruct(id=id_sp2, vector=_vec(1), payload={"name": "СП 2", "text": "б"}),
-                PointStruct(id=id_sp3, vector=_vec(2), payload={"name": "СП 3", "text": "в"}),
+                PointStruct(
+                    id=id_sp1, vector=_vec(0), payload={"name": "СП 1", "text": "a"}
+                ),
+                PointStruct(
+                    id=id_sp2, vector=_vec(1), payload={"name": "СП 2", "text": "б"}
+                ),
+                PointStruct(
+                    id=id_sp3, vector=_vec(2), payload={"name": "СП 3", "text": "в"}
+                ),
             ]
         )
 
