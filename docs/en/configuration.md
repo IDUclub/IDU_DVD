@@ -38,6 +38,25 @@ List fields (`languages`, `allowed_extensions`) are set in the environment in JS
 | `DVD_REDIS_URL` | `redis://localhost:6379/0` | Redis address |
 | `DVD_REDIS_JOB_TTL` | `86400` | job status TTL, seconds |
 
+### Kafka (document-processed events)
+
+Publishing is optional and stays off until `DVD_KAFKA_BOOTSTRAP_SERVERS` is set. When a document is
+fully processed and stored, a `DocumentProcessed` event (`document_name`) is appended to a durable
+Redis outbox and delivered to the `document.events` topic by a background publisher (the
+[otteroad](https://github.com/IDUclub/otteroad) framework: AVRO + Schema Registry). Events that keep
+failing are moved to a dead-letter list instead of blocking the queue.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DVD_KAFKA_BOOTSTRAP_SERVERS` | empty | Kafka brokers (`host:port[,host:port]`); empty = publishing disabled |
+| `DVD_KAFKA_SCHEMA_REGISTRY_URL` | `http://localhost:8081` | AVRO Schema Registry address |
+| `DVD_KAFKA_CLIENT_ID` | `idu-dvd` | client id shown in broker logs |
+| `DVD_KAFKA_OUTBOX_KEY` | `dvd:kafka:outbox` | Redis list with pending events |
+| `DVD_KAFKA_DEAD_LETTER_KEY` | `dvd:kafka:outbox:dead` | Redis list for events that exhausted retries |
+| `DVD_KAFKA_POLL_INTERVAL` | `1.0` | seconds between outbox checks when idle |
+| `DVD_KAFKA_RETRY_INTERVAL` | `5.0` | seconds to wait after a failed send |
+| `DVD_KAFKA_MAX_ATTEMPTS` | `10` | send attempts before an event is dead-lettered |
+
 ### Search
 
 | Variable | Default | Description |
@@ -95,6 +114,14 @@ consumers (e.g. MSI-TSIM) override these per upload via form fields / `external_
   local run, override them in `.env`.
 
 ## Model recommendations
+
+### CPU-only (CI, no GPU)
+
+- LLM: `qwen2.5:3b-instruct` — small enough for CPU inference; the integration suite passes with
+  it (structured output is grammar-constrained by Ollama, so JSON validity does not depend on model
+  size). Used by the Integration workflow in CI. Expect markup quality below the 7B+ models — fine
+  for tests, not recommended for real corpora.
+- Embeddings: `bge-m3` (CPU-friendly as is).
 
 ### Local run on a modest GPU
 
