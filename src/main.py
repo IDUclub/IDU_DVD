@@ -14,11 +14,16 @@ from src.system_service.routers import system_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_dependencies()
+    deps = init_dependencies()
     log = structlog.get_logger()
     log.info(f"Started server version {VERSION}")
-    async with mcp_app.lifespan(app):
-        yield
+    # Kafka outbox publisher (no-op when DVD_KAFKA_BOOTSTRAP_SERVERS is not set)
+    await deps.publisher.start()
+    try:
+        async with mcp_app.lifespan(app):
+            yield
+    finally:
+        await deps.publisher.stop()
 
 
 app = FastAPI(

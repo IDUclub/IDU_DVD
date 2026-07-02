@@ -17,6 +17,8 @@ from qdrant_client.models import (
 )
 
 from src.api_clients import OllamaClient
+from src.broker.events import DocumentProcessed
+from src.broker.outbox import EventOutbox
 from src.common.config import Settings
 from src.common.db.qdrant_client import QdrantRepository
 from src.common.db.redis_client import DocumentRegistry, JobStore
@@ -62,6 +64,7 @@ class IngestionService:
         registry: DocumentRegistry,
         jobs: JobStore,
         settings: Settings,
+        outbox: EventOutbox | None = None,
     ) -> None:
         self.parser = parser
         self.structure = structure
@@ -74,6 +77,7 @@ class IngestionService:
         self.registry = registry
         self.jobs = jobs
         self.settings = settings
+        self.outbox = outbox
 
     def __repr__(self) -> str:
         return (
@@ -87,7 +91,8 @@ class IngestionService:
             f"reference_resolver={type(self.reference_resolver).__name__}, "
             f"qdrant={type(self.qdrant).__name__}, "
             f"registry={type(self.registry).__name__}, "
-            f"jobs={type(self.jobs).__name__})"
+            f"jobs={type(self.jobs).__name__}, "
+            f"outbox={type(self.outbox).__name__ if self.outbox else None})"
         )
 
     @staticmethod
@@ -293,6 +298,11 @@ class IngestionService:
             # Complete dangling references from earlier documents that pointed at this one
             if self.settings.enable_reference_linking:
                 self.reference_resolver.backfill(name, doc_id, version, numbering_index)
+
+            # Announce the fully processed document to downstream services (Kafka,
+            # via the durable outbox — the publisher delivers it asynchronously).
+            if self.outbox is not None:
+                self.outbox.enqueue(DocumentProcessed(document_name=name))
 
             result = {
                 "doc_id": doc_id,

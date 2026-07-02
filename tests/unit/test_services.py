@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 
 import src.dvd_service.services.dvd_service as svc
+from src.broker.outbox import EventOutbox
 from src.common.db.redis_client import DocumentRegistry, JobStore, RedisClient
 from src.dvd_service.dto import SearchRequest
 from src.dvd_service.modules.doc_parsers import DocumentParser
@@ -36,6 +37,7 @@ def wired(settings, fake_ollama, fake_qdrant, fake_redis, monkeypatch):
     redis_client = RedisClient(settings)
     jobs = JobStore(redis_client)
     registry = DocumentRegistry(redis_client)
+    outbox = EventOutbox(redis_client, settings)
     ingestion = IngestionService(
         DocumentParser(settings),
         StructureTagger(settings),
@@ -48,6 +50,7 @@ def wired(settings, fake_ollama, fake_qdrant, fake_redis, monkeypatch):
         registry,
         jobs,
         settings,
+        outbox=outbox,
     )
     search = SearchService(fake_qdrant, settings)
     documents = DocumentsService(fake_qdrant)
@@ -61,6 +64,7 @@ def wired(settings, fake_ollama, fake_qdrant, fake_redis, monkeypatch):
         tags=tags,
         jobs=jobs,
         registry=registry,
+        outbox=outbox,
         qdrant=fake_qdrant,
         ollama=fake_ollama,
     )
@@ -82,6 +86,32 @@ class TestIngest:
         assert wired.jobs.get("j1")["status"] == "done"
         assert wired.registry.has_hash(h)
         assert res["version"] in wired.registry.versions(res["name"])
+
+    def test_document_processed_event_enqueued(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest("doc.docx", sample_raw, h)
+
+        entry = wired.outbox.peek()
+        assert entry["model"] == "DocumentProcessed"
+        assert entry["payload"] == {"document_name": res["name"]}
+        assert wired.outbox.size() == 1
+
+    def test_no_event_without_outbox(self, wired, sample_raw):
+        wired.ingestion.outbox = None
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest("doc.docx", sample_raw, h)
+        assert wired.outbox.size() == 0
+
+    def test_failed_ingest_enqueues_no_event(self, wired, sample_raw, monkeypatch):
+        monkeypatch.setattr(
+            wired.qdrant,
+            "upsert",
+            lambda points: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        h = DocumentParser.content_hash(sample_raw)
+        with pytest.raises(RuntimeError):
+            wired.ingestion.ingest("doc.docx", sample_raw, h)
+        assert wired.outbox.size() == 0
 
     def test_version_override_wins(self, wired, sample_raw):
         h = DocumentParser.content_hash(sample_raw)
