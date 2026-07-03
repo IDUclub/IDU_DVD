@@ -1,0 +1,43 @@
+# Disposable single-node Kafka (KRaft) + Schema Registry for the broker integration
+# test (test_broker_integration.py) — used by the Integration workflow in CI and
+# available for local runs:
+#
+#   docker compose -f tests/integration/kafka-compose.yaml -p kafka-itest up -d
+#   DVD_KAFKA_BOOTSTRAP_SERVERS=localhost:9092 \
+#   DVD_KAFKA_SCHEMA_REGISTRY_URL=http://localhost:8081 \
+#   uv run pytest tests/integration/test_broker_integration.py -m integration
+#   docker compose -f tests/integration/kafka-compose.yaml -p kafka-itest down -v
+#
+# Deliberately NOT part of the main docker-compose.yaml: the app itself needs no
+# broker to run, and the real deployments use the shared IDU cluster.
+
+services:
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: "MkU3OEVhNTcwNTJENDM2Qk"
+    ports:
+      - "9092:9092"
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.6.1
+    depends_on:
+      - kafka
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:29092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    ports:
+      - "8081:8081"

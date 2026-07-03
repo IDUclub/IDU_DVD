@@ -13,8 +13,9 @@ model and the embedding model are called through Ollama.
 |-----------|------|
 | FastAPI | HTTP API, background tasks |
 | Qdrant | vector database; a single collection, payload indexes |
-| Redis | parsing job statuses, document and version registry |
+| Redis | parsing job statuses, document and version registry, Kafka event outbox |
 | Ollama | LLM (markup, merge, tags, version) and embeddings |
+| Kafka (otteroad) | optional publishing of `DocumentProcessed` events for downstream services |
 | unstructured (python-docx) | text and table extraction from `.docx` |
 | pydantic-settings | configuration via environment variables |
 | structlog | structured logging |
@@ -37,6 +38,7 @@ Dependencies(
     settings, qdrant, redis, jobs, registry,
     parser, structure, hierarchy, tagger, version_detector,
     reference_extractor, reference_resolver,
+    outbox, publisher,
     ingestion, search, documents, library,
 )
 ```
@@ -49,6 +51,7 @@ Dependencies(
 | `src/api_clients/ollama_client.py` | `OllamaClient`, `OllamaError` |
 | `src/common/db/qdrant_client.py` | `QdrantRepository` |
 | `src/common/db/redis_client.py` | `RedisClient`, `JobStore`, `DocumentRegistry` |
+| `src/broker/` | Kafka integration: `DocumentProcessed` (`events.py`), `EventOutbox` (`outbox.py`), `KafkaPublisher` (`publisher.py`) |
 | `src/dvd_service/modules/doc_parsers.py` | `DocumentParser` (Stages 1 and 1.5) |
 | `src/dvd_service/modules/structure.py` | `StructureTagger` (Stages 2, 3, 3.5) |
 | `src/dvd_service/modules/hierarchy.py` | `HierarchyBuilder` (Stage 4 and node flattening) |
@@ -77,6 +80,12 @@ Dependencies(
 - `RedisClient` — Redis connection. `JobStore` — job statuses (`dvd:job:{id}`).
   `DocumentRegistry` — document hashes for deduplication (`dvd:hash:{hash}`) and version sets per
   document name (`dvd:versions:{name}`).
+- `EventOutbox` / `KafkaPublisher` (`src/broker/`) — optional Kafka publishing via the
+  [otteroad](https://github.com/IDUclub/otteroad) framework (AVRO + Schema Registry). When a
+  document is fully processed, `IngestionService` appends a `DocumentProcessed` event
+  (`document_name`, topic `document.events`) to a Redis outbox list; an async publisher started in
+  `lifespan` drains it into Kafka with retries (at-least-once), dead-lettering events that exhaust
+  their attempts. Disabled entirely unless `DVD_KAFKA_BOOTSTRAP_SERVERS` is set.
 
 ### Pipeline
 

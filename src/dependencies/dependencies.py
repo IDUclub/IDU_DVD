@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.broker.outbox import EventOutbox
+from src.broker.publisher import KafkaPublisher
 from src.common.config import Settings
 from src.common.db.qdrant_client import QdrantRepository
 from src.common.db.redis_client import DocumentRegistry, JobStore, RedisClient
@@ -51,6 +53,8 @@ class Dependencies:
         "version_detector",
         "reference_extractor",
         "reference_resolver",
+        "outbox",
+        "publisher",
         "ingestion",
         "search",
         "documents",
@@ -74,6 +78,8 @@ class Dependencies:
     version_detector: VersionDetector
     reference_extractor: ReferenceExtractor
     reference_resolver: ReferenceResolver
+    outbox: EventOutbox
+    publisher: KafkaPublisher
     ingestion: IngestionService
     search: SearchService
     documents: DocumentsService
@@ -103,6 +109,8 @@ class Dependencies:
         version_detector: VersionDetector,
         reference_extractor: ReferenceExtractor,
         reference_resolver: ReferenceResolver,
+        outbox: EventOutbox,
+        publisher: KafkaPublisher,
         ingestion: IngestionService,
         search: SearchService,
         documents: DocumentsService,
@@ -124,6 +132,8 @@ class Dependencies:
         self.version_detector = version_detector
         self.reference_extractor = reference_extractor
         self.reference_resolver = reference_resolver
+        self.outbox = outbox
+        self.publisher = publisher
         self.ingestion = ingestion
         self.search = search
         self.documents = documents
@@ -203,6 +213,14 @@ class Dependencies:
     @classmethod
     def get_reference_resolver(cls) -> ReferenceResolver:
         return cls.instance().reference_resolver
+
+    @classmethod
+    def get_outbox(cls) -> EventOutbox:
+        return cls.instance().outbox
+
+    @classmethod
+    def get_publisher(cls) -> KafkaPublisher:
+        return cls.instance().publisher
 
     @classmethod
     def get_ingestion(cls) -> IngestionService:

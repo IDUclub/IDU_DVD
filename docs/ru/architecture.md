@@ -13,8 +13,9 @@
 |-----------|------|
 | FastAPI | HTTP API, фоновые задачи |
 | Qdrant | векторная база; одна коллекция, payload-индексы |
-| Redis | статусы задач парсинга, реестр документов и версий |
+| Redis | статусы задач парсинга, реестр документов и версий, outbox Kafka-событий |
 | Ollama | LLM (разметка, мердж, теги, версия) и эмбеддинги |
+| Kafka (otteroad) | опциональная публикация событий `DocumentProcessed` для смежных сервисов |
 | unstructured (python-docx) | извлечение текста и таблиц из `.docx` |
 | pydantic-settings | конфигурация через переменные окружения |
 | structlog | структурированное логирование |
@@ -38,6 +39,7 @@ Dependencies(
     settings, qdrant, redis, jobs, registry,
     parser, structure, hierarchy, tagger, version_detector,
     reference_extractor, reference_resolver,
+    outbox, publisher,
     ingestion, search, documents, library,
 )
 ```
@@ -50,6 +52,7 @@ Dependencies(
 | `src/api_clients/ollama_client.py` | `OllamaClient`, `OllamaError` |
 | `src/common/db/qdrant_client.py` | `QdrantRepository` |
 | `src/common/db/redis_client.py` | `RedisClient`, `JobStore`, `DocumentRegistry` |
+| `src/broker/` | интеграция с Kafka: `DocumentProcessed` (`events.py`), `EventOutbox` (`outbox.py`), `KafkaPublisher` (`publisher.py`) |
 | `src/dvd_service/modules/doc_parsers.py` | `DocumentParser` (этапы 1 и 1.5) |
 | `src/dvd_service/modules/structure.py` | `StructureTagger` (этапы 2, 3, 3.5) |
 | `src/dvd_service/modules/hierarchy.py` | `HierarchyBuilder` (этап 4 и развёртка узлов) |
@@ -79,6 +82,13 @@ Dependencies(
 - `RedisClient` — подключение к Redis. `JobStore` — статусы задач (`dvd:job:{id}`).
   `DocumentRegistry` — хэши документов для дедупликации (`dvd:hash:{hash}`) и множества версий
   по имени документа (`dvd:versions:{name}`).
+- `EventOutbox` / `KafkaPublisher` (`src/broker/`) — опциональная публикация в Kafka через
+  фреймворк [otteroad](https://github.com/IDUclub/otteroad) (AVRO + Schema Registry). Когда
+  документ полностью обработан, `IngestionService` добавляет событие `DocumentProcessed`
+  (`document_name`, топик `document.events`) в outbox-список в Redis; асинхронный публикатор,
+  запускаемый в `lifespan`, доотправляет его в Kafka с ретраями (at-least-once), перенося
+  исчерпавшие попытки события в dead-letter-список. Полностью выключено, пока не задан
+  `DVD_KAFKA_BOOTSTRAP_SERVERS`.
 
 ### Конвейер
 
