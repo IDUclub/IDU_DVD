@@ -202,6 +202,15 @@ class DocumentParser:
         return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
     @staticmethod
+    def block_hashes(raw: list[dict]) -> list[str]:
+        """Whitespace-insensitive per-block content hashes — the deterministic source-level
+        fingerprint used to diff document editions (delta updates)."""
+        return [
+            hashlib.sha256(" ".join(b["text"].split()).encode("utf-8")).hexdigest()
+            for b in raw
+        ]
+
+    @staticmethod
     def source_index(raw: list[dict]) -> tuple[str, list[dict]]:
         """Normalized source text + per-element spans, format-agnostic source grounding.
 

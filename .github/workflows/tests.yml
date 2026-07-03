@@ -10,8 +10,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run unit tests
+        run: uv run pytest tests/unit
+
+  integration:
+    name: Integration
+    uses: ./.github/workflows/integration.yml
+
   format:
     name: Format (isort + black)
+    needs: [unit-tests, integration]
     runs-on: ubuntu-latest
     permissions:
       contents: write        # push auto-format fixes back to the PR branch
@@ -73,27 +101,3 @@ jobs:
       - name: Re-check formatting
         if: steps.check.outputs.clean == 'false'
         run: uv run pre-commit run --all-files --show-diff-on-failure
-
-  unit-tests:
-    name: Unit tests
-    needs: format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.11
-
-      - name: Install dependencies
-        run: uv sync
-
-      - name: Run unit tests
-        run: uv run pytest tests/unit

@@ -1,0 +1,140 @@
+name: Integration tests
+
+# Integration tests against disposable infrastructure — nightly, on demand, and
+# on PRs to develop via the Tests workflow (workflow_call, after unit tests and
+# formatting pass):
+#   - kafka-integration: the broker outbox->Kafka->consumer round-trip
+#     (Kafka KRaft + Schema Registry via tests/integration/kafka-compose.yaml).
+#   - pipeline-integration: the real ingestion pipeline (Ollama LLM on CPU,
+#     Qdrant, Redis). Uses qwen2.5:3b-instruct — CPU-friendly, and the suite's
+#     assertions are model-quality-tolerant (validated: all tests pass with it).
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  schedule:
+    - cron: "17 3 * * *"
+
+jobs:
+  kafka-integration:
+    name: Kafka broker integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Start Kafka + Schema Registry
+        run: docker compose -f tests/integration/kafka-compose.yaml -p kafka-itest up -d
+
+      - name: Wait for Schema Registry
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8081/subjects > /dev/null; then
+              echo "Schema Registry is up."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "Schema Registry did not come up in time." >&2
+          docker compose -f tests/integration/kafka-compose.yaml -p kafka-itest logs
+          exit 1
+
+      - name: Run broker integration test
+        env:
+          DVD_KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+          DVD_KAFKA_SCHEMA_REGISTRY_URL: http://localhost:8081
+          DVD_REDIS_URL: redis://localhost:6379/0
+        run: uv run pytest tests/integration/test_broker_integration.py -m integration -rs
+
+      - name: Show stack logs on failure
+        if: failure()
+        run: docker compose -f tests/integration/kafka-compose.yaml -p kafka-itest logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f tests/integration/kafka-compose.yaml -p kafka-itest down -v
+
+  pipeline-integration:
+    name: Ingestion pipeline (Ollama CPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports:
+          - 6333:6333
+      ollama:
+        image: ollama/ollama:latest
+        ports:
+          - 11434:11434
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Wait for Ollama and Qdrant
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:11434/api/tags > /dev/null && break
+            sleep 2
+          done
+          curl -sf http://localhost:11434/api/tags > /dev/null
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:6333/readyz > /dev/null && break
+            sleep 2
+          done
+          curl -sf http://localhost:6333/readyz > /dev/null
+
+      - name: Pull models (LLM + embeddings)
+        run: |
+          pull() {
+            last=$(curl -s http://localhost:11434/api/pull -d "{\"model\":\"$1\"}" | tail -1)
+            echo "$1: $last"
+            echo "$last" | grep -q '"status":"success"'
+          }
+          pull qwen2.5:3b-instruct
+          pull bge-m3
+
+      # The Kafka test self-skips here (no DVD_KAFKA_BOOTSTRAP_SERVERS) — it has
+      # its own job above.
+      - name: Run integration tests
+        env:
+          DVD_OLLAMA_BASE: http://localhost:11434
+          DVD_OLLAMA_MODEL: qwen2.5:3b-instruct
+          DVD_OLLAMA_EMBED_MODEL: bge-m3
+          DVD_QDRANT_URL: http://localhost:6333
+          DVD_REDIS_URL: redis://localhost:6379/0
+        run: uv run pytest tests/integration -m integration -rs
