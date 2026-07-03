@@ -80,9 +80,9 @@ async def test_outbox_event_reaches_kafka(broker_settings, require_redis):
             await asyncio.sleep(0.5)
 
         # Read the topic back and deserialize with the producer's own serializer.
-        assert _find_event(publisher, broker_settings, marker), (
-            f"event {marker} not found in topic {DocumentProcessed.topic}"
-        )
+        assert _find_event(
+            publisher, broker_settings, marker
+        ), f"event {marker} not found in topic {DocumentProcessed.topic}"
     finally:
         await publisher.stop()
         require_redis.r.delete(outbox.key, outbox.dead_key)
@@ -108,10 +108,7 @@ def _find_event(publisher: KafkaPublisher, settings, marker: str) -> bool:
             if msg is None or msg.error():
                 continue
             event = publisher._producer.deserialize_message(msg)
-            if (
-                isinstance(event, DocumentProcessed)
-                and event.document_name == marker
-            ):
+            if isinstance(event, DocumentProcessed) and event.document_name == marker:
                 return True
         return False
     finally:
