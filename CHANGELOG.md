@@ -1,3 +1,9 @@
+## v0.5.0 (2026-07-03)
+
+### Feat
+
+- **dvd_service**: - add GET /tags endpoint and document_names search filter
+
 ## v0.4.2 (2026-06-30)
 
 ### Fix
