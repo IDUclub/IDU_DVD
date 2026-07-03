@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import os
 import uuid
 from datetime import datetime, timezone
@@ -40,6 +41,7 @@ from src.dvd_service.modules.hierarchy import HierarchyBuilder
 from src.dvd_service.modules.identity import (
     build_aliases,
     build_lookup_keys,
+    extract_version_from_name,
     make_span_id,
     make_version_id,
 )
@@ -48,6 +50,16 @@ from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import Tagger, VersionDetector
 
 log = structlog.get_logger(__name__)
+
+
+def _version_condition(version: str) -> Filter:
+    """Match a version against the multi-valued ``versions`` tags or the legacy ``version``."""
+    return Filter(
+        should=[
+            FieldCondition(key="versions", match=MatchValue(value=version)),
+            FieldCondition(key="version", match=MatchValue(value=version)),
+        ]
+    )
 
 
 class IngestionService:
@@ -112,6 +124,123 @@ class IngestionService:
             vectors.extend(client.embed(texts[i : i + b]))
         return vectors
 
+    def _resolve_identity(
+        self,
+        parts: list[dict],
+        client: OllamaClient,
+        name_override: str | None,
+        version_override: str | None,
+    ) -> tuple[str, str]:
+        """Document name + version: manual overrides > 4-digit group in the name > LLM.
+
+        The LLM detector is only invoked when either value cannot be derived without it.
+        """
+        name = (name_override or "").strip()
+        version = (version_override or "").strip()
+        if not version and name:
+            version = extract_version_from_name(name) or ""
+        if not name or not version:
+            det_name, det_version = self.version_detector.detect(parts, client)
+            name = name or det_name
+            version = version or extract_version_from_name(name) or det_version
+        return name, version.strip() or "unknown"
+
+    @staticmethod
+    def _match_by_text(
+        base_points: list[dict], nodes: list[dict]
+    ) -> tuple[dict[str, str], list[dict]]:
+        """Match new nodes to stored fragments by whitespace-normalized text.
+
+        Returns ``(id_map new-node-id -> matched point id, unmatched nodes)``. Used as the
+        fallback when source-block fingerprints are unavailable (legacy versions) and for
+        synthetic nodes that carry no source blocks.
+        """
+        pool: dict[str, list[dict]] = {}
+        for p in base_points:
+            key = " ".join((p.get("text") or "").split())
+            pool.setdefault(key, []).append(p)
+        id_map: dict[str, str] = {}
+        unmatched: list[dict] = []
+        for n in nodes:
+            bucket = pool.get(" ".join(n["text"].split()))
+            if bucket:
+                id_map[n["id"]] = bucket.pop(0)["id"]
+            else:
+                unmatched.append(n)
+        return id_map, unmatched
+
+    @staticmethod
+    def _match_by_blocks(
+        base_points: list[dict],
+        nodes: list[dict],
+        old_hashes: list[str],
+        new_hashes: list[str],
+    ) -> tuple[set[str], set[str], dict[str, str]]:
+        """Deterministic source-level matching: diff the raw-block hashes of two editions.
+
+        A stored fragment is reused iff every source block it covers is unchanged; new nodes
+        are inserted iff they touch a changed/added block or fall outside the reused coverage.
+        Immune to LLM fragmentation drift, since the raw blocks are parsed deterministically.
+
+        Returns ``(reused point ids, node ids to insert, id_map new-node-id -> covering point)``.
+        """
+        matcher = difflib.SequenceMatcher(a=old_hashes, b=new_hashes, autojunk=False)
+        old_to_new: dict[int, int] = {}
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == "equal":
+                for k in range(i2 - i1):
+                    old_to_new[i1 + k] = j1 + k
+
+        # Candidate reuse: stored fragments whose every source block is unchanged,
+        # keyed by the new-edition block indices they cover.
+        reuse: dict[str, set[int]] = {}
+        for p in base_points:
+            blocks = p.get("src_block_ids") or []
+            if blocks and all(b in old_to_new for b in blocks):
+                reuse[p["id"]] = {old_to_new[b] for b in blocks}
+
+        node_blocks = {n["id"]: set(n.get("src_ids") or []) for n in nodes}
+        # Fixpoint: inserted nodes may straddle an edit boundary and overlap a reusable
+        # fragment's blocks — drop such fragments from reuse so no block is stored twice.
+        while True:
+            covered: set[int] = set().union(*reuse.values()) if reuse else set()
+            insert_ids = {
+                nid
+                for nid, blocks in node_blocks.items()
+                if blocks and not blocks <= covered
+            }
+            inserted_blocks: set[int] = (
+                set().union(*(node_blocks[i] for i in insert_ids))
+                if insert_ids
+                else set()
+            )
+            conflicted = [
+                pid for pid, blocks in reuse.items() if blocks & inserted_blocks
+            ]
+            if not conflicted:
+                break
+            for pid in conflicted:
+                del reuse[pid]
+
+        # Link remapping: a skipped node points at the reused fragment covering its blocks.
+        id_map: dict[str, str] = {}
+        for nid, blocks in node_blocks.items():
+            if nid in insert_ids or not blocks:
+                continue
+            for pid, covered_blocks in reuse.items():
+                if blocks <= covered_blocks:
+                    id_map[nid] = pid
+                    break
+        return set(reuse), insert_ids, id_map
+
+    @staticmethod
+    def _version_tags(payload: dict) -> list[str]:
+        """Every version a stored fragment belongs to (legacy points carry only ``version``)."""
+        tags = payload.get("versions") or []
+        if not tags and payload.get("version"):
+            tags = [payload["version"]]
+        return list(tags)
+
     def _resolve_version(
         self, name: str, version: str, content_hash: str
     ) -> tuple[str, list[str]]:
@@ -156,6 +285,47 @@ class IngestionService:
             "span_id": make_span_id(doc_id, char_start, char_end),
         }
 
+    def _build_points(
+        self,
+        nodes: list[dict],
+        vectors: list[list[float]],
+        spans: list[dict],
+        doc_id: str,
+        node_tags: dict[str, list],
+        node_refs: dict[str, list],
+        identity: dict,
+    ) -> list[PointStruct]:
+        """Assemble Qdrant points for nodes; ``identity`` holds the shared payload fields."""
+        return [
+            PointStruct(
+                id=n["id"],
+                vector=vec,
+                payload=NodePayload(
+                    doc_id=doc_id,
+                    kind=n["kind"],
+                    type=n["type"],
+                    numbering=n["numbering"],
+                    block=n["block"],
+                    depth=n["depth"],
+                    order=n["_order"],
+                    parent_id=n["parent_id"],
+                    parent_text=n["parent_text"],
+                    child_ids=n["child_ids"],
+                    prev_id=n["prev_id"],
+                    next_id=n["next_id"],
+                    breadcrumb=n["breadcrumb"],
+                    tags=node_tags.get(n["id"], []),
+                    table_html=n["table_html"],
+                    references=node_refs.get(n["id"], []),
+                    src_block_ids=n.get("src_ids", []),
+                    text=n["text"],
+                    **identity,
+                    **self._grounding(n, spans, doc_id),
+                ).model_dump(),
+            )
+            for n, vec in zip(nodes, vectors)
+        ]
+
     def ingest(
         self,
         file_path: str,
@@ -165,6 +335,7 @@ class IngestionService:
         doc_id: str | None = None,
         job_id: str | None = None,
         *,
+        name_override: str | None = None,
         doc_type: str | None = None,
         corpus: str | None = None,
         lang: str | None = None,
@@ -187,8 +358,9 @@ class IngestionService:
             self.hierarchy.group_amendment(tree)
             nodes = self.hierarchy.flatten(tree)  # prev/next, kind, html
 
-            name, det_version = self.version_detector.detect(parts, client)
-            version = (version_override or det_version).strip() or "unknown"
+            name, version = self._resolve_identity(
+                parts, client, name_override, version_override
+            )
             version, other_versions = self._resolve_version(name, version, content_hash)
 
             node_tags = self.tagger.tag_nodes(nodes, client)
@@ -221,52 +393,33 @@ class IngestionService:
                 "normalized": True,
             }
 
-            points = [
-                PointStruct(
-                    id=n["id"],
-                    vector=vec,
-                    payload=NodePayload(
-                        parser_version=PARSER_VERSION,
-                        embedding_meta=embedding_meta,
-                        doc_id=doc_id,
-                        name=name,
-                        title=title,
-                        version=version,
-                        version_id=version_id,
-                        other_versions=other_versions,
-                        content_hash=content_hash,
-                        doc_type=doc_type,
-                        corpus=corpus,
-                        lang=lang,
-                        external_ids=external_ids,
-                        aliases=aliases,
-                        lookup_keys=lookup_keys,
-                        effective_date=effective_date,
-                        source=os.path.basename(file_path),
-                        source_uri=source_uri or os.path.basename(file_path),
-                        kind=n["kind"],
-                        type=n["type"],
-                        numbering=n["numbering"],
-                        block=n["block"],
-                        depth=n["depth"],
-                        order=order,
-                        parent_id=n["parent_id"],
-                        parent_text=n["parent_text"],
-                        child_ids=n["child_ids"],
-                        prev_id=n["prev_id"],
-                        next_id=n["next_id"],
-                        breadcrumb=n["breadcrumb"],
-                        tags=node_tags.get(n["id"], []),
-                        metadata=metadata or {},
-                        table_html=n["table_html"],
-                        references=node_refs.get(n["id"], []),
-                        uploaded_at=uploaded_at,
-                        text=n["text"],
-                        **self._grounding(n, spans, doc_id),
-                    ).model_dump(),
-                )
-                for order, (n, vec) in enumerate(zip(nodes, vectors))
-            ]
+            for order, n in enumerate(nodes):
+                n["_order"] = order
+            identity = {
+                "parser_version": PARSER_VERSION,
+                "embedding_meta": embedding_meta,
+                "name": name,
+                "title": title,
+                "version": version,
+                "versions": [version],
+                "version_id": version_id,
+                "other_versions": other_versions,
+                "content_hash": content_hash,
+                "doc_type": doc_type,
+                "corpus": corpus,
+                "lang": lang,
+                "external_ids": external_ids,
+                "aliases": aliases,
+                "lookup_keys": lookup_keys,
+                "effective_date": effective_date,
+                "source": os.path.basename(file_path),
+                "source_uri": source_uri or os.path.basename(file_path),
+                "metadata": metadata or {},
+                "uploaded_at": uploaded_at,
+            }
+            points = self._build_points(
+                nodes, vectors, spans, doc_id, node_tags, node_refs, identity
+            )
             count = self.qdrant.upsert(points)
 
             # For already-loaded versions, refresh their list of other versions (including the new one)
@@ -274,6 +427,9 @@ class IngestionService:
             for v in other_versions:
                 self.qdrant.set_other_versions(name, v, sorted(all_versions - {v}))
             self.registry.register(content_hash, name, version, doc_id)
+            self.registry.register_blocks(
+                name, version, DocumentParser.block_hashes(raw)
+            )
             self.registry.register_document(
                 doc_id,
                 {
@@ -323,6 +479,319 @@ class IngestionService:
         finally:
             client.close()
 
+    def update(
+        self,
+        name: str,
+        file_path: str,
+        raw: list[dict],
+        content_hash: str,
+        version_override: str | None = None,
+        job_id: str | None = None,
+        *,
+        doc_type: str | None = None,
+        corpus: str | None = None,
+        lang: str | None = None,
+        title: str | None = None,
+        source_uri: str | None = None,
+        external_ids: dict | None = None,
+        metadata: dict | None = None,
+        effective_date: str | None = None,
+    ) -> dict:
+        """Delta update of an existing document under a new version.
+
+        Fragments whose text is unchanged against the latest stored version just receive the
+        new version tag (``versions``); changed/added fragments go through the full pipeline
+        (structure, tagging, embedding) and are inserted next to them, tagged with the new
+        version only. Old versions stay searchable untouched.
+        """
+        if job_id:
+            self.jobs.update(job_id, status="processing")
+        client = OllamaClient()
+        try:
+            existing = self.qdrant.points_by_name(name)
+            if not existing:
+                raise KeyError(f"документ не найден: {name}")
+            # Compare against the latest stored version — the edition being amended.
+            base_version = max(
+                self.registry.versions(name)
+                or sorted({t for p in existing for t in self._version_tags(p)}),
+            )
+            doc_id = next(
+                (
+                    p["doc_id"]
+                    for p in existing
+                    if base_version in self._version_tags(p) and p.get("doc_id")
+                ),
+                existing[0].get("doc_id") or str(uuid.uuid4()),
+            )
+
+            parts = self.parser.to_logical_parts(raw, client)  # Stage 1 + 1.5
+            self.structure.tag(parts, client)  # Stage 2 + 3
+            ranks = self.structure.numbering_ranks(parts)  # Stage 3.5
+            tree = self.hierarchy.build(parts, ranks, title=Path(file_path).stem)
+            self.hierarchy.cap_unnumbered_nesting(tree)
+            self.hierarchy.group_amendment(tree)
+            nodes = self.hierarchy.flatten(tree)
+
+            _, version = self._resolve_identity(parts, client, name, version_override)
+            version, other_versions = self._resolve_version(name, version, content_hash)
+
+            for order, n in enumerate(nodes):
+                n["_order"] = order
+            base_points = [p for p in existing if base_version in self._version_tags(p)]
+
+            # Delta detection. Preferred path: deterministic diff of the source-block
+            # fingerprints — reuse is decided by what actually changed in the source,
+            # immune to LLM fragmentation drift. Nodes without source blocks (synthetic
+            # containers) and legacy versions without fingerprints match by text.
+            old_hashes = self.registry.get_blocks(name, base_version)
+            new_hashes = DocumentParser.block_hashes(raw)
+            if old_hashes:
+                reused_ids, insert_ids, id_map = self._match_by_blocks(
+                    base_points, nodes, old_hashes, new_hashes
+                )
+                text_map, text_new = self._match_by_text(
+                    [
+                        p
+                        for p in base_points
+                        if not p.get("src_block_ids") and p["id"] not in reused_ids
+                    ],
+                    [n for n in nodes if not n.get("src_ids")],
+                )
+                id_map.update(text_map)
+                reused_ids |= set(text_map.values())
+                new_nodes = sorted(
+                    [n for n in nodes if n["id"] in insert_ids] + text_new,
+                    key=lambda n: n["_order"],
+                )
+            else:
+                id_map, new_nodes = self._match_by_text(base_points, nodes)
+                reused_ids = set(id_map.values())
+
+            # Unchanged fragments: just tag them with the new version.
+            tag_groups: dict[tuple, list[str]] = {}
+            for p in existing:
+                if p["id"] not in reused_ids:
+                    continue
+                tags = self._version_tags(p)
+                if version not in tags:
+                    tag_groups.setdefault(tuple(tags + [version]), []).append(p["id"])
+            for tags, ids in tag_groups.items():
+                self.qdrant.set_versions(ids, list(tags))
+
+            # Changed/added fragments: full pipeline, links remapped onto shared points.
+            def _mapped(node_id: str | None) -> str | None:
+                return id_map.get(node_id, node_id) if node_id else node_id
+
+            for n in new_nodes:
+                n["parent_id"] = _mapped(n["parent_id"])
+                n["prev_id"] = _mapped(n["prev_id"])
+                n["next_id"] = _mapped(n["next_id"])
+                n["child_ids"] = [_mapped(c) for c in n["child_ids"]]
+
+            node_tags = self.tagger.tag_nodes(new_nodes, client) if new_nodes else {}
+            node_refs: dict[str, list] = {}
+            if self.settings.enable_reference_linking and new_nodes:
+                numbering_index = {
+                    num: _mapped(nid)
+                    for num, nid in self._numbering_index(nodes).items()
+                }
+                raw_refs = self.reference_extractor.extract(new_nodes, client)
+                node_refs = self.reference_resolver.resolve(
+                    doc_id, name, raw_refs, numbering_index
+                )
+
+            vectors = (
+                self._embed_all(client, [n["text"] for n in new_nodes])
+                if new_nodes
+                else []
+            )
+            _, spans = self.parser.source_index(raw)
+            external_ids = external_ids or {}
+            uploaded_at = datetime.now(timezone.utc).isoformat()
+            identity = {
+                "parser_version": PARSER_VERSION,
+                "embedding_meta": {
+                    "model": self.settings.ollama_embed_model,
+                    "dim": self.settings.vector_size,
+                    "metric": "cosine",
+                    "normalized": True,
+                },
+                "name": name,
+                "title": title,
+                "version": version,
+                "versions": [version],
+                "version_id": make_version_id(name, content_hash),
+                "other_versions": other_versions,
+                "content_hash": content_hash,
+                "doc_type": doc_type or self.settings.default_doc_type,
+                "corpus": corpus or self.settings.default_corpus,
+                "lang": lang or self.settings.default_lang,
+                "external_ids": external_ids,
+                "aliases": build_aliases(name, external_ids),
+                "lookup_keys": build_lookup_keys(name, external_ids),
+                "effective_date": effective_date,
+                "source": os.path.basename(file_path),
+                "source_uri": source_uri or os.path.basename(file_path),
+                "metadata": metadata or {},
+                "uploaded_at": uploaded_at,
+            }
+            points = self._build_points(
+                new_nodes, vectors, spans, doc_id, node_tags, node_refs, identity
+            )
+            count = self.qdrant.upsert(points)
+
+            all_versions = set(other_versions) | {version}
+            for v in other_versions:
+                self.qdrant.set_other_versions(name, v, sorted(all_versions - {v}))
+            self.registry.register(content_hash, name, version, doc_id)
+            self.registry.register_blocks(name, version, new_hashes)
+            self.registry.register_document(
+                doc_id,
+                {
+                    "doc_id": doc_id,
+                    "name": name,
+                    "title": title,
+                    "version": version,
+                    "version_id": identity["version_id"],
+                    "other_versions": other_versions,
+                    "doc_type": identity["doc_type"],
+                    "corpus": identity["corpus"],
+                    "lang": identity["lang"],
+                    "status": "active",
+                    "external_ids": external_ids,
+                    "source_uri": identity["source_uri"],
+                    "content_hash": content_hash,
+                    "node_count": len(reused_ids) + count,
+                    "uploaded_at": uploaded_at,
+                },
+            )
+
+            if self.outbox is not None:
+                self.outbox.enqueue(DocumentProcessed(document_name=name))
+
+            result = {
+                "doc_id": doc_id,
+                "name": name,
+                "version": version,
+                "other_versions": other_versions,
+                "nodes": len(reused_ids) + count,
+                "new_nodes": count,
+                "reused_nodes": len(reused_ids),
+            }
+            if job_id:
+                self.jobs.update(job_id, status="done", **result)
+            log.info("update_done", **result)
+            return result
+        except Exception as exc:  # noqa: BLE001
+            log.exception("update_failed", name=name)
+            if job_id:
+                self.jobs.update(job_id, status="error", error=str(exc))
+            raise
+        finally:
+            client.close()
+
+    def reload(
+        self,
+        name: str,
+        file_path: str,
+        raw: list[dict],
+        content_hash: str,
+        version_override: str | None = None,
+        job_id: str | None = None,
+        **meta,
+    ) -> dict:
+        """Full reload: wipe every stored version of the document, then ingest from scratch.
+
+        Create-or-replace semantics — a document that is not stored yet is simply ingested.
+        """
+        if job_id:
+            self.jobs.update(job_id, status="processing")
+        try:
+            self.delete_document(name)
+        except KeyError:
+            pass  # nothing stored under this name yet
+        except Exception as exc:  # noqa: BLE001
+            if job_id:
+                self.jobs.update(job_id, status="error", error=str(exc))
+            raise
+        return self.ingest(
+            file_path,
+            raw,
+            content_hash,
+            version_override=version_override,
+            job_id=job_id,
+            name_override=name,
+            **meta,
+        )
+
+    def delete_document(self, name: str, version: str | None = None) -> dict:
+        """Remove a document (or one of its versions) from Qdrant and the Redis registry.
+
+        Deleting a single version drops the fragments that belong to it exclusively and only
+        removes the version tag from fragments shared with other versions.
+        """
+        existing = self.qdrant.points_by_name(name)
+        known_versions = self.registry.versions(name)
+        if not existing and not known_versions:
+            raise KeyError(f"документ не найден: {name}")
+
+        if version is None:
+            versions_removed = sorted(
+                set(known_versions)
+                | {t for p in existing for t in self._version_tags(p)}
+            )
+            doc_ids = {p["doc_id"] for p in existing if p.get("doc_id")}
+            self.qdrant.delete_by_name(name)
+            self.registry.remove_hashes(name)
+            for did in doc_ids:
+                self.registry.unregister_document(did)
+            self.registry.unregister_name(name)
+            result = {
+                "name": name,
+                "versions_removed": versions_removed,
+                "points_deleted": len(existing),
+                "points_updated": 0,
+            }
+            log.info("document_deleted", **result)
+            return result
+
+        tagged = [p for p in existing if version in self._version_tags(p)]
+        if not tagged and version not in known_versions:
+            raise KeyError(f"версия не найдена: {name} / {version}")
+        to_delete = [p["id"] for p in tagged if set(self._version_tags(p)) == {version}]
+        tag_groups: dict[tuple, list[str]] = {}
+        for p in tagged:
+            remaining_tags = [t for t in self._version_tags(p) if t != version]
+            if remaining_tags:
+                tag_groups.setdefault(tuple(remaining_tags), []).append(p["id"])
+        self.qdrant.delete_points(to_delete)
+        for tags, ids in tag_groups.items():
+            self.qdrant.set_versions(ids, list(tags))
+
+        self.registry.remove_version(name, version)
+        self.registry.remove_hashes(name, version)
+        for rec in self.registry.all_documents():
+            if rec.get("name") == name and rec.get("version") == version:
+                self.registry.unregister_document(rec["doc_id"])
+
+        remaining_versions = self.registry.versions(name)
+        for v in remaining_versions:
+            self.qdrant.set_other_versions(
+                name, v, sorted(set(remaining_versions) - {v})
+            )
+        if not remaining_versions and len(to_delete) == len(existing):
+            self.registry.unregister_name(name)
+
+        result = {
+            "name": name,
+            "versions_removed": [version],
+            "points_deleted": len(to_delete),
+            "points_updated": sum(len(ids) for ids in tag_groups.values()),
+        }
+        log.info("document_version_deleted", **result)
+        return result
+
 
 class SearchService:
     def __init__(self, qdrant: QdrantRepository, settings: Settings) -> None:
@@ -343,9 +812,7 @@ class SearchService:
         if req.name:
             must.append(FieldCondition(key="name", match=MatchValue(value=req.name)))
         if req.version:
-            must.append(
-                FieldCondition(key="version", match=MatchValue(value=req.version))
-            )
+            must.append(_version_condition(req.version))
         if req.block:
             must.append(FieldCondition(key="block", match=MatchValue(value=req.block)))
         if req.types:
@@ -420,6 +887,7 @@ class SearchService:
                     name=pl.get("name", ""),
                     title=pl.get("title"),
                     version=pl.get("version", ""),
+                    versions=pl.get("versions", []) or [],
                     version_id=pl.get("version_id"),
                     other_versions=pl.get("other_versions", []) or [],
                     doc_type=pl.get("doc_type", "document"),
@@ -475,7 +943,7 @@ class DocumentsService:
         if name:
             must.append(FieldCondition(key="name", match=MatchValue(value=name)))
         if version:
-            must.append(FieldCondition(key="version", match=MatchValue(value=version)))
+            must.append(_version_condition(version))
         if block:
             must.append(FieldCondition(key="block", match=MatchValue(value=block)))
         if tags:
@@ -503,8 +971,16 @@ class DocumentsService:
         )
 
         groups: dict[tuple[str, str], dict] = {}
-        for pl in payloads:
-            key = (pl.get("name", ""), pl.get("version", ""))
+        for pl, doc_version in (
+            (pl, v)
+            for pl in payloads
+            for v in (pl.get("versions") or [pl.get("version", "")])
+        ):
+            # A shared fragment belongs to several versions; count it under each. When a
+            # version filter is set, other tags of matched fragments must not leak through.
+            if version and doc_version != version:
+                continue
+            key = (pl.get("name", ""), doc_version)
             g = groups.get(key)
             if g is None:
                 g = {

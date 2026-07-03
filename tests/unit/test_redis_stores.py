@@ -89,6 +89,43 @@ class TestDocumentRegistry:
         assert repr(DocumentRegistry(client)) == "DocumentRegistry()"
 
 
+class TestRegistryDeletion:
+    def test_remove_version(self, client):
+        reg = DocumentRegistry(client)
+        reg.register("h1", "Док", "v1", "d1")
+        reg.register("h2", "Док", "v2", "d2")
+        reg.remove_version("Док", "v1")
+        assert reg.versions("Док") == ["v2"]
+
+    def test_unregister_name_forgets_versions_and_name(self, client):
+        reg = DocumentRegistry(client)
+        reg.register("h1", "Док", "v1", "d1")
+        reg.unregister_name("Док")
+        assert reg.versions("Док") == [] and not reg.has_name("Док")
+
+    def test_remove_hashes_all_versions(self, client):
+        reg = DocumentRegistry(client)
+        reg.register("h1", "Док", "v1", "d1")
+        reg.register("h2", "Док", "v2", "d2")
+        reg.register("h3", "Другой", "v1", "d3")
+        assert reg.remove_hashes("Док") == 2
+        assert not reg.has_hash("h1") and not reg.has_hash("h2")
+        assert reg.has_hash("h3")  # other documents untouched
+
+    def test_remove_hashes_single_version(self, client):
+        reg = DocumentRegistry(client)
+        reg.register("h1", "Док", "v1", "d1")
+        reg.register("h2", "Док", "v2", "d2")
+        assert reg.remove_hashes("Док", version="v2") == 1
+        assert reg.has_hash("h1") and not reg.has_hash("h2")
+
+    def test_unregister_document(self, client):
+        reg = DocumentRegistry(client)
+        reg.register_document("d1", {"doc_id": "d1", "name": "Док"})
+        reg.unregister_document("d1")
+        assert reg.get_document("d1") is None and reg.doc_ids() == []
+
+
 class TestPendingReferences:
     def test_add_peek_pop_roundtrip(self, client):
         reg = DocumentRegistry(client)

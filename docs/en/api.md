@@ -8,6 +8,9 @@ request and response models are pydantic-based and defined under `src/dvd_servic
 | Method and path | Purpose |
 |-----------------|---------|
 | `POST /documents` | upload a document and queue it for processing |
+| `PATCH /documents/{name}` | delta update: index a new version, reusing unchanged fragments |
+| `PUT /documents/{name}` | full reload: wipe all stored versions and ingest from scratch |
+| `DELETE /documents/{name}` | delete a document entirely, or a single version (`?version=`) |
 | `GET /documents` | list ingested documents, aggregated by (name, version), with filters |
 | `GET /documents/{job_id}` | processing job status |
 | `POST /search/texts` | search relevant text fragments |
@@ -27,7 +30,11 @@ Upload a document. The body is a multipart form.
 Form fields:
 
 - `file` — the document file (required);
-- `version` — a version string to override auto-detection (optional);
+- `name` — document name/designation to override LLM detection (optional). The name keys the
+  version registry and the update/delete endpoints, so setting it explicitly is recommended;
+- `version` — a version string to override auto-detection (optional). Without it, the trailing
+  standalone 4-digit group of the name is used when present (`СП 2.13130.2020` → `2020`),
+  otherwise the version is LLM-detected;
 - `doc_type` — document class (`document` / `regulation` / `article` / `book` / `web` / …) (optional);
 - `corpus` — logical corpus/namespace the document belongs to (optional);
 - `lang` — ISO-639 language code (optional);
@@ -59,6 +66,72 @@ Example:
 ```
 curl -X POST http://localhost:8000/documents \
      -F "file=@docs_data/docs_examples/СП_19.13330.2019_с_И1.docx"
+```
+
+## PATCH /documents/{name}
+
+Delta update of a stored document under a new version. The body is the same multipart form as
+`POST /documents` (minus `name`, which comes from the path).
+
+Change detection is a deterministic diff of **source-block fingerprints**: at every ingest the
+per-block content hashes of the source file are stored (Redis, `dvd:blocks:{name}:{version}`),
+and each fragment records the source blocks it was built from (`src_block_ids`). The new file's
+blocks are diffed against the latest stored version:
+
+- a fragment whose source blocks are all **unchanged** is not re-indexed — the existing point
+  just receives the new version in its multi-valued `versions` tag list;
+- a fragment touching a **changed or added** block goes through the full pipeline (structure,
+  tagging, embedding) and is inserted next to the shared ones, tagged with the new version only.
+
+Because the source blocks are parsed deterministically, reuse does not depend on how the LLM
+happened to split fragments this time. For versions stored before fingerprints existed (and for
+synthetic fragments without source blocks) matching falls back to whitespace-normalized text
+equality.
+
+Both versions of the document live in the same structure (same `doc_id`); filtering search or
+`GET /documents` by either version returns a complete document. The version comes from the
+`version` form field, else the trailing 4-digit group of the name, else LLM detection; if the
+resulting string already exists for this name, it gets a content-hash suffix (`… (ред. a1b2c3)`).
+
+Unknown name — `404`; exact text duplicate — `400`; otherwise `202` + a job id (see
+`GET /documents/{job_id}`, which also reports `new_nodes` / `reused_nodes`).
+
+```
+curl -X PATCH "http://localhost:8000/documents/СП%2019.13330.2019" \
+     -F "file=@СП_19.13330.2019_ред2.docx" -F "version=2026"
+```
+
+## PUT /documents/{name}
+
+Full reload (create-or-replace): every stored version of the document is deleted (Qdrant points +
+Redis registry entries), then the file is ingested from scratch under the path name. No duplicate
+rejection — re-uploading the same file is a legitimate way to rebuild the index. Returns `202` +
+a job id.
+
+```
+curl -X PUT "http://localhost:8000/documents/СП%2019.13330.2019" \
+     -F "file=@СП_19.13330.2019.docx"
+```
+
+## DELETE /documents/{name}
+
+Delete a document from the store. Without parameters removes **all** versions; with
+`?version=<v>` removes only that version: fragments belonging to it exclusively are deleted,
+fragments shared with other versions only lose the version tag. Unknown name/version — `404`.
+
+Response (`DeleteResponse`):
+
+```json
+{
+  "name": "СП 19.13330.2019",
+  "versions_removed": ["2026"],
+  "points_deleted": 12,
+  "points_updated": 254
+}
+```
+
+```
+curl -X DELETE "http://localhost:8000/documents/СП%2019.13330.2019?version=2026"
 ```
 
 ## GET /documents
@@ -104,7 +177,10 @@ Response (`DocumentListResponse`):
 ```
 
 `blocks` and `tags` are the union across all fragments of that document version; `node_count` is
-the number of fragments (texts and tables together).
+the number of fragments (texts and tables together). After a delta update
+(`PATCH /documents/{name}`) a fragment may belong to several versions at once (multi-valued
+`versions` tags) — it is counted under each of them, and the `version` filter matches the tags,
+so every listed version is complete.
 
 Examples:
 
@@ -149,7 +225,7 @@ Request body (`SearchRequest`):
 | `query` | str | — | the search query |
 | `name` | str | null | filter by document name |
 | `document_names` | list[str] | null | filter results to documents matching any of these names |
-| `version` | str | null | filter by version |
+| `version` | str | null | filter by version — matches the fragment's multi-valued `versions` tags, so fragments shared between versions after a delta update are found under each |
 | `block` | str | null | filter by `main`/`amendment` |
 | `types` | list[str] | null | filter by structural level (`chapter`/`clause`/`subclause`/...; any of) |
 | `doc_id` | str | null | filter by a specific document |
@@ -172,6 +248,7 @@ Response (`SearchResponse`):
       "doc_id": "9f63...",
       "name": "СП 19.13330.2019",
       "version": "СП 19.13330.2019 (с Изменением N 1)",
+      "versions": ["СП 19.13330.2019 (с Изменением N 1)"],
       "other_versions": [],
       "kind": "text",
       "type": "clause",

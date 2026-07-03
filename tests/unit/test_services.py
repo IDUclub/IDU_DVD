@@ -214,6 +214,282 @@ class TestIngest:
         assert repr(wired.ingestion).startswith("IngestionService(")
 
 
+def _version_detect_calls(ollama) -> list:
+    """LLM calls that used the version-detection schema (top-level name+version props)."""
+    return [
+        c
+        for c in ollama.chat_calls
+        if {"name", "version"} <= set(c[2].get("properties", {}))
+    ]
+
+
+class TestManualIdentity:
+    def test_name_override_with_4digit_version_skips_llm_detection(
+        self, wired, sample_raw
+    ):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest(
+            "doc.docx", sample_raw, h, name_override="СП 5.13130.2025"
+        )
+        assert res["name"] == "СП 5.13130.2025"
+        assert res["version"] == "2025"  # trailing 4-digit group of the name
+        assert not _version_detect_calls(wired.ollama)
+
+    def test_name_override_without_digits_falls_back_to_llm_version(
+        self, wired, sample_raw
+    ):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest(
+            "doc.docx", sample_raw, h, name_override="Правила без года"
+        )
+        assert res["name"] == "Правила без года"
+        assert (
+            res["version"] == "ТЕСТ 1 ред. 1"
+        )  # detector's version, detected name ignored
+        assert _version_detect_calls(wired.ollama)
+
+    def test_version_override_beats_4digit_extraction(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest(
+            "doc.docx",
+            sample_raw,
+            h,
+            version_override="ред. 7",
+            name_override="СП 5.13130.2025",
+        )
+        assert res["version"] == "ред. 7"
+
+    def test_fresh_ingest_tags_fragments_with_their_version(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest("doc.docx", sample_raw, h)
+        assert all(
+            pl["versions"] == [res["version"]]
+            for _v, pl in wired.qdrant.points.values()
+        )
+
+
+class TestBlockMatching:
+    """The deterministic source-block diff matcher (``_match_by_blocks``) in isolation."""
+
+    H1 = [f"h{i}" for i in range(3)]  # three source blocks
+
+    @staticmethod
+    def _pt(pid, blocks):
+        return {"id": pid, "src_block_ids": blocks}
+
+    @staticmethod
+    def _node(nid, blocks):
+        return {"id": nid, "src_ids": blocks}
+
+    def test_only_truly_changed_block_is_reindexed(self):
+        base = [self._pt("A", [0]), self._pt("B", [1]), self._pt("C", [2])]
+        nodes = [self._node("x", [0]), self._node("y", [1]), self._node("z", [2])]
+        new_hashes = ["h0", "CHANGED", "h2"]
+        reuse, insert, id_map = IngestionService._match_by_blocks(
+            base, nodes, self.H1, new_hashes
+        )
+        assert reuse == {"A", "C"} and insert == {"y"}
+        assert id_map == {"x": "A", "z": "C"}
+
+    def test_fragmentation_drift_over_unchanged_text_is_ignored(self):
+        # The LLM merged two unchanged blocks into one fragment this time — no re-indexing.
+        base = [self._pt("A", [0]), self._pt("B", [1])]
+        nodes = [self._node("x", [0, 1])]
+        reuse, insert, _ = IngestionService._match_by_blocks(
+            base, nodes, ["h0", "h1"], ["h0", "h1"]
+        )
+        assert reuse == {"A", "B"} and insert == set()
+
+    def test_fragment_straddling_an_edit_evicts_overlapping_reuse(self):
+        # New fragment covers an unchanged block + an added one: it must be inserted, and
+        # the old fragment of that unchanged block must not be reused (no double storage).
+        base = [self._pt("A", [0]), self._pt("B", [1])]
+        nodes = [self._node("x", [0]), self._node("y", [1, 2])]
+        reuse, insert, id_map = IngestionService._match_by_blocks(
+            base, nodes, ["h0", "h1"], ["h0", "h1", "ADDED"]
+        )
+        assert reuse == {"A"} and insert == {"y"}
+        assert id_map == {"x": "A"}
+
+    def test_inserted_shift_does_not_break_matching(self):
+        # A block inserted in the middle shifts all following indices — diff must absorb it.
+        base = [self._pt("A", [0]), self._pt("B", [1])]
+        nodes = [self._node("x", [0]), self._node("n", [1]), self._node("y", [2])]
+        reuse, insert, id_map = IngestionService._match_by_blocks(
+            base, nodes, ["h0", "h1"], ["h0", "NEW", "h1"]
+        )
+        assert reuse == {"A", "B"} and insert == {"n"}
+        assert id_map == {"x": "A", "y": "B"}
+
+    def test_text_fallback_normalizes_whitespace(self):
+        base = [{"id": "A", "text": "Пункт  1.1\nтребования."}]
+        nodes = [{"id": "x", "text": "Пункт 1.1 требования."}]
+        id_map, unmatched = IngestionService._match_by_text(base, nodes)
+        assert id_map == {"x": "A"} and unmatched == []
+
+
+class TestUpdateDocument:
+    def _base(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        return wired.ingestion.ingest("doc.docx", sample_raw, h)
+
+    def _updated_raw(self, sample_raw):
+        return sample_raw + [
+            {
+                "text": "Новый пункт документа.",
+                "category": "NarrativeText",
+                "html": None,
+            }
+        ]
+
+    def test_delta_update_tags_shared_and_inserts_new(self, wired, sample_raw):
+        res1 = self._base(wired, sample_raw)
+        updated = self._updated_raw(sample_raw)
+        h2 = DocumentParser.content_hash(updated)
+        res2 = wired.ingestion.update(
+            res1["name"],
+            "doc.docx",
+            updated,
+            h2,
+            version_override="ред. 2",
+            job_id="j2",
+        )
+
+        assert res2["reused_nodes"] > 0 and res2["new_nodes"] >= 1
+        assert res2["nodes"] == res2["reused_nodes"] + res2["new_nodes"]
+        payloads = [pl for _v, pl in wired.qdrant.points.values()]
+        shared = [
+            pl
+            for pl in payloads
+            if {res1["version"], "ред. 2"} <= set(pl.get("versions", []))
+        ]
+        assert shared, "unchanged fragments must carry both version tags"
+        fresh = [pl for pl in payloads if pl.get("versions") == ["ред. 2"]]
+        assert any(pl["text"] == "Новый пункт документа." for pl in fresh)
+        # delta fragments join the same document structure
+        assert all(pl["doc_id"] == res1["doc_id"] for pl in fresh)
+        assert "ред. 2" in wired.registry.versions(res1["name"])
+        assert wired.registry.has_hash(h2)
+        assert wired.jobs.get("j2")["status"] == "done"
+        assert wired.jobs.get("j2")["new_nodes"] == res2["new_nodes"]
+
+    def test_update_emits_document_processed_event(self, wired, sample_raw):
+        res1 = self._base(wired, sample_raw)
+        updated = self._updated_raw(sample_raw)
+        h2 = DocumentParser.content_hash(updated)
+        wired.ingestion.update(res1["name"], "doc.docx", updated, h2)
+        assert wired.outbox.size() == 2  # ingest + update
+
+    def test_update_unknown_name_raises(self, wired):
+        with pytest.raises(KeyError):
+            wired.ingestion.update("нет такого", "doc.docx", [], "h-x")
+
+    def test_list_documents_shows_both_versions(self, wired, sample_raw):
+        res1 = self._base(wired, sample_raw)
+        updated = self._updated_raw(sample_raw)
+        h2 = DocumentParser.content_hash(updated)
+        res2 = wired.ingestion.update(
+            res1["name"], "doc.docx", updated, h2, version_override="ред. 2"
+        )
+
+        listed = {
+            (d.name, d.version): d for d in wired.documents.list_documents().documents
+        }
+        assert (res1["name"], res1["version"]) in listed
+        assert (res1["name"], "ред. 2") in listed
+        # the new version is complete: shared fragments + the delta
+        v2 = wired.documents.list_documents(version="ред. 2")
+        assert v2.count == 1 and v2.documents[0].node_count == res2["nodes"]
+
+
+class TestDeleteDocument:
+    def test_delete_all_versions_wipes_store_and_registry(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest("doc.docx", sample_raw, h)
+        out = wired.ingestion.delete_document(res["name"])
+
+        assert out["points_deleted"] > 0 and res["version"] in out["versions_removed"]
+        assert wired.qdrant.points == {}
+        assert wired.registry.versions(res["name"]) == []
+        assert not wired.registry.has_name(res["name"])
+        assert not wired.registry.has_hash(h)
+        assert wired.registry.all_documents() == []
+
+    def test_delete_single_version_keeps_shared_fragments(self, wired, sample_raw):
+        h1 = DocumentParser.content_hash(sample_raw)
+        res1 = wired.ingestion.ingest("doc.docx", sample_raw, h1)
+        updated = sample_raw + [
+            {
+                "text": "Новый пункт документа.",
+                "category": "NarrativeText",
+                "html": None,
+            }
+        ]
+        h2 = DocumentParser.content_hash(updated)
+        res2 = wired.ingestion.update(
+            res1["name"], "doc.docx", updated, h2, version_override="ред. 2"
+        )
+
+        before = len(wired.qdrant.points)
+        out = wired.ingestion.delete_document(res1["name"], version="ред. 2")
+
+        assert out["points_deleted"] == res2["new_nodes"]
+        assert out["points_updated"] == res2["reused_nodes"]
+        assert len(wired.qdrant.points) == before - res2["new_nodes"]
+        assert all(
+            "ред. 2" not in pl.get("versions", [])
+            for _v, pl in wired.qdrant.points.values()
+        )
+        assert wired.registry.versions(res1["name"]) == [res1["version"]]
+        assert wired.registry.has_hash(h1) and not wired.registry.has_hash(h2)
+
+    def test_delete_unknown_name_raises(self, wired):
+        with pytest.raises(KeyError):
+            wired.ingestion.delete_document("нет такого")
+
+    def test_delete_unknown_version_raises(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest("doc.docx", sample_raw, h)
+        with pytest.raises(KeyError):
+            wired.ingestion.delete_document(res["name"], version="нет такой")
+
+
+class TestReloadDocument:
+    def test_reload_replaces_all_versions(self, wired, sample_raw):
+        h1 = DocumentParser.content_hash(sample_raw)
+        res1 = wired.ingestion.ingest("doc.docx", sample_raw, h1)
+        new_raw = sample_raw + [
+            {
+                "text": "Полностью новая редакция.",
+                "category": "NarrativeText",
+                "html": None,
+            }
+        ]
+        h2 = DocumentParser.content_hash(new_raw)
+        res2 = wired.ingestion.reload(
+            res1["name"],
+            "doc.docx",
+            new_raw,
+            h2,
+            version_override="ред. 9",
+            job_id="jr",
+        )
+
+        assert res2["name"] == res1["name"]  # identity pinned by the URL name
+        assert wired.registry.versions(res1["name"]) == ["ред. 9"]
+        assert not wired.registry.has_hash(h1) and wired.registry.has_hash(h2)
+        assert all(
+            pl["versions"] == ["ред. 9"] for _v, pl in wired.qdrant.points.values()
+        )
+        assert wired.jobs.get("jr")["status"] == "done"
+
+    def test_reload_of_absent_document_acts_as_ingest(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.reload("Новый документ", "doc.docx", sample_raw, h)
+        assert res["name"] == "Новый документ"
+        assert wired.qdrant.points
+
+
 class TestSearch:
     def test_search_returns_hits_after_ingest(self, wired, sample_raw):
         h = DocumentParser.content_hash(sample_raw)

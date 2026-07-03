@@ -33,12 +33,16 @@ class FakeParser:
 class FakeRegistry:
     def __init__(self):
         self.dup = False
+        self.names = {"Известный документ"}
 
     def has_hash(self, h):
         return self.dup
 
     def hash_info(self, h):
         return {"name": "N", "version": "V"}
+
+    def has_name(self, name):
+        return name in self.names
 
 
 class FakeJobs:
@@ -55,10 +59,32 @@ class FakeJobs:
 class FakeIngestion:
     def __init__(self):
         self.calls = []
+        self.update_calls = []
+        self.reload_calls = []
+        self.delete_calls = []
 
     def ingest(self, *a, **k):
         self.calls.append((a, k))
         return {}
+
+    def update(self, *a, **k):
+        self.update_calls.append((a, k))
+        return {}
+
+    def reload(self, *a, **k):
+        self.reload_calls.append((a, k))
+        return {}
+
+    def delete_document(self, name, version=None):
+        self.delete_calls.append((name, version))
+        if name == "нет такого":
+            raise KeyError(f"документ не найден: {name}")
+        return {
+            "name": name,
+            "versions_removed": [version] if version else ["v1", "v2"],
+            "points_deleted": 3,
+            "points_updated": 2,
+        }
 
 
 class FakeSearch:
@@ -149,6 +175,94 @@ class TestUpload:
         c, _ = client
         resp = c.post("/documents", files={"file": ("scan.pdf", b"data")})
         assert resp.status_code == 415
+
+    def test_manual_name_and_version_forwarded(self, client):
+        c, fakes = client
+        resp = c.post(
+            "/documents",
+            files={"file": ("doc.docx", b"data")},
+            data={"name": "СП 5.2025", "version": "2025"},
+        )
+        assert resp.status_code == 202
+        _, kwargs = fakes["ingestion"].calls[-1]
+        assert kwargs["name_override"] == "СП 5.2025"
+        assert kwargs["version_override"] == "2025"
+
+
+class TestUpdateDocument:
+    def test_queues_background_update(self, client):
+        c, fakes = client
+        resp = c.patch(
+            "/documents/Известный документ",
+            files={"file": ("doc.docx", b"data")},
+            data={"version": "ред. 2"},
+        )
+        assert resp.status_code == 202 and resp.json()["status"] == "queued"
+        args, kwargs = fakes["ingestion"].update_calls[-1]
+        assert args[0] == "Известный документ"
+        assert kwargs["version_override"] == "ред. 2"
+
+    def test_unknown_name_returns_404(self, client):
+        c, fakes = client
+        resp = c.patch("/documents/нет такого", files={"file": ("doc.docx", b"data")})
+        assert resp.status_code == 404
+        assert not fakes["ingestion"].update_calls
+
+    def test_exact_duplicate_rejected(self, client):
+        c, fakes = client
+        fakes["registry"].dup = True
+        resp = c.patch(
+            "/documents/Известный документ", files={"file": ("doc.docx", b"data")}
+        )
+        assert resp.status_code == 400
+
+    def test_unsupported_extension_rejected(self, client):
+        c, _ = client
+        resp = c.patch(
+            "/documents/Известный документ", files={"file": ("scan.pdf", b"data")}
+        )
+        assert resp.status_code == 415
+
+
+class TestReloadDocument:
+    def test_queues_background_reload(self, client):
+        c, fakes = client
+        resp = c.put(
+            "/documents/Известный документ", files={"file": ("doc.docx", b"data")}
+        )
+        assert resp.status_code == 202 and resp.json()["status"] == "queued"
+        args, _ = fakes["ingestion"].reload_calls[-1]
+        assert args[0] == "Известный документ"
+
+    def test_duplicate_not_rejected(self, client):
+        c, fakes = client
+        fakes["registry"].dup = True  # PUT rebuilds the index, so re-upload is fine
+        resp = c.put(
+            "/documents/Известный документ", files={"file": ("doc.docx", b"data")}
+        )
+        assert resp.status_code == 202
+
+
+class TestDeleteDocument:
+    def test_deletes_all_versions(self, client):
+        c, fakes = client
+        resp = c.delete("/documents/Известный документ")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["versions_removed"] == ["v1", "v2"]
+        assert body["points_deleted"] == 3
+        assert fakes["ingestion"].delete_calls[-1] == ("Известный документ", None)
+
+    def test_deletes_single_version(self, client):
+        c, fakes = client
+        resp = c.delete("/documents/Известный документ", params={"version": "v2"})
+        assert resp.status_code == 200
+        assert resp.json()["versions_removed"] == ["v2"]
+        assert fakes["ingestion"].delete_calls[-1] == ("Известный документ", "v2")
+
+    def test_unknown_name_returns_404(self, client):
+        c, _ = client
+        assert c.delete("/documents/нет такого").status_code == 404
 
 
 class TestListDocuments:
