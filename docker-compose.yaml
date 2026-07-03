@@ -35,8 +35,8 @@ services:
       redis:
         condition: service_healthy
     env_file:
-      - .env.example
-    # Внутри контейнера localhost — это сам контейнер, поэтому адреса из .env.example
+      - .env.min.example
+    # Внутри контейнера localhost — это сам контейнер, поэтому адреса из .env.min.example
     # (localhost) переопределяем: Qdrant/Redis — по именам сервисов compose-сети,
     # Ollama — через host.docker.internal (локальная Ollama на хосте).
     environment:

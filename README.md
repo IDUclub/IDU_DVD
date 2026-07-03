@@ -81,14 +81,16 @@ ollama pull qwen2.5:7b-instruct
 
 ### 3. Configuration
 
-Copy the example and adjust addresses and models if needed:
+Copy the minimal example and adjust addresses and models if needed:
 
 ```
-cp .env.example .env
+cp .env.min.example .env
 ```
 
-Variables are prefixed with `DVD_`. `DVD_VECTOR_SIZE` must match the embedding model's dimension
-(`bge-m3` = 1024). The full list is in `docs/en/configuration.md`.
+Every setting has a sane default in code (`src/common/config/app_config.py`), so the app starts
+without a `.env` at all; the minimal example covers what is usually overridden. The full variable
+reference is `.env.full.example` and `docs/en/configuration.md`. Variables are prefixed with
+`DVD_`. `DVD_VECTOR_SIZE` must match the embedding model's dimension (`bge-m3` = 1024).
 
 ### 4. Running the application
 

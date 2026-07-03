@@ -231,6 +231,7 @@ docs_data/
 # Env
 .env.development
 .env.production
+.env.overrides
 
 # Application logs
 /logs/

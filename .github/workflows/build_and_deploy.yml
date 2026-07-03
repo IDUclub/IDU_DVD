@@ -1,0 +1,121 @@
+# Manual production deploy (the gMART build_and_deploy_all pipeline adapted for IDU_DVD):
+# build the image on the self-hosted runner, push it to the private registry, then restart
+# the app via docker-compose.actions.yaml (app + Qdrant + Redis; the data services keep
+# running across deploys and persist in named volumes).
+#
+# Config precedence for the app container (weakest to strongest):
+#   1. code defaults (src/common/config/app_config.py — already IDU-contour values);
+#   2. host env file  $ENV_PATH/.env.dvd.production  -> copied to ./.env.production;
+#   3. repo settings: DVD_* vars of the "production" GitHub environment -> written to
+#      ./.env.overrides (only non-empty ones, so an unset var never wipes a file value);
+#   4. compose `environment:` — pins Qdrant/Redis to the in-compose services (not overridable).
+# To make another variable overridable from repo settings, add it to the env block of the
+# "Apply repo-settings overrides" step.
+#
+# Also expects: secret REGISTRY (registry host/namespace), secret ENV_PATH (directory on
+# the runner holding .env.dvd.production), a runner already logged in to the registry, and
+# optional var DVD_HOST_PORT (default 8100 — host port 8000 is taken by gMART idu_mcp).
+# Jobs share the runner workspace: run_container reuses the checkout made in build.
+
+name: build and deploy
+
+on:
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: ${{ secrets.REGISTRY }}/idu_dvd
+  CONTAINER_NAME: idu_dvd
+
+jobs:
+  build:
+    runs-on: 99_runner
+    outputs:
+      now: ${{ steps.date.outputs.now }}
+
+    steps:
+      - name: Set current date
+        id: date
+        run: echo "now=$(date +'%Y-%m-%dT%H-%M-%S')" >> $GITHUB_OUTPUT
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image
+        env:
+          NOW: ${{ steps.date.outputs.now }}
+        run: |
+          docker build -t "$IMAGE_NAME:$NOW" .
+
+      - name: Push image
+        env:
+          NOW: ${{ steps.date.outputs.now }}
+        run: |
+          docker push "$IMAGE_NAME:$NOW"
+
+  stop_container:
+    runs-on: 99_runner
+    needs: build
+
+    steps:
+      # Only the app container: dvd_qdrant / dvd_redis stay up (compose
+      # reconciles them in the next job) and keep their volumes.
+      - name: Stop container
+        run: |
+          docker rm -f "$CONTAINER_NAME" || true
+
+  run_container:
+    runs-on: 99_runner
+    needs: [build, stop_container]
+    environment: production
+
+    env:
+      NOW: ${{ needs.build.outputs.now }}
+
+    steps:
+      - name: Set image env
+        run: |
+          echo "DVD_IMAGE=$IMAGE_NAME:$NOW" >> $GITHUB_ENV
+
+      - name: Copy env
+        env:
+          ENV_PATH: ${{ secrets.ENV_PATH }}
+        run: |
+          cp "$ENV_PATH/.env.dvd.production" ./.env.production
+
+      # Non-empty DVD_* vars from the "production" environment win over the host env
+      # file: they land in .env.overrides, which compose loads after .env.production.
+      # DVD_IMAGE / DVD_HOST_PORT are compose-interpolation vars, not app config.
+      - name: Apply repo-settings overrides
+        env:
+          DVD_OLLAMA_BASE: ${{ vars.DVD_OLLAMA_BASE }}
+          DVD_OLLAMA_MODEL: ${{ vars.DVD_OLLAMA_MODEL }}
+          DVD_KAFKA_BOOTSTRAP_SERVERS: ${{ vars.DVD_KAFKA_BOOTSTRAP_SERVERS }}
+          DVD_KAFKA_SCHEMA_REGISTRY_URL: ${{ vars.DVD_KAFKA_SCHEMA_REGISTRY_URL }}
+        run: |
+          : > .env.overrides
+          env | grep '^DVD_' | grep -vE '^(DVD_IMAGE|DVD_HOST_PORT)=' | grep -v '=$' >> .env.overrides || true
+          echo "overrides applied: $(cut -d= -f1 .env.overrides | tr '\n' ' ')"
+
+      - name: Run containers
+        env:
+          DVD_HOST_PORT: ${{ vars.DVD_HOST_PORT }}
+        run: docker compose -f docker-compose.actions.yaml up -d --wait --wait-timeout 180
+
+      - name: Container diagnostics
+        if: always()
+        run: |
+          sleep 5
+          fail=0
+          for c in idu_dvd dvd_qdrant dvd_redis; do
+            status=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo missing)
+            health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$c" 2>/dev/null || echo n/a)
+            count=$(docker inspect -f '{{.RestartCount}}' "$c" 2>/dev/null || echo 0)
+            echo "::group::$c (status=$status, health=$health, restarts=$count)"
+            docker logs --tail 200 "$c" 2>&1 || true
+            echo "::endgroup::"
+            if [ "$status" != "running" ] || [ "$count" -gt 0 ]; then
+              echo "::error::container $c is unhealthy (status=$status, health=$health, restartCount=$count)"
+              fail=1
+            fi
+          done
+          exit $fail
