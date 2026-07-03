@@ -1,7 +1,8 @@
 name: Integration tests
 
-# Integration tests against disposable infrastructure — on PRs to develop,
-# nightly, and on demand:
+# Integration tests against disposable infrastructure — nightly, on demand, and
+# on PRs to develop via the Tests workflow (workflow_call, after unit tests and
+# formatting pass):
 #   - kafka-integration: the broker outbox->Kafka->consumer round-trip
 #     (Kafka KRaft + Schema Registry via tests/integration/kafka-compose.yaml).
 #   - pipeline-integration: the real ingestion pipeline (Ollama LLM on CPU,
@@ -10,15 +11,9 @@ name: Integration tests
 
 on:
   workflow_dispatch:
-  pull_request:
-    branches: [develop]
+  workflow_call:
   schedule:
     - cron: "17 3 * * *"
-
-# Cancel stale runs when a new commit is pushed to the PR.
-concurrency:
-  group: integration-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   kafka-integration:
