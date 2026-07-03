@@ -19,4 +19,15 @@ class JobStatusDTO(BaseModel):
     version: str | None = None
     other_versions: list[str] | None = None
     nodes: int | None = None
+    new_nodes: int | None = None  # delta update: fragments inserted for the new version
+    reused_nodes: int | None = (
+        None  # delta update: fragments shared with the base version
+    )
     error: str | None = None
+
+
+class DeleteResponse(BaseModel):
+    name: str
+    versions_removed: list[str]
+    points_deleted: int  # fragments removed from the vector store
+    points_updated: int  # shared fragments that only lost a version tag

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.broker.outbox import EventOutbox
+from src.broker.publisher import KafkaPublisher
 from src.common.config import Settings
 from src.common.db.qdrant_client import QdrantRepository
 from src.common.db.redis_client import DocumentRegistry, JobStore, RedisClient
@@ -22,6 +24,7 @@ from src.dvd_service.services.dvd_service import (
     IngestionService,
     LibraryService,
     SearchService,
+    TagsService,
 )
 from src.system_service.controllers import SystemController
 
@@ -50,10 +53,13 @@ class Dependencies:
         "version_detector",
         "reference_extractor",
         "reference_resolver",
+        "outbox",
+        "publisher",
         "ingestion",
         "search",
         "documents",
         "library",
+        "tags",
         "system",
     )
 
@@ -72,10 +78,13 @@ class Dependencies:
     version_detector: VersionDetector
     reference_extractor: ReferenceExtractor
     reference_resolver: ReferenceResolver
+    outbox: EventOutbox
+    publisher: KafkaPublisher
     ingestion: IngestionService
     search: SearchService
     documents: DocumentsService
     library: LibraryService
+    tags: TagsService
     system: SystemController
 
     def __new__(cls) -> "Dependencies":
@@ -100,10 +109,13 @@ class Dependencies:
         version_detector: VersionDetector,
         reference_extractor: ReferenceExtractor,
         reference_resolver: ReferenceResolver,
+        outbox: EventOutbox,
+        publisher: KafkaPublisher,
         ingestion: IngestionService,
         search: SearchService,
         documents: DocumentsService,
         library: LibraryService,
+        tags: TagsService,
         system: SystemController,
     ) -> "Dependencies":
         """Set all dependencies once (called from ``init_dependencies``)."""
@@ -120,10 +132,13 @@ class Dependencies:
         self.version_detector = version_detector
         self.reference_extractor = reference_extractor
         self.reference_resolver = reference_resolver
+        self.outbox = outbox
+        self.publisher = publisher
         self.ingestion = ingestion
         self.search = search
         self.documents = documents
         self.library = library
+        self.tags = tags
         self.system = system
         return self
 
@@ -200,6 +215,14 @@ class Dependencies:
         return cls.instance().reference_resolver
 
     @classmethod
+    def get_outbox(cls) -> EventOutbox:
+        return cls.instance().outbox
+
+    @classmethod
+    def get_publisher(cls) -> KafkaPublisher:
+        return cls.instance().publisher
+
+    @classmethod
     def get_ingestion(cls) -> IngestionService:
         return cls.instance().ingestion
 
@@ -214,6 +237,10 @@ class Dependencies:
     @classmethod
     def get_library(cls) -> LibraryService:
         return cls.instance().library
+
+    @classmethod
+    def get_tags(cls) -> TagsService:
+        return cls.instance().tags
 
     # --- representations ---
     def as_dict(self) -> dict[str, Any]:

@@ -14,6 +14,7 @@ import re
 _SEP = re.compile(r"[\s./\\:\-—–]+", re.U)
 _NON_WORD = re.compile(r"[^\w]+", re.U)
 _MULTI = re.compile(r"_+")
+_VERSION_DIGITS = re.compile(r"(?<!\d)(\d{4})(?!\d)")
 
 
 def normalize_key(value: str) -> str:
@@ -26,6 +27,16 @@ def normalize_key(value: str) -> str:
     s = _NON_WORD.sub("_", s)
     s = _MULTI.sub("_", s).strip("_")
     return s or "unknown"
+
+
+def extract_version_from_name(name: str) -> str | None:
+    """The last standalone 4-digit group of a document name, or None.
+
+    ``"СП 2.13130.2020"`` -> ``"2020"`` (``13130`` is 5 digits and is skipped);
+    ``"ГОСТ 12.1.004-91"`` -> ``None``. Longer digit runs never match partially.
+    """
+    matches = _VERSION_DIGITS.findall(name or "")
+    return matches[-1] if matches else None
 
 
 def make_version_id(name: str, content_hash: str) -> str:

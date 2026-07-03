@@ -21,7 +21,7 @@ class TestSearchRequest:
     def test_defaults(self):
         req = SearchRequest(query="hello")
         assert req.limit == 10 and req.context_height == 0
-        assert req.name is None and req.tags is None
+        assert req.name is None and req.tags is None and req.document_names is None
 
     def test_query_is_required(self):
         with pytest.raises(ValidationError):

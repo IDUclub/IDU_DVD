@@ -13,8 +13,9 @@ model and the embedding model are called through Ollama.
 |-----------|------|
 | FastAPI | HTTP API, background tasks |
 | Qdrant | vector database; a single collection, payload indexes |
-| Redis | parsing job statuses, document and version registry |
+| Redis | parsing job statuses, document and version registry, Kafka event outbox |
 | Ollama | LLM (markup, merge, tags, version) and embeddings |
+| Kafka (otteroad) | optional publishing of document lifecycle events (`DocumentProcessed` / `DocumentUpdated` / `DocumentDeleted`) for downstream services |
 | unstructured (python-docx) | text and table extraction from `.docx` |
 | pydantic-settings | configuration via environment variables |
 | structlog | structured logging |
@@ -37,6 +38,7 @@ Dependencies(
     settings, qdrant, redis, jobs, registry,
     parser, structure, hierarchy, tagger, version_detector,
     reference_extractor, reference_resolver,
+    outbox, publisher,
     ingestion, search, documents, library,
 )
 ```
@@ -49,6 +51,7 @@ Dependencies(
 | `src/api_clients/ollama_client.py` | `OllamaClient`, `OllamaError` |
 | `src/common/db/qdrant_client.py` | `QdrantRepository` |
 | `src/common/db/redis_client.py` | `RedisClient`, `JobStore`, `DocumentRegistry` |
+| `src/broker/` | Kafka integration: event models `DocumentProcessed` / `DocumentUpdated` / `DocumentDeleted` (`events.py`), `EventOutbox` (`outbox.py`), `KafkaPublisher` (`publisher.py`) |
 | `src/dvd_service/modules/doc_parsers.py` | `DocumentParser` (Stages 1 and 1.5) |
 | `src/dvd_service/modules/structure.py` | `StructureTagger` (Stages 2, 3, 3.5) |
 | `src/dvd_service/modules/hierarchy.py` | `HierarchyBuilder` (Stage 4 and node flattening) |
@@ -77,6 +80,13 @@ Dependencies(
 - `RedisClient` — Redis connection. `JobStore` — job statuses (`dvd:job:{id}`).
   `DocumentRegistry` — document hashes for deduplication (`dvd:hash:{hash}`) and version sets per
   document name (`dvd:versions:{name}`).
+- `EventOutbox` / `KafkaPublisher` (`src/broker/`) — optional Kafka publishing via the
+  [otteroad](https://github.com/IDUclub/otteroad) framework (AVRO + Schema Registry).
+  `IngestionService` appends lifecycle events to a Redis outbox list (topic `document.events`):
+  `DocumentProcessed` on a first upload, `DocumentUpdated` on a delta update/full reload,
+  `DocumentDeleted` on deletion; an async publisher started in `lifespan` drains it into Kafka
+  with retries (at-least-once), dead-lettering events that exhaust their attempts. Disabled
+  entirely unless `DVD_KAFKA_BOOTSTRAP_SERVERS` is set.
 
 ### Pipeline
 
@@ -94,8 +104,8 @@ Dependencies(
 
 - `IngestionService.ingest(file_path, raw, content_hash, ...)` — the full processing pipeline and
   ingestion of nodes into Qdrant.
-- `SearchService.search(request, kind)` — query vectorization, filtering (`name`, `version`,
-  `block`, `types`, `tags`), search and context assembly from neighbouring fragments.
+- `SearchService.search(request, kind)` — query vectorization, filtering (`name`, `document_names`,
+  `version`, `block`, `types`, `tags`), search and context assembly from neighbouring fragments.
 - `DocumentsService.list_documents(...)` — per-document view, aggregated by `(name, version)` from
   Qdrant fragment payloads (node count, blocks present, tag union, upload time), filterable by
   `name`, `version`, `block`, `tags` and an `uploaded_at` range.
@@ -110,13 +120,15 @@ Dependencies(
 of the same `Dependencies` container — without a separate DB/Redis initialization:
 
 - `search_texts`, `search_tables`, `search_all` — wrappers over `SearchService.search` (filters:
-  `name`, `version`, `block`, `types`, `tags`).
+  `name`, `document_names`, `version`, `block`, `types`, `tags`).
 - `list_documents` — a wrapper over `DocumentsService.list_documents`.
 - `job_status` — a wrapper over `JobStore.get`.
 - `document_versions` — a wrapper over `DocumentRegistry.versions`.
 - `pending_references` — a wrapper over `DocumentRegistry.peek_pending`.
 - `get_document` — a wrapper over `LibraryService.get_document` (full text + metadata + fragments).
 - `find_document` — a wrapper over `LibraryService.find_documents` (resolve by lookup key / external id).
+- `get_tags` — a wrapper over `TagsService.get_tags` (no params; all unique tags across the
+  collection, sorted alphabetically).
 
 The MCP server's ASGI app (`src/mcp_server/app.py`) is mounted into the main FastAPI application
 (`src/main.py`) at the `/mcp` path (streamable HTTP transport); the MCP server's `lifespan` is

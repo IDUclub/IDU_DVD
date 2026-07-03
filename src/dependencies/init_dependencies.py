@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import structlog
 
+from src.broker.outbox import EventOutbox
+from src.broker.publisher import KafkaPublisher
 from src.common.config import Settings, settings
 from src.common.db.qdrant_client import QdrantRepository
 from src.common.db.redis_client import DocumentRegistry, JobStore, RedisClient
@@ -23,6 +25,7 @@ from src.dvd_service.services.dvd_service import (
     IngestionService,
     LibraryService,
     SearchService,
+    TagsService,
 )
 from src.system_service.controllers import SystemController
 
@@ -55,6 +58,12 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     reference_extractor = ReferenceExtractor(s)
     reference_resolver = ReferenceResolver(qdrant, registry, s)
 
+    # Kafka publishing (otteroad): events are queued in a Redis outbox and delivered
+    # by the async publisher started in the lifespan. Without a configured broker the
+    # publisher stays off and the pipeline skips enqueueing (outbox=None below).
+    outbox = EventOutbox(redis, s)
+    publisher = KafkaPublisher(outbox, s)
+
     ingestion = IngestionService(
         parser,
         structure,
@@ -67,10 +76,12 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         registry,
         jobs,
         s,
+        outbox=outbox if publisher.enabled else None,
     )
     search = SearchService(qdrant, s)
     documents = DocumentsService(qdrant)
     library = LibraryService(qdrant, registry)
+    tags = TagsService(qdrant)
 
     system = SystemController(s)
 
@@ -88,10 +99,13 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         version_detector=version_detector,
         reference_extractor=reference_extractor,
         reference_resolver=reference_resolver,
+        outbox=outbox,
+        publisher=publisher,
         ingestion=ingestion,
         search=search,
         documents=documents,
         library=library,
+        tags=tags,
         system=system,
     )
     log.info("dependencies_initialized", dependencies=repr(deps))
