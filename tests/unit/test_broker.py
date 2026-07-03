@@ -138,9 +138,7 @@ class TestKafkaPublisher:
     async def test_unknown_event_model_is_dead_lettered(self, outbox):
         publisher = KafkaPublisher(outbox, _kafka_settings())
         publisher._producer = AsyncMock()
-        outbox.r.rpush(
-            outbox.key, json.dumps({"model": "NoSuchEvent", "payload": {}})
-        )
+        outbox.r.rpush(outbox.key, json.dumps({"model": "NoSuchEvent", "payload": {}}))
 
         assert await publisher._drain_once() == "sent"
         publisher._producer.send.assert_not_awaited()
