@@ -72,6 +72,19 @@ class Settings(BaseSettings):
     default_corpus: str = "default"  # logical corpus/namespace a document belongs to
     default_lang: str | None = None  # ISO-639 code; None = unknown / not detected
 
+    # --- Kafka (document-processed events via otteroad) ---
+    # Publishing is optional: it stays off until a broker is configured.
+    kafka_bootstrap_servers: str | None = None  # e.g. "kafka:9092"; None = disabled
+    kafka_schema_registry_url: str = "http://localhost:8081"  # AVRO Schema Registry
+    kafka_client_id: str = "idu-dvd"
+    kafka_outbox_key: str = "dvd:kafka:outbox"  # Redis list of pending events
+    kafka_dead_letter_key: str = (
+        "dvd:kafka:outbox:dead"  # events that exhausted retries
+    )
+    kafka_poll_interval: float = 1.0  # seconds between outbox checks when idle
+    kafka_retry_interval: float = 5.0  # seconds to wait after a failed send
+    kafka_max_attempts: int = 10  # send attempts before an event is dead-lettered
+
     # --- Logging ---
     # Logs are written as JSON lines to a single growing file (filterable by date /
     # request_id via /system/logs) and as human-readable lines to stdout.
