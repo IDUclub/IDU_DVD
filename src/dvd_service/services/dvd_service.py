@@ -18,7 +18,7 @@ from qdrant_client.models import (
 )
 
 from src.api_clients import OllamaClient
-from src.broker.events import DocumentProcessed
+from src.broker.events import DocumentDeleted, DocumentProcessed, DocumentUpdated
 from src.broker.outbox import EventOutbox
 from src.common.config import Settings
 from src.common.db.qdrant_client import QdrantRepository
@@ -336,6 +336,7 @@ class IngestionService:
         job_id: str | None = None,
         *,
         name_override: str | None = None,
+        emit_event: bool = True,
         doc_type: str | None = None,
         corpus: str | None = None,
         lang: str | None = None,
@@ -457,7 +458,8 @@ class IngestionService:
 
             # Announce the fully processed document to downstream services (Kafka,
             # via the durable outbox — the publisher delivers it asynchronously).
-            if self.outbox is not None:
+            # ``emit_event`` is off when a caller (reload) announces the outcome itself.
+            if self.outbox is not None and emit_event:
                 self.outbox.enqueue(DocumentProcessed(document_name=name))
 
             result = {
@@ -668,7 +670,9 @@ class IngestionService:
             )
 
             if self.outbox is not None:
-                self.outbox.enqueue(DocumentProcessed(document_name=name))
+                self.outbox.enqueue(
+                    DocumentUpdated(document_name=name, version=version)
+                )
 
             result = {
                 "doc_id": doc_id,
@@ -704,32 +708,48 @@ class IngestionService:
         """Full reload: wipe every stored version of the document, then ingest from scratch.
 
         Create-or-replace semantics — a document that is not stored yet is simply ingested.
+        Announces a single event describing the outcome: ``DocumentUpdated`` when an existing
+        document was replaced (no intermediate ``DocumentDeleted``), ``DocumentProcessed``
+        when the reload effectively created the document.
         """
         if job_id:
             self.jobs.update(job_id, status="processing")
+        replaced = True
         try:
-            self.delete_document(name)
+            self.delete_document(name, emit_event=False)
         except KeyError:
-            pass  # nothing stored under this name yet
+            replaced = False  # nothing stored under this name yet
         except Exception as exc:  # noqa: BLE001
             if job_id:
                 self.jobs.update(job_id, status="error", error=str(exc))
             raise
-        return self.ingest(
+        result = self.ingest(
             file_path,
             raw,
             content_hash,
             version_override=version_override,
             job_id=job_id,
             name_override=name,
+            emit_event=False,
             **meta,
         )
+        if self.outbox is not None:
+            if replaced:
+                self.outbox.enqueue(
+                    DocumentUpdated(document_name=name, version=result["version"])
+                )
+            else:
+                self.outbox.enqueue(DocumentProcessed(document_name=name))
+        return result
 
-    def delete_document(self, name: str, version: str | None = None) -> dict:
+    def delete_document(
+        self, name: str, version: str | None = None, *, emit_event: bool = True
+    ) -> dict:
         """Remove a document (or one of its versions) from Qdrant and the Redis registry.
 
         Deleting a single version drops the fragments that belong to it exclusively and only
-        removes the version tag from fragments shared with other versions.
+        removes the version tag from fragments shared with other versions. Announces a
+        ``DocumentDeleted`` event unless the caller (reload) reports the outcome itself.
         """
         existing = self.qdrant.points_by_name(name)
         known_versions = self.registry.versions(name)
@@ -753,6 +773,14 @@ class IngestionService:
                 "points_deleted": len(existing),
                 "points_updated": 0,
             }
+            if self.outbox is not None and emit_event:
+                self.outbox.enqueue(
+                    DocumentDeleted(
+                        document_name=name,
+                        versions_removed=versions_removed,
+                        document_removed=True,
+                    )
+                )
             log.info("document_deleted", **result)
             return result
 
@@ -780,7 +808,8 @@ class IngestionService:
             self.qdrant.set_other_versions(
                 name, v, sorted(set(remaining_versions) - {v})
             )
-        if not remaining_versions and len(to_delete) == len(existing):
+        document_removed = not remaining_versions and len(to_delete) == len(existing)
+        if document_removed:
             self.registry.unregister_name(name)
 
         result = {
@@ -789,6 +818,14 @@ class IngestionService:
             "points_deleted": len(to_delete),
             "points_updated": sum(len(ids) for ids in tag_groups.values()),
         }
+        if self.outbox is not None and emit_event:
+            self.outbox.enqueue(
+                DocumentDeleted(
+                    document_name=name,
+                    versions_removed=[version],
+                    document_removed=document_removed,
+                )
+            )
         log.info("document_version_deleted", **result)
         return result
 

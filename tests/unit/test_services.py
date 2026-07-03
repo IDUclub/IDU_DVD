@@ -214,6 +214,13 @@ class TestIngest:
         assert repr(wired.ingestion).startswith("IngestionService(")
 
 
+def outbox_entries(outbox) -> list[dict]:
+    """All queued Kafka events, oldest first (peek only exposes the head)."""
+    import json
+
+    return [json.loads(v) for v in outbox.r.lrange(outbox.key, 0, -1)]
+
+
 def _version_detect_calls(ollama) -> list:
     """LLM calls that used the version-detection schema (top-level name+version props)."""
     return [
@@ -373,12 +380,19 @@ class TestUpdateDocument:
         assert wired.jobs.get("j2")["status"] == "done"
         assert wired.jobs.get("j2")["new_nodes"] == res2["new_nodes"]
 
-    def test_update_emits_document_processed_event(self, wired, sample_raw):
+    def test_update_emits_document_updated_event(self, wired, sample_raw):
         res1 = self._base(wired, sample_raw)
         updated = self._updated_raw(sample_raw)
         h2 = DocumentParser.content_hash(updated)
-        wired.ingestion.update(res1["name"], "doc.docx", updated, h2)
-        assert wired.outbox.size() == 2  # ingest + update
+        res2 = wired.ingestion.update(
+            res1["name"], "doc.docx", updated, h2, version_override="ред. 2"
+        )
+        events = outbox_entries(wired.outbox)
+        assert [e["model"] for e in events] == ["DocumentProcessed", "DocumentUpdated"]
+        assert events[1]["payload"] == {
+            "document_name": res1["name"],
+            "version": res2["version"],
+        }
 
     def test_update_unknown_name_raises(self, wired):
         with pytest.raises(KeyError):
@@ -453,6 +467,41 @@ class TestDeleteDocument:
         with pytest.raises(KeyError):
             wired.ingestion.delete_document(res["name"], version="нет такой")
 
+    def test_full_delete_emits_document_deleted_event(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest("doc.docx", sample_raw, h)
+        wired.ingestion.delete_document(res["name"])
+        last = outbox_entries(wired.outbox)[-1]
+        assert last["model"] == "DocumentDeleted"
+        assert last["payload"] == {
+            "document_name": res["name"],
+            "versions_removed": [res["version"]],
+            "document_removed": True,
+        }
+
+    def test_version_delete_emits_event_with_document_kept(self, wired, sample_raw):
+        h1 = DocumentParser.content_hash(sample_raw)
+        res1 = wired.ingestion.ingest("doc.docx", sample_raw, h1)
+        updated = sample_raw + [
+            {
+                "text": "Новый пункт документа.",
+                "category": "NarrativeText",
+                "html": None,
+            }
+        ]
+        h2 = DocumentParser.content_hash(updated)
+        wired.ingestion.update(
+            res1["name"], "doc.docx", updated, h2, version_override="ред. 2"
+        )
+        wired.ingestion.delete_document(res1["name"], version="ред. 2")
+        last = outbox_entries(wired.outbox)[-1]
+        assert last["model"] == "DocumentDeleted"
+        assert last["payload"] == {
+            "document_name": res1["name"],
+            "versions_removed": ["ред. 2"],
+            "document_removed": False,  # the 2020 edition is still stored
+        }
+
 
 class TestReloadDocument:
     def test_reload_replaces_all_versions(self, wired, sample_raw):
@@ -488,6 +537,31 @@ class TestReloadDocument:
         res = wired.ingestion.reload("Новый документ", "doc.docx", sample_raw, h)
         assert res["name"] == "Новый документ"
         assert wired.qdrant.points
+
+    def test_reload_emits_single_updated_event(self, wired, sample_raw):
+        h1 = DocumentParser.content_hash(sample_raw)
+        res1 = wired.ingestion.ingest("doc.docx", sample_raw, h1)
+        new_raw = sample_raw + [
+            {"text": "Новая редакция.", "category": "NarrativeText", "html": None}
+        ]
+        h2 = DocumentParser.content_hash(new_raw)
+        res2 = wired.ingestion.reload(
+            res1["name"], "doc.docx", new_raw, h2, version_override="ред. 9"
+        )
+        events = outbox_entries(wired.outbox)
+        # No intermediate DocumentDeleted — the replace is announced as one update.
+        assert [e["model"] for e in events] == ["DocumentProcessed", "DocumentUpdated"]
+        assert events[1]["payload"] == {
+            "document_name": res1["name"],
+            "version": res2["version"],
+        }
+
+    def test_reload_of_absent_document_emits_processed(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.reload("Новый документ", "doc.docx", sample_raw, h)
+        events = outbox_entries(wired.outbox)
+        assert [e["model"] for e in events] == ["DocumentProcessed"]
+        assert events[0]["payload"] == {"document_name": "Новый документ"}
 
 
 class TestSearch:
