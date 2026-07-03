@@ -68,6 +68,7 @@ class DocumentRegistry:
       dvd:pending_ref:{key}   -> LIST of dangling references waiting for document `key` to arrive
       dvd:doc:{doc_id}        -> JSON document summary (for the document-level read API)
       dvd:docs                -> SET of all doc_ids
+      dvd:blocks:{name}:{version} -> JSON list of source-block hashes (delta-update diffing)
     """
 
     def __init__(self, client: RedisClient) -> None:
@@ -98,6 +99,39 @@ class DocumentRegistry:
         )
         self.r.sadd(f"dvd:versions:{name}", version)
         self.r.sadd("dvd:names", name)
+
+    def remove_version(self, name: str, version: str) -> None:
+        self.r.srem(f"dvd:versions:{name}", version)
+        self.r.delete(f"dvd:blocks:{name}:{version}")
+
+    def unregister_name(self, name: str) -> None:
+        """Forget a document entirely: its version set, block fingerprints and name entry."""
+        self.r.delete(f"dvd:versions:{name}")
+        for key in self.r.scan_iter(match=f"dvd:blocks:{name}:*"):
+            self.r.delete(key)
+        self.r.srem("dvd:names", name)
+
+    # --- source-block fingerprints (deterministic delta-update diffing) ---
+    def register_blocks(self, name: str, version: str, hashes: list[str]) -> None:
+        self.r.set(f"dvd:blocks:{name}:{version}", json.dumps(hashes))
+
+    def get_blocks(self, name: str, version: str) -> list[str] | None:
+        v = self.r.get(f"dvd:blocks:{name}:{version}")
+        return json.loads(v) if v else None
+
+    def remove_hashes(self, name: str, version: str | None = None) -> int:
+        """Drop dedup-hash entries of a document (optionally of one version only)."""
+        removed = 0
+        for key in self.r.scan_iter(match="dvd:hash:*"):
+            v = self.r.get(key)
+            info = json.loads(v) if v else {}
+            if info.get("name") != name:
+                continue
+            if version is not None and info.get("version") != version:
+                continue
+            self.r.delete(key)
+            removed += 1
+        return removed
 
     # --- document names (for reference resolution) ---
     def names(self) -> list[str]:
@@ -141,6 +175,10 @@ class DocumentRegistry:
     def get_document(self, doc_id: str) -> dict | None:
         v = self.r.get(f"dvd:doc:{doc_id}")
         return json.loads(v) if v else None
+
+    def unregister_document(self, doc_id: str) -> None:
+        self.r.delete(f"dvd:doc:{doc_id}")
+        self.r.srem("dvd:docs", doc_id)
 
     def doc_ids(self) -> list[str]:
         return sorted(self.r.smembers("dvd:docs"))

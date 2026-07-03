@@ -27,6 +27,7 @@ _PAYLOAD_INDEXES: dict[str, PayloadSchemaType] = {
     "doc_id": PayloadSchemaType.KEYWORD,
     "name": PayloadSchemaType.KEYWORD,
     "version": PayloadSchemaType.KEYWORD,
+    "versions": PayloadSchemaType.KEYWORD,  # multi-valued version tags (delta updates)
     "version_id": PayloadSchemaType.KEYWORD,
     "kind": PayloadSchemaType.KEYWORD,
     "type": PayloadSchemaType.KEYWORD,
@@ -153,6 +154,45 @@ class QdrantRepository:
             if did and did not in seen:
                 seen.append(did)
         return seen
+
+    def points_by_name(self, name: str) -> list[dict]:
+        """All point payloads of a document by name, each with its point ``id`` injected."""
+        flt = Filter(must=[FieldCondition(key="name", match=MatchValue(value=name))])
+        out: list[dict] = []
+        offset = None
+        while True:
+            recs, offset = self.client.scroll(
+                self.collection,
+                scroll_filter=flt,
+                limit=256,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            out.extend({**(r.payload or {}), "id": str(r.id)} for r in recs)
+            if offset is None:
+                break
+        return out
+
+    def set_versions(self, point_ids: Sequence[str], versions: list[str]) -> None:
+        """Replace the multi-valued ``versions`` tags on the given points."""
+        if point_ids:
+            self.client.set_payload(
+                self.collection, payload={"versions": versions}, points=list(point_ids)
+            )
+
+    def delete_points(self, point_ids: Sequence[str]) -> None:
+        if point_ids:
+            self.client.delete(self.collection, points_selector=list(point_ids))
+
+    def delete_by_name(self, name: str) -> None:
+        """Delete every point of a document (all its versions)."""
+        self.client.delete(
+            self.collection,
+            points_selector=Filter(
+                must=[FieldCondition(key="name", match=MatchValue(value=name))]
+            ),
+        )
 
     def set_other_versions(
         self, name: str, version: str, other_versions: list[str]

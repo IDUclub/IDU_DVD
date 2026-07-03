@@ -99,9 +99,11 @@ well as `kind` (`text`/`table`) and `table_html`.
 - Node texts are vectorized by the embedding model (in batches).
 - Points are ingested into Qdrant; the hash and version are registered in Redis, and a per-document
   summary is stored (`dvd:doc:{doc_id}`) for the document read API.
-- When Kafka publishing is configured (`DVD_KAFKA_BOOTSTRAP_SERVERS`), a `DocumentProcessed` event
-  with the document name is queued to the Redis outbox and delivered to the `document.events` topic,
-  so downstream services learn that the document is fully processed (see `docs/en/configuration.md`).
+- When Kafka publishing is configured (`DVD_KAFKA_BOOTSTRAP_SERVERS`), a lifecycle event is queued
+  to the Redis outbox and delivered to the `document.events` topic: `DocumentProcessed` for a first
+  upload, `DocumentUpdated` for a delta update or full reload, `DocumentDeleted` for a deletion —
+  so downstream services can react to every change of the stored corpus (see
+  `docs/en/configuration.md`).
 
 ## Stage 5.5. Reference extraction and linking
 

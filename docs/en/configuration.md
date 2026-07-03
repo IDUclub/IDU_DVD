@@ -38,13 +38,22 @@ List fields (`languages`, `allowed_extensions`) are set in the environment in JS
 | `DVD_REDIS_URL` | `redis://localhost:6379/0` | Redis address |
 | `DVD_REDIS_JOB_TTL` | `86400` | job status TTL, seconds |
 
-### Kafka (document-processed events)
+### Kafka (document lifecycle events)
 
-Publishing is optional and stays off until `DVD_KAFKA_BOOTSTRAP_SERVERS` is set. When a document is
-fully processed and stored, a `DocumentProcessed` event (`document_name`) is appended to a durable
-Redis outbox and delivered to the `document.events` topic by a background publisher (the
-[otteroad](https://github.com/IDUclub/otteroad) framework: AVRO + Schema Registry). Events that keep
-failing are moved to a dead-letter list instead of blocking the queue.
+Publishing is optional and stays off until `DVD_KAFKA_BOOTSTRAP_SERVERS` is set. Document
+lifecycle changes are appended to a durable Redis outbox and delivered to the `document.events`
+topic by a background publisher (the [otteroad](https://github.com/IDUclub/otteroad) framework:
+AVRO + Schema Registry). Events that keep failing are moved to a dead-letter list instead of
+blocking the queue. Event types:
+
+| Event | When | Payload |
+|-------|------|---------|
+| `DocumentProcessed` | first upload of a document (`POST /documents`) | `document_name` |
+| `DocumentUpdated` | delta update or full reload (`PATCH`/`PUT /documents/{name}`) | `document_name`, `version` |
+| `DocumentDeleted` | deletion of a document or one version (`DELETE /documents/{name}`) | `document_name`, `versions_removed`, `document_removed` |
+
+A `PUT` reload announces a single `DocumentUpdated` (no intermediate `DocumentDeleted`); a reload
+of a not-yet-stored document announces `DocumentProcessed`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|

@@ -20,7 +20,11 @@ from src.dvd_service.dto.search import (  # noqa: F401
     SearchResponse,
     TagsResponse,
 )
-from src.dvd_service.dto.upload import JobStatusDTO, UploadResponse  # noqa: F401
+from src.dvd_service.dto.upload import (  # noqa: F401
+    DeleteResponse,
+    JobStatusDTO,
+    UploadResponse,
+)
 
 __all__ = [
     "NodePayload",
@@ -33,6 +37,7 @@ __all__ = [
     "DocumentList",
     "UploadResponse",
     "JobStatusDTO",
+    "DeleteResponse",
     "SearchRequest",
     "SearchHit",
     "SearchResponse",
