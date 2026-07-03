@@ -13,9 +13,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.broker.events import DocumentProcessed
+from src.broker.events import DocumentDeleted, DocumentProcessed, DocumentUpdated
 from src.broker.outbox import EventOutbox
-from src.broker.publisher import KafkaPublisher
+from src.broker.publisher import EVENT_MODELS, KafkaPublisher
 from src.common.config import Settings
 from src.common.db.redis_client import RedisClient
 
@@ -29,15 +29,38 @@ def _kafka_settings() -> Settings:
     return Settings(kafka_bootstrap_servers="kafka:9092")
 
 
-class TestDocumentProcessedModel:
-    def test_topic_and_schema_metadata(self):
-        assert DocumentProcessed.topic == "document.events"
-        assert DocumentProcessed.namespace == "documents"
-        assert DocumentProcessed.schema_version == 1
+class TestEventModels:
+    @pytest.mark.parametrize(
+        "model", [DocumentProcessed, DocumentUpdated, DocumentDeleted]
+    )
+    def test_topic_and_schema_metadata(self, model):
+        assert model.topic == "document.events"
+        assert model.namespace == "documents"
+        assert model.schema_version == 1
 
-    def test_payload_roundtrip(self):
-        e = DocumentProcessed(document_name="СП 99.99999.2099")
-        assert DocumentProcessed(**e.model_dump(mode="json")) == e
+    @pytest.mark.parametrize(
+        "event",
+        [
+            DocumentProcessed(document_name="СП 99.99999.2099"),
+            DocumentUpdated(document_name="СП 99.99999.2099", version="2099"),
+            DocumentDeleted(
+                document_name="СП 99.99999.2099",
+                versions_removed=["2088", "2099"],
+                document_removed=True,
+            ),
+        ],
+    )
+    def test_payload_roundtrip(self, event):
+        assert type(event)(**event.model_dump(mode="json")) == event
+
+    def test_all_models_registered_with_publisher(self):
+        # An event the publisher does not know is dead-lettered, never sent —
+        # every emitted model must be in the registry.
+        assert set(EVENT_MODELS) == {
+            "DocumentProcessed",
+            "DocumentUpdated",
+            "DocumentDeleted",
+        }
 
 
 class TestEventOutbox:

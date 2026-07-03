@@ -155,27 +155,56 @@ class FakeQdrantRepo:
                 best = (cand, pl.get("version", ""))
         return best[0] if best else None
 
+    @staticmethod
+    def _matches(pl, cond) -> bool:
+        if (
+            getattr(cond, "should", None) is not None
+        ):  # nested Filter: any should-clause
+            return any(FakeQdrantRepo._matches(pl, c) for c in cond.should)
+        val = pl.get(cond.key)
+        m = cond.match
+        if hasattr(m, "value"):
+            if isinstance(val, list):
+                return m.value in val
+            return val == m.value
+        if hasattr(m, "any"):
+            if isinstance(val, list):
+                return any(v in val for v in m.any)
+            return val in m.any
+        return False
+
     def scroll_payloads(self, query_filter=None, batch=256):
         payloads = [pl for _vec, pl in self.points.values()]
         if query_filter is None:
             return payloads
-        out = []
-        for pl in payloads:
-            ok = True
-            for cond in query_filter.must:
-                val = pl.get(cond.key)
-                m = cond.match
-                if hasattr(m, "value"):
-                    if val != m.value:
-                        ok = False
-                        break
-                elif hasattr(m, "any"):
-                    if not isinstance(val, list) or not any(v in val for v in m.any):
-                        ok = False
-                        break
-            if ok:
-                out.append(pl)
-        return out
+        return [
+            pl
+            for pl in payloads
+            if all(self._matches(pl, cond) for cond in query_filter.must)
+        ]
+
+    def points_by_name(self, name):
+        return [
+            {**pl, "id": str(pid)}
+            for pid, (_vec, pl) in self.points.items()
+            if pl.get("name") == name
+        ]
+
+    def set_versions(self, point_ids, versions) -> None:
+        for pid in point_ids:
+            vec, pl = self.points[str(pid)]
+            self.points[str(pid)] = (vec, {**pl, "versions": list(versions)})
+
+    def delete_points(self, point_ids) -> None:
+        for pid in point_ids:
+            self.points.pop(str(pid), None)
+
+    def delete_by_name(self, name) -> None:
+        self.points = {
+            pid: (vec, pl)
+            for pid, (vec, pl) in self.points.items()
+            if pl.get("name") != name
+        }
 
     def update_references(self, node_id, references) -> None:
         nid = str(node_id)

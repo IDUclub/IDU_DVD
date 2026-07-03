@@ -32,6 +32,9 @@ class SearchHit(BaseModel):
     name: str
     title: str | None = None
     version: str
+    versions: list[str] = Field(
+        default_factory=list
+    )  # all versions containing the fragment
     version_id: str | None = None
     other_versions: list[str] = Field(default_factory=list)
 

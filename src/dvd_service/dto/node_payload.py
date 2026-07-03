@@ -33,7 +33,10 @@ class NodePayload(BaseModel):
     doc_id: str
     name: str  # document name/designation (filterable)
     title: str | None = None  # human-readable title, when distinct from name
-    version: str
+    version: str  # version the fragment first appeared in
+    versions: list[str] = Field(
+        default_factory=list
+    )  # every version this fragment belongs to (delta updates tag shared fragments)
     version_id: str | None = None  # stable id of this concrete revision/source file
     other_versions: list[str] = Field(
         default_factory=list
@@ -63,6 +66,9 @@ class NodePayload(BaseModel):
     source_uri: str | None = None  # file path / URL of the source
 
     # --- source grounding (path back to the source span) ---
+    src_block_ids: list[int] = Field(
+        default_factory=list
+    )  # indices of the source raw blocks the node was built from (delta-update diffing)
     char_start: int | None = None  # offset into the normalized source text
     char_end: int | None = None
     page_start: int | None = None  # when the format exposes pages (PDF/scan)
