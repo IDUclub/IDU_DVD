@@ -9,7 +9,7 @@ List fields (`languages`, `allowed_extensions`) are set in the environment in JS
 `DVD_ALLOWED_EXTENSIONS='[".docx",".txt",".md"]'`.
 
 Every field has a default in code, so the application starts without a `.env` at all. Two example
-files ship with the repo: **`.env.min.example`** — the minimal set worth overriding (local
+files ship with the repo: **`.env.example`** — the service's network links (local
 Ollama/Qdrant/Redis addresses, the Kafka switch); **`.env.full.example`** — the full reference
 mirroring the defaults. This page is the canonical variable list: when adding a setting, update
 the table here and `.env.full.example` together.
