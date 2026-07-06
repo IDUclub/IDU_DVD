@@ -8,6 +8,12 @@ pydantic-settings. Values are overridden by environment variables with the `DVD_
 List fields (`languages`, `allowed_extensions`) are set in the environment in JSON format, e.g.
 `DVD_ALLOWED_EXTENSIONS='[".docx",".txt",".md"]'`.
 
+Every field has a default in code, so the application starts without a `.env` at all. Two example
+files ship with the repo: **`.env.example`** — the service's network links (local
+Ollama/Qdrant/Redis addresses, the Kafka switch); **`.env.full.example`** — the full reference
+mirroring the defaults. This page is the canonical variable list: when adding a setting, update
+the table here and `.env.full.example` together.
+
 ## Variables
 
 ### Ollama
@@ -58,7 +64,7 @@ of a not-yet-stored document announces `DocumentProcessed`.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DVD_KAFKA_BOOTSTRAP_SERVERS` | empty | Kafka brokers (`host:port[,host:port]`); empty = publishing disabled |
-| `DVD_KAFKA_SCHEMA_REGISTRY_URL` | `http://localhost:8081` | AVRO Schema Registry address |
+| `DVD_KAFKA_SCHEMA_REGISTRY_URL` | `https://schema-registry.next.idulab.ru` | AVRO Schema Registry address (default = the IDU contour registry) |
 | `DVD_KAFKA_CLIENT_ID` | `idu-dvd` | client id shown in broker logs |
 | `DVD_KAFKA_OUTBOX_KEY` | `dvd:kafka:outbox` | Redis list with pending events |
 | `DVD_KAFKA_DEAD_LETTER_KEY` | `dvd:kafka:outbox:dead` | Redis list for events that exhausted retries |
