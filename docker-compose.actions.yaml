@@ -18,48 +18,10 @@ services:
     env_file:
       - ./.env.production
       - ./.env.overrides
-    environment:
-      DVD_QDRANT_URL: http://qdrant:6333
-      DVD_REDIS_URL: redis://redis:6379/0
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - dvd_uploads:/app/_uploads
-    depends_on:
-      qdrant:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    # healthcheck приложения задан в Dockerfile (HEALTHCHECK на /ping)
-
-  qdrant:
-    image: qdrant/qdrant:latest
-    container_name: dvd_qdrant
-    restart: always
-    volumes:
-      - dvd_qdrant_data:/qdrant/storage
-    healthcheck:
-      # В образе qdrant нет curl/wget, но есть bash: проверяем, что порт 6333 слушается.
-      test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/6333"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-
-  redis:
-    image: redis:7-alpine
-    container_name: dvd_redis
-    restart: always
-    volumes:
-      - dvd_redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 5s
 
 volumes:
   dvd_uploads:
-  dvd_qdrant_data:
-  dvd_redis_data:
