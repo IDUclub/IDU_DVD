@@ -73,9 +73,12 @@ class Settings(BaseSettings):
     default_lang: str | None = None  # ISO-639 code; None = unknown / not detected
 
     # --- Kafka (document-processed events via otteroad) ---
-    # Publishing is optional: it stays off until a broker is configured.
+    # Publishing is optional: it stays off until a broker is configured
+    # (empty/None bootstrap servers = disabled).
     kafka_bootstrap_servers: str | None = None  # e.g. "kafka:9092"; None = disabled
-    kafka_schema_registry_url: str = "http://localhost:8081"  # AVRO Schema Registry
+    kafka_schema_registry_url: str = (
+        "https://schema-registry.next.idulab.ru"  # AVRO Schema Registry (IDU contour)
+    )
     kafka_client_id: str = "idu-dvd"
     kafka_outbox_key: str = "dvd:kafka:outbox"  # Redis list of pending events
     kafka_dead_letter_key: str = (
