@@ -1,0 +1,27 @@
+# Production compose used by the deploy workflow (.github/workflows/build_and_deploy.yml) —
+# the gMART docker-compose.actions.yaml pattern adapted for IDU_DVD. The app image is
+# pre-built and passed via DVD_IMAGE. App config is layered (weakest to strongest):
+# code defaults -> .env.production (copied from the runner's ENV_PATH) -> .env.overrides
+# (non-empty DVD_* vars of the GitHub "production" environment; later env_file wins) ->
+# the `environment:` section, which pins Qdrant/Redis to the in-compose services.
+# Qdrant and Redis publish no host ports (compose-network only), so they can't clash with
+# other services on the runner host; the app's host port defaults to 8100 because gMART's
+# idu_mcp already binds 8000 there.
+
+services:
+  idu_dvd:
+    image: ${DVD_IMAGE}
+    container_name: idu_dvd
+    restart: always
+    ports:
+      - "${DVD_HOST_PORT:-8100}:8000"
+    env_file:
+      - ./.env.production
+      - ./.env.overrides
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - dvd_uploads:/app/_uploads
+
+volumes:
+  dvd_uploads:
