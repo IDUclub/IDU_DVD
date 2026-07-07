@@ -1,3 +1,9 @@
+## v0.6.0 (2026-07-07)
+
+### Feat
+
+- **vectorizer**: - add giga embeddings provider (#18)
+
 ## v0.5.0 (2026-07-03)
 
 ### Feat
