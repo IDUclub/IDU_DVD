@@ -61,68 +61,72 @@ class JobStore:
 class DocumentRegistry:
     """Registry of uploaded documents: hashes (for deduplication) and versions per document name.
 
-    Keys:
-      dvd:hash:{content_hash} -> JSON {name, version, doc_id}   (presence = exact duplicate)
-      dvd:versions:{name}     -> SET of versions of this document
-      dvd:names               -> SET of all document names/designations (for reference matching)
-      dvd:pending_ref:{key}   -> LIST of dangling references waiting for document `key` to arrive
-      dvd:doc:{doc_id}        -> JSON document summary (for the document-level read API)
-      dvd:docs                -> SET of all doc_ids
-      dvd:blocks:{name}:{version} -> JSON list of source-block hashes (delta-update diffing)
+    All keys are namespaced by ``prefix`` (default ``dvd``; scoped to the physical collection
+    via ``Settings.registry_prefix`` when collection namespacing is on), so dedup/version state
+    tracks exactly what lives in the matching Qdrant collection. Keys (``P`` = prefix):
+
+      P:hash:{content_hash} -> JSON {name, version, doc_id}   (presence = exact duplicate)
+      P:versions:{name}     -> SET of versions of this document
+      P:names               -> SET of all document names/designations (for reference matching)
+      P:pending_ref:{key}   -> LIST of dangling references waiting for document `key` to arrive
+      P:doc:{doc_id}        -> JSON document summary (for the document-level read API)
+      P:docs                -> SET of all doc_ids
+      P:blocks:{name}:{version} -> JSON list of source-block hashes (delta-update diffing)
     """
 
-    def __init__(self, client: RedisClient) -> None:
+    def __init__(self, client: RedisClient, prefix: str = "dvd") -> None:
         self.r = client.r
+        self.prefix = prefix
 
     def __repr__(self) -> str:
-        return f"{type(self).__name__}()"
+        return f"{type(self).__name__}(prefix={self.prefix})"
 
     def has_hash(self, content_hash: str) -> bool:
-        return self.r.exists(f"dvd:hash:{content_hash}") > 0
+        return self.r.exists(f"{self.prefix}:hash:{content_hash}") > 0
 
     def hash_info(self, content_hash: str) -> dict | None:
-        v = self.r.get(f"dvd:hash:{content_hash}")
+        v = self.r.get(f"{self.prefix}:hash:{content_hash}")
         return json.loads(v) if v else None
 
     def versions(self, name: str) -> list[str]:
-        return sorted(self.r.smembers(f"dvd:versions:{name}"))
+        return sorted(self.r.smembers(f"{self.prefix}:versions:{name}"))
 
     def version_exists(self, name: str, version: str) -> bool:
-        return self.r.sismember(f"dvd:versions:{name}", version)
+        return self.r.sismember(f"{self.prefix}:versions:{name}", version)
 
     def register(self, content_hash: str, name: str, version: str, doc_id: str) -> None:
         self.r.set(
-            f"dvd:hash:{content_hash}",
+            f"{self.prefix}:hash:{content_hash}",
             json.dumps(
                 {"name": name, "version": version, "doc_id": doc_id}, ensure_ascii=False
             ),
         )
-        self.r.sadd(f"dvd:versions:{name}", version)
-        self.r.sadd("dvd:names", name)
+        self.r.sadd(f"{self.prefix}:versions:{name}", version)
+        self.r.sadd(f"{self.prefix}:names", name)
 
     def remove_version(self, name: str, version: str) -> None:
-        self.r.srem(f"dvd:versions:{name}", version)
-        self.r.delete(f"dvd:blocks:{name}:{version}")
+        self.r.srem(f"{self.prefix}:versions:{name}", version)
+        self.r.delete(f"{self.prefix}:blocks:{name}:{version}")
 
     def unregister_name(self, name: str) -> None:
         """Forget a document entirely: its version set, block fingerprints and name entry."""
-        self.r.delete(f"dvd:versions:{name}")
-        for key in self.r.scan_iter(match=f"dvd:blocks:{name}:*"):
+        self.r.delete(f"{self.prefix}:versions:{name}")
+        for key in self.r.scan_iter(match=f"{self.prefix}:blocks:{name}:*"):
             self.r.delete(key)
-        self.r.srem("dvd:names", name)
+        self.r.srem(f"{self.prefix}:names", name)
 
     # --- source-block fingerprints (deterministic delta-update diffing) ---
     def register_blocks(self, name: str, version: str, hashes: list[str]) -> None:
-        self.r.set(f"dvd:blocks:{name}:{version}", json.dumps(hashes))
+        self.r.set(f"{self.prefix}:blocks:{name}:{version}", json.dumps(hashes))
 
     def get_blocks(self, name: str, version: str) -> list[str] | None:
-        v = self.r.get(f"dvd:blocks:{name}:{version}")
+        v = self.r.get(f"{self.prefix}:blocks:{name}:{version}")
         return json.loads(v) if v else None
 
     def remove_hashes(self, name: str, version: str | None = None) -> int:
         """Drop dedup-hash entries of a document (optionally of one version only)."""
         removed = 0
-        for key in self.r.scan_iter(match="dvd:hash:*"):
+        for key in self.r.scan_iter(match=f"{self.prefix}:hash:*"):
             v = self.r.get(key)
             info = json.loads(v) if v else {}
             if info.get("name") != name:
@@ -136,15 +140,14 @@ class DocumentRegistry:
     # --- document names (for reference resolution) ---
     def names(self) -> list[str]:
         """All document names/designations ever registered (for reference matching)."""
-        return sorted(self.r.smembers("dvd:names"))
+        return sorted(self.r.smembers(f"{self.prefix}:names"))
 
     def has_name(self, name: str) -> bool:
-        return self.r.sismember("dvd:names", name)
+        return self.r.sismember(f"{self.prefix}:names", name)
 
     # --- pending references (dangling links to not-yet-loaded documents) ---
-    @staticmethod
-    def _pending_key(norm_name: str) -> str:
-        return f"dvd:pending_ref:{norm_name}"
+    def _pending_key(self, norm_name: str) -> str:
+        return f"{self.prefix}:pending_ref:{norm_name}"
 
     def add_pending(self, norm_name: str, entry: dict) -> None:
         """Record a reference whose target document is not loaded yet, keyed by its normalized name."""
@@ -169,19 +172,21 @@ class DocumentRegistry:
 
     # --- document summaries (for the document-level read API) ---
     def register_document(self, doc_id: str, summary: dict) -> None:
-        self.r.set(f"dvd:doc:{doc_id}", json.dumps(summary, ensure_ascii=False))
-        self.r.sadd("dvd:docs", doc_id)
+        self.r.set(
+            f"{self.prefix}:doc:{doc_id}", json.dumps(summary, ensure_ascii=False)
+        )
+        self.r.sadd(f"{self.prefix}:docs", doc_id)
 
     def get_document(self, doc_id: str) -> dict | None:
-        v = self.r.get(f"dvd:doc:{doc_id}")
+        v = self.r.get(f"{self.prefix}:doc:{doc_id}")
         return json.loads(v) if v else None
 
     def unregister_document(self, doc_id: str) -> None:
-        self.r.delete(f"dvd:doc:{doc_id}")
-        self.r.srem("dvd:docs", doc_id)
+        self.r.delete(f"{self.prefix}:doc:{doc_id}")
+        self.r.srem(f"{self.prefix}:docs", doc_id)
 
     def doc_ids(self) -> list[str]:
-        return sorted(self.r.smembers("dvd:docs"))
+        return sorted(self.r.smembers(f"{self.prefix}:docs"))
 
     def all_documents(self) -> list[dict]:
         out = [self.get_document(d) for d in self.doc_ids()]

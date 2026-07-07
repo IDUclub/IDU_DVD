@@ -34,6 +34,7 @@ from src.dvd_service.services.dvd_service import (
 def wired(settings, fake_ollama, fake_qdrant, fake_redis, monkeypatch):
     """Build IngestionService + SearchService with real modules and faked boundaries."""
     monkeypatch.setattr(svc, "OllamaClient", lambda *a, **k: fake_ollama)
+    monkeypatch.setattr(svc, "create_embedder", lambda *a, **k: fake_ollama)
     redis_client = RedisClient(settings)
     jobs = JobStore(redis_client)
     registry = DocumentRegistry(redis_client)
@@ -185,6 +186,7 @@ class TestIngest:
         self, settings, sample_raw, fake_ollama, fake_qdrant, fake_redis, monkeypatch
     ):
         monkeypatch.setattr(svc, "OllamaClient", lambda *a, **k: fake_ollama)
+        monkeypatch.setattr(svc, "create_embedder", lambda *a, **k: fake_ollama)
         s = settings.model_copy(update={"enable_reference_linking": False})
         redis_client = RedisClient(s)
         ingestion = IngestionService(
@@ -657,7 +659,7 @@ class TestGeneralPurposeFields:
         assert payload["external_ids"] == {"code": "СП 99.99999.2099"}
         assert payload["version_id"] and payload["version_id"].endswith(h[:12])
         assert "сп_99_99999_2099" in payload["lookup_keys"]
-        assert payload["parser_version"] and payload["embedding_meta"]["dim"] == 1024
+        assert payload["parser_version"] and payload["embedding_meta"]["dim"] == 2048
         # a content-bearing fragment is grounded back to the source text
         grounded = [
             p
