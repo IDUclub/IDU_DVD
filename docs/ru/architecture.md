@@ -5,16 +5,18 @@
 Приложение — это FastAPI-сервис, который оркеструет цепочку обработки документа и хранит
 результат в Qdrant. Тяжёлая работа (разбор документа, разметка структуры, тегирование,
 векторизация) выполняется в фоне; статусы фоновых задач и реестр документов ведутся в Redis;
-большая языковая модель и эмбеддинг-модель вызываются через Ollama.
+большая языковая модель вызывается через Ollama, эмбеддинги — через GPU-сервис giga-vectorizer
+(Ollama остаётся резервным провайдером — `DVD_EMBEDDINGS_PROVIDER`).
 
 ## Стек
 
 | Компонент | Роль |
 |-----------|------|
 | FastAPI | HTTP API, фоновые задачи |
-| Qdrant | векторная база; одна коллекция, payload-индексы |
-| Redis | статусы задач парсинга, реестр документов и версий, outbox Kafka-событий |
-| Ollama | LLM (разметка, мердж, теги, версия) и эмбеддинги |
+| Qdrant | векторная база; отдельная коллекция под каждое векторное пространство (namespacing), payload-индексы |
+| Redis | статусы задач парсинга, реестр документов и версий (неймспейсится по коллекции), outbox Kafka-событий |
+| Ollama | LLM (разметка, мердж, теги, версия); резервный провайдер эмбеддингов |
+| giga-vectorizer | эмбеддинги (Giga-Embeddings-instruct, 2048-d) через OpenAI-совместимый `/v1/embeddings`; только CUDA, отдельный репозиторий |
 | Kafka (otteroad) | опциональная публикация событий жизненного цикла документов (`DocumentProcessed` / `DocumentUpdated` / `DocumentDeleted`) для смежных сервисов |
 | unstructured (python-docx) | извлечение текста и таблиц из `.docx` |
 | pydantic-settings | конфигурация через переменные окружения |
@@ -30,7 +32,8 @@
 `get_dependencies()`.
 
 Классы-этапы конвейера не хранят состояние между документами. Клиент Ollama (`OllamaClient`)
-создаётся внутри сервисов на каждую операцию, что делает фоновую обработку потокобезопасной.
+и векторизатор (`create_embedder()`) создаются внутри сервисов на каждую операцию, что делает
+фоновую обработку потокобезопасной.
 
 Состав контейнера:
 
@@ -50,6 +53,7 @@ Dependencies(
 |------|------------|
 | `src/common/config/app_config.py` | `Settings` — конфигурация (pydantic-settings) |
 | `src/api_clients/ollama_client.py` | `OllamaClient`, `OllamaError` |
+| `src/api_clients/embeddings_client.py` | `GigaEmbeddingsClient`, `EmbeddingsError`, `create_embedder` (выбор провайдера) |
 | `src/common/db/qdrant_client.py` | `QdrantRepository` |
 | `src/common/db/redis_client.py` | `RedisClient`, `JobStore`, `DocumentRegistry` |
 | `src/broker/` | интеграция с Kafka: модели событий `DocumentProcessed` / `DocumentUpdated` / `DocumentDeleted` (`events.py`), `EventOutbox` (`outbox.py`), `KafkaPublisher` (`publisher.py`) |
@@ -76,12 +80,20 @@ Dependencies(
 - `OllamaClient` — синхронный клиент Ollama. Метод `chat(system, user, schema)` выполняет
   запрос со строгой JSON-схемой ответа; `embed(texts)` возвращает векторы; `available()`
   проверяет доступность.
+- `GigaEmbeddingsClient` — синхронный клиент сервиса giga-vectorizer (OpenAI-совместимый
+  `/v1/embeddings` с расширением `prompt`). `embed_documents(texts)` векторизует без
+  инструкции-префикса, `embed_query(text)` — с ней (Giga-Embeddings-instruct — асимметричная
+  модель). `create_embedder()` возвращает клиент настроенного `DVD_EMBEDDINGS_PROVIDER`; оба
+  провайдера имеют одинаковый интерфейс `embed_documents` / `embed_query`.
 - `QdrantRepository` — обёртка над клиентом Qdrant: `ensure_collection()` (идемпотентное
-  создание коллекции и payload-индексов), `upsert(points)`, `search(vector, filter, limit)`,
-  `retrieve(ids)`, `set_other_versions(name, version, other_versions)`.
+  создание коллекции и payload-индексов; в фиксированном режиме также падает при несовпадении
+  размерности), `upsert(points)`, `search(vector, filter, limit)`, `retrieve(ids)`,
+  `set_other_versions(name, version, other_versions)`. Имя физической коллекции берётся из
+  `Settings.effective_collection` (неймспейсится по векторному пространству — см. «Конфигурацию»).
 - `RedisClient` — подключение к Redis. `JobStore` — статусы задач (`dvd:job:{id}`).
-  `DocumentRegistry` — хэши документов для дедупликации (`dvd:hash:{hash}`) и множества версий
-  по имени документа (`dvd:versions:{name}`).
+  `DocumentRegistry(prefix)` — хэши документов для дедупликации (`{prefix}:hash:{hash}`) и множества
+  версий по имени документа (`{prefix}:versions:{name}`); `prefix` (`Settings.registry_prefix`)
+  скоупит реестр по физической коллекции, так что у каждого векторного пространства свои дедуп/версии.
 - `EventOutbox` / `KafkaPublisher` (`src/broker/`) — опциональная публикация в Kafka через
   фреймворк [otteroad](https://github.com/IDUclub/otteroad) (AVRO + Schema Registry).
   `IngestionService` добавляет события жизненного цикла в outbox-список в Redis (топик
@@ -207,11 +219,14 @@ Payload-индексы создаются по полям `doc_id`, `name`, `ver
 
 ## Хранилища
 
-- Qdrant: одна коллекция (по умолчанию `documents`), вектор размерности `vector_size`, метрика
-  косинус. Тексты и таблицы лежат в одной коллекции и различаются полем `kind`.
-- Redis: статусы задач (`dvd:job:{job_id}`, с TTL), реестр хэшей (`dvd:hash:{hash}`), версий
-  (`dvd:versions:{name}`), множество всех имён документов (`dvd:names`, для сопоставления ссылок)
-  и очереди отложенных ссылок (`dvd:pending_ref:{normalized_name}`).
+- Qdrant: отдельная коллекция под каждое векторное пространство (базовое имя по умолчанию
+  `documents`, неймспейсится в, напр., `documents__giga_embeddings_instruct_2048`), вектор
+  размерности `vector_size`, метрика косинус. Тексты и таблицы лежат в одной коллекции и различаются
+  полем `kind`.
+- Redis: статусы задач (`dvd:job:{job_id}`, с TTL, без неймспейса) и скоупленный по коллекции реестр
+  под `{registry_prefix}` (по умолчанию `dvd:{effective_collection}`): реестр хэшей (`…:hash:{hash}`),
+  версий (`…:versions:{name}`), множество всех имён документов (`…:names`, для сопоставления ссылок)
+  и очереди отложенных ссылок (`…:pending_ref:{normalized_name}`).
 - Выученные паттерны ссылок хранятся в отдельной долговечной коллекции Qdrant (по умолчанию
   `ref_patterns`, dummy-векторы размерности 1 как key/value-хранилище) — они переживают сброс
   Redis; seed-паттерны закоммичены в `reference_patterns.py`.

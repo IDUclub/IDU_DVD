@@ -86,7 +86,30 @@ class TestDocumentRegistry:
         assert reg.has_name("СП 1") and not reg.has_name("СП 3")
 
     def test_repr(self, client):
-        assert repr(DocumentRegistry(client)) == "DocumentRegistry()"
+        assert repr(DocumentRegistry(client)) == "DocumentRegistry(prefix=dvd)"
+
+    def test_default_prefix_writes_legacy_keys(self, client):
+        DocumentRegistry(client).register("h1", "Док", "v1", "d1")
+        assert client.r.exists("dvd:hash:h1")
+
+    def test_prefix_scopes_all_keys(self, client):
+        reg = DocumentRegistry(client, prefix="dvd:coll_a")
+        reg.register("h1", "Док", "v1", "d1")
+        reg.register_document("d1", {"doc_id": "d1"})
+        reg.add_pending("ГОСТ 1", {"raw": "x"})
+        assert client.r.exists("dvd:coll_a:hash:h1")
+        assert client.r.exists("dvd:coll_a:docs")
+        assert client.r.exists("dvd:coll_a:pending_ref:ГОСТ 1")
+        # nothing landed under the legacy prefix
+        assert not client.r.exists("dvd:hash:h1")
+
+    def test_two_prefixes_are_isolated(self, client):
+        a = DocumentRegistry(client, prefix="dvd:coll_a")
+        b = DocumentRegistry(client, prefix="dvd:coll_b")
+        a.register("h1", "Док", "v1", "d1")
+        # the same content hash is unseen in the other collection's registry
+        assert a.has_hash("h1") is True
+        assert b.has_hash("h1") is False
 
 
 class TestRegistryDeletion:

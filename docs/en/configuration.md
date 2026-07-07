@@ -22,10 +22,29 @@ the table here and `.env.full.example` together.
 |----------|---------|-------------|
 | `DVD_OLLAMA_BASE` | `http://a.dgx:11434` | Ollama address |
 | `DVD_OLLAMA_MODEL` | `gpt-oss:20b` | LLM for markup, merge, tags, version |
-| `DVD_OLLAMA_EMBED_MODEL` | `bge-m3` | embedding model (vectorizer) |
+| `DVD_OLLAMA_EMBED_MODEL` | `bge-m3` | embedding model for `DVD_EMBEDDINGS_PROVIDER=ollama` |
 | `DVD_OLLAMA_NUM_CTX` | `16384` | model context size |
 | `DVD_OLLAMA_NUM_PREDICT` | `8192` | response token cap |
 | `DVD_OLLAMA_TIMEOUT` | `600.0` | request timeout, seconds |
+
+### Embeddings provider (vectorizer)
+
+The default vectorizer is the **giga-vectorizer** GPU service (a separate repository) exposing an
+OpenAI-compatible `POST /v1/embeddings` with a `prompt` extension: documents are embedded without
+an instruction prefix, queries with one (Giga-Embeddings-instruct is asymmetric). Ollama (`bge-m3`)
+remains available as a fallback provider for GPU-less environments.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DVD_EMBEDDINGS_PROVIDER` | `giga` | `giga` — GPU service (2048-d) / `ollama` — fallback via `/api/embed` (1024-d) |
+| `DVD_EMBEDDINGS_URL` | `http://localhost:8001` | giga-vectorizer address |
+| `DVD_EMBEDDINGS_MODEL` | `ai-sage/Giga-Embeddings-instruct` | model served by the vectorizer (checked by the service) |
+| `DVD_EMBEDDINGS_QUERY_PROMPT` | `Instruct: Дан вопрос, необходимо найти абзац текста с ответом\nQuery: ` | instruction prefix for query embeddings |
+| `DVD_EMBEDDINGS_TIMEOUT` | `600.0` | request timeout, seconds |
+
+Switching providers changes the vector space: adjust `DVD_VECTOR_SIZE`. With collection namespacing
+enabled, the service will use a new physical Qdrant collection and you need to re-ingest documents
+into that new space (embeddings of different models are not comparable).
 
 ### Qdrant
 
@@ -33,9 +52,39 @@ the table here and `.env.full.example` together.
 |----------|---------|-------------|
 | `DVD_QDRANT_URL` | `http://localhost:6333` | Qdrant address |
 | `DVD_QDRANT_API_KEY` | empty | API key (if required) |
-| `DVD_QDRANT_COLLECTION` | `documents` | collection name |
-| `DVD_VECTOR_SIZE` | `1024` | vector dimension; must match the embedding model |
+| `DVD_QDRANT_COLLECTION` | `documents` | **base** collection name (see Collection namespacing) |
+| `DVD_VECTOR_SIZE` | `2048` | vector dimension; must match the embeddings provider model (giga = 2048, bge-m3 = 1024) |
 | `DVD_EMBED_BATCH` | `32` | batch size during vectorization |
+| `DVD_COLLECTION_NAMESPACING` | `true` | derive a distinct physical collection per embedding space (see below) |
+
+#### Collection namespacing
+
+With `DVD_COLLECTION_NAMESPACING=true` (default) the **physical** Qdrant collection is not
+`DVD_QDRANT_COLLECTION` verbatim — it is derived from the base name, the embedding model and the
+dimension:
+
+```
+{base}__{model_slug}_{dim}
+documents__giga_embeddings_instruct_2048     # giga / 2048
+documents__bge_m3_1024                        # ollama fallback / 1024
+```
+
+At startup the service creates the collection its **current** config points at, if it does not
+exist yet. Because the name encodes the embedding space, changing the provider/model/dimension
+lands in a **brand-new** collection and the previous one is left untouched — a provider switch (or
+a rollback) never overwrites or silently mixes vector spaces, and no manual "drop + re-index"
+dance is needed. You still re-ingest documents into the new space (embeddings of different models
+are not comparable), but the old space stays available.
+
+The Redis document registry (dedup hashes, version sets, document summaries) is namespaced the
+same way (`dvd:{effective_collection}:…`), so a fresh space also gets a clean registry — otherwise
+the duplicate check would wrongly reject re-ingesting documents that only exist in the *old* space.
+
+Set `DVD_COLLECTION_NAMESPACING=false` to use `DVD_QDRANT_COLLECTION` verbatim (legacy behaviour,
+legacy `dvd:` registry prefix). In that mode, if the existing collection's dimension does not match
+`DVD_VECTOR_SIZE`, startup **fails fast** instead of writing mismatched vectors. The learned
+reference-pattern collection (`DVD_REF_PATTERN_COLLECTION`) is model-independent and is never
+namespaced.
 
 ### Redis
 
@@ -120,9 +169,11 @@ consumers (e.g. MSI-TSIM) override these per upload via form fields / `external_
 
 ## Important notes
 
-- `DVD_VECTOR_SIZE` must match the dimension of the chosen embedding model. For `bge-m3` this is
-  1024. The dimension is fixed when the Qdrant collection is created and cannot be changed without
-  recreating it.
+- `DVD_VECTOR_SIZE` must match the dimension of the chosen embeddings provider model:
+  Giga-Embeddings-instruct — 2048, `bge-m3` — 1024. The dimension is fixed when the Qdrant
+  collection is created and cannot be changed without recreating it. With collection namespacing on
+  (default) a dimension change simply provisions a new collection; with it off, re-index the
+  existing collection (or switch it on).
 - `DVD_PARTITION_STRATEGY` affects only the parsing of formats other than `.docx`; `.docx` is parsed
   through `partition_docx` regardless of the strategy.
 - By default the Ollama address and the LLM point at a shared stand (`a.dgx`, `gpt-oss:20b`). For a
@@ -136,18 +187,26 @@ consumers (e.g. MSI-TSIM) override these per upload via form fields / `external_
   it (structured output is grammar-constrained by Ollama, so JSON validity does not depend on model
   size). Used by the Integration workflow in CI. Expect markup quality below the 7B+ models — fine
   for tests, not recommended for real corpora.
-- Embeddings: `bge-m3` (CPU-friendly as is).
+- Embeddings: the `ollama` provider with `bge-m3` (CPU-friendly as is); giga-vectorizer is
+  CUDA-only and fails to start without a GPU.
+
+```
+DVD_EMBEDDINGS_PROVIDER=ollama
+DVD_OLLAMA_EMBED_MODEL=bge-m3
+DVD_VECTOR_SIZE=1024
+```
 
 ### Local run on a modest GPU
 
 - LLM: `qwen2.5:7b-instruct` (good Russian and stable structured output, fits in 8 GB of VRAM).
-- Embeddings: `bge-m3` (multilingual, 1024).
+- Embeddings: giga-vectorizer (Giga-Embeddings-instruct, 2048) — the default; the model is tight on
+  8 GB cards, so on a single small GPU shared with the LLM prefer the `ollama` fallback
+  (`bge-m3`, 1024).
 
 ```
 DVD_OLLAMA_BASE=http://localhost:11434
 DVD_OLLAMA_MODEL=qwen2.5:7b-instruct
-DVD_OLLAMA_EMBED_MODEL=bge-m3
-DVD_VECTOR_SIZE=1024
+DVD_EMBEDDINGS_URL=http://localhost:8001
 ```
 
 ### A server with several Tesla V100s
@@ -158,7 +217,7 @@ working through Ollama).
 
 - LLM: `qwen2.5:14b-instruct` as a working option (noticeably better than 7B, fits with room to
   spare), or `qwen2.5:32b-instruct` for higher quality if 32 GB cards are available.
-- Embeddings: `bge-m3` (unchanged).
+- Embeddings: giga-vectorizer (Giga-Embeddings-instruct, FP16 — Volta-friendly) on a dedicated GPU.
 - Layout across three cards: the LLM with tensor parallelism on two GPUs (for 14B a parallelism of 2
   is acceptable; parallelism of 3 is not used because the number of heads is not divisible), the
   embeddings on the third GPU.

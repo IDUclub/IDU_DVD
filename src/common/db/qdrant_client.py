@@ -50,7 +50,7 @@ _PAYLOAD_INDEXES: dict[str, PayloadSchemaType] = {
 class QdrantRepository:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.collection = settings.qdrant_collection
+        self.collection = settings.effective_collection
         self.client = QdrantClient(
             url=settings.qdrant_url, api_key=settings.qdrant_api_key
         )
@@ -62,7 +62,13 @@ class QdrantRepository:
         )
 
     def ensure_collection(self) -> None:
-        if not self.client.collection_exists(self.collection):
+        if self.client.collection_exists(self.collection):
+            # Namespacing encodes the dimension in the name, so an existing collection is
+            # guaranteed to match. In fixed mode the name is reused across configs, so guard
+            # against silently writing vectors of the wrong size into it.
+            if not self.settings.collection_namespacing:
+                self._assert_dimension_matches()
+        else:
             self.client.create_collection(
                 collection_name=self.collection,
                 vectors_config=VectorParams(
@@ -77,6 +83,19 @@ class QdrantRepository:
                 )
             except Exception:  # noqa: BLE001 — index already exists
                 pass
+
+    def _assert_dimension_matches(self) -> None:
+        """Fail fast if an existing (fixed-name) collection has a different vector size."""
+        info = self.client.get_collection(self.collection)
+        vectors = info.config.params.vectors
+        size = getattr(vectors, "size", None)  # unnamed single-vector collection
+        if size is not None and size != self.settings.vector_size:
+            raise RuntimeError(
+                f"Qdrant collection '{self.collection}' has vector size {size}, but the "
+                f"configured embedding dimension is {self.settings.vector_size}. Re-index "
+                f"the collection, or keep DVD_COLLECTION_NAMESPACING enabled to provision a "
+                f"separate space per embedding model."
+            )
 
     def upsert(self, points: Iterable[PointStruct]) -> int:
         points = list(points)
