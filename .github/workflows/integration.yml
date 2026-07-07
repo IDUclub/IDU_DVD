@@ -135,6 +135,10 @@ jobs:
           DVD_OLLAMA_BASE: http://localhost:11434
           DVD_OLLAMA_MODEL: qwen2.5:3b-instruct
           DVD_OLLAMA_EMBED_MODEL: bge-m3
+          # No GPU on CI runners: giga-vectorizer is CUDA-only, so the pipeline
+          # embeds through the Ollama fallback (bge-m3 = 1024-d).
+          DVD_EMBEDDINGS_PROVIDER: ollama
+          DVD_VECTOR_SIZE: "1024"
           DVD_QDRANT_URL: http://localhost:6333
           DVD_REDIS_URL: redis://localhost:6379/0
         run: uv run pytest tests/integration -m integration -rs
