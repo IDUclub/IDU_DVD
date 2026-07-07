@@ -48,7 +48,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         qdrant.ensure_pattern_collection()
     redis = RedisClient(s)
     jobs = JobStore(redis)
-    registry = DocumentRegistry(redis)
+    registry = DocumentRegistry(redis, prefix=s.registry_prefix)
 
     parser = DocumentParser(s)
     structure = StructureTagger(s)

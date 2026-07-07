@@ -17,7 +17,7 @@ from qdrant_client.models import (
     PointStruct,
 )
 
-from src.api_clients import OllamaClient
+from src.api_clients import OllamaClient, create_embedder
 from src.broker.events import DocumentDeleted, DocumentProcessed, DocumentUpdated
 from src.broker.outbox import EventOutbox
 from src.common.config import Settings
@@ -117,11 +117,12 @@ class IngestionService:
                 idx[num] = n["id"]
         return idx
 
-    def _embed_all(self, client: OllamaClient, texts: list[str]) -> list[list[float]]:
+    def _embed_all(self, texts: list[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
         b = self.settings.embed_batch
-        for i in range(0, len(texts), b):
-            vectors.extend(client.embed(texts[i : i + b]))
+        with create_embedder() as embedder:
+            for i in range(0, len(texts), b):
+                vectors.extend(embedder.embed_documents(texts[i : i + b]))
         return vectors
 
     def _resolve_identity(
@@ -376,7 +377,7 @@ class IngestionService:
                     doc_id, name, raw_refs, numbering_index
                 )
 
-            vectors = self._embed_all(client, [n["text"] for n in nodes])
+            vectors = self._embed_all([n["text"] for n in nodes])
 
             # --- general-purpose identity + provenance (shared by all consumers) ---
             _, spans = self.parser.source_index(raw)
@@ -388,7 +389,7 @@ class IngestionService:
             aliases = build_aliases(name, external_ids)
             lookup_keys = build_lookup_keys(name, external_ids)
             embedding_meta = {
-                "model": self.settings.ollama_embed_model,
+                "model": self.settings.embedding_model_name,
                 "dim": self.settings.vector_size,
                 "metric": "cosine",
                 "normalized": True,
@@ -604,9 +605,7 @@ class IngestionService:
                 )
 
             vectors = (
-                self._embed_all(client, [n["text"] for n in new_nodes])
-                if new_nodes
-                else []
+                self._embed_all([n["text"] for n in new_nodes]) if new_nodes else []
             )
             _, spans = self.parser.source_index(raw)
             external_ids = external_ids or {}
@@ -614,7 +613,7 @@ class IngestionService:
             identity = {
                 "parser_version": PARSER_VERSION,
                 "embedding_meta": {
-                    "model": self.settings.ollama_embed_model,
+                    "model": self.settings.embedding_model_name,
                     "dim": self.settings.vector_size,
                     "metric": "cosine",
                     "normalized": True,
@@ -903,8 +902,8 @@ class SearchService:
         return " ".join(t for t in texts if t)
 
     def search(self, req: SearchRequest, kind: str | None = None) -> SearchResponse:
-        with OllamaClient() as client:
-            vector = client.embed([req.query])[0]
+        with create_embedder() as embedder:
+            vector = embedder.embed_query(req.query)
         limit = req.limit or self.settings.search_limit
         points = self.qdrant.search(vector, self._build_filter(req, kind), limit)
 

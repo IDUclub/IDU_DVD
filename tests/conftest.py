@@ -92,6 +92,13 @@ class FakeOllama:
             [float((len(t) + i) % 7) for i in range(self._embed_dim)] for t in texts
         ]
 
+    # Provider-agnostic embedder surface (mirrors OllamaClient / GigaEmbeddingsClient).
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self.embed(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.embed([text])[0]
+
     def available(self) -> bool:
         return True
 

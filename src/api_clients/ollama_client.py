@@ -101,3 +101,11 @@ class OllamaClient:
         if not vectors:
             raise OllamaError("Ollama не вернул embeddings: " + resp.text[:200])
         return vectors
+
+    # bge-m3 is symmetric: documents and queries are embedded identically. The split
+    # exists to mirror GigaEmbeddingsClient so the pipeline is provider-agnostic.
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self.embed(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.embed([text])[0]

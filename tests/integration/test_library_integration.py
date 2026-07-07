@@ -4,7 +4,8 @@ Ingests a small document end-to-end (real Ollama + Qdrant + Redis), then exercis
 ``LibraryService`` — the consumer-facing read API — and asserts that the general-purpose identity,
 source grounding and external-id resolution survive a real round-trip.
 
-Cleanup: the collection is dropped by ``temp_collection``; Redis keys are deleted explicitly.
+Cleanup: the collection and scoped Redis registry keys are dropped by ``temp_collection``; only the
+unscoped job key is deleted explicitly.
 """
 
 from __future__ import annotations
@@ -29,10 +30,39 @@ SMALL_DOC = [
 ]
 
 
+class _MockEmbedder:
+    """TODO: replace with the real giga-vectorizer when CI/local integration has GPU access."""
+
+    def __init__(self, dim: int) -> None:
+        self.dim = dim
+
+    def __enter__(self) -> "_MockEmbedder":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        pass
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self._vec(text, idx) for idx, text in enumerate(texts)]
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._vec(text, 0)
+
+    def _vec(self, text: str, salt: int) -> list[float]:
+        vec = [0.0] * self.dim
+        vec[(len(text) + salt) % self.dim] = 1.0
+        return vec
+
+
 def test_library_read_api_and_grounding_end_to_end(
-    temp_collection, require_redis, require_ollama, reset_dependencies
+    temp_collection, require_redis, require_ollama, reset_dependencies, monkeypatch
 ):
     from src.dependencies import init_dependencies
+    from src.dvd_service.services import dvd_service as svc
+
+    monkeypatch.setattr(
+        svc, "create_embedder", lambda: _MockEmbedder(temp_collection.vector_size)
+    )
 
     deps = init_dependencies(temp_collection)
     content_hash = deps.parser.content_hash(SMALL_DOC)
@@ -77,10 +107,3 @@ def test_library_read_api_and_grounding_end_to_end(
         assert any(d.doc_id == doc_id for d in found.documents)
     finally:
         require_redis.r.delete(f"dvd:job:{job_id}")
-        require_redis.r.delete(f"dvd:hash:{content_hash}")
-        if doc_id:
-            require_redis.r.delete(f"dvd:doc:{doc_id}")
-            require_redis.r.srem("dvd:docs", doc_id)
-        if name:
-            require_redis.r.delete(f"dvd:versions:{name}")
-            require_redis.r.srem("dvd:names", name)

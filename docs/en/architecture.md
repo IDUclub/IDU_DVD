@@ -5,16 +5,18 @@
 The application is a FastAPI service that orchestrates the document processing chain and stores the
 result in Qdrant. Heavy work (document parsing, structure markup, tagging, vectorization) runs in
 the background; background job statuses and the document registry live in Redis; the large language
-model and the embedding model are called through Ollama.
+model is called through Ollama, embeddings through the giga-vectorizer GPU service (with Ollama as
+a fallback provider — `DVD_EMBEDDINGS_PROVIDER`).
 
 ## Stack
 
 | Component | Role |
 |-----------|------|
 | FastAPI | HTTP API, background tasks |
-| Qdrant | vector database; a single collection, payload indexes |
-| Redis | parsing job statuses, document and version registry, Kafka event outbox |
-| Ollama | LLM (markup, merge, tags, version) and embeddings |
+| Qdrant | vector database; one collection per embedding space (namespaced), payload indexes |
+| Redis | parsing job statuses, document and version registry (namespaced per collection), Kafka event outbox |
+| Ollama | LLM (markup, merge, tags, version); fallback embeddings provider |
+| giga-vectorizer | embeddings (Giga-Embeddings-instruct, 2048-d) via OpenAI-compatible `/v1/embeddings`; CUDA-only, separate repository |
 | Kafka (otteroad) | optional publishing of document lifecycle events (`DocumentProcessed` / `DocumentUpdated` / `DocumentDeleted`) for downstream services |
 | unstructured (python-docx) | text and table extraction from `.docx` |
 | pydantic-settings | configuration via environment variables |
@@ -28,8 +30,9 @@ singleton: it is populated once at application startup in `lifespan` and is then
 anywhere. Endpoints receive individual dependencies through FastAPI getters, e.g.
 `Depends(Dependencies.get_search)`; the whole container is also available via `get_dependencies()`.
 
-The pipeline-stage classes keep no state between documents. The Ollama client (`OllamaClient`) is
-created inside the services per operation, which keeps background processing thread-safe.
+The pipeline-stage classes keep no state between documents. The Ollama client (`OllamaClient`) and
+the embedder (`create_embedder()`) are created inside the services per operation, which keeps
+background processing thread-safe.
 
 Container contents:
 
@@ -49,6 +52,7 @@ Dependencies(
 |------|----------|
 | `src/common/config/app_config.py` | `Settings` — configuration (pydantic-settings) |
 | `src/api_clients/ollama_client.py` | `OllamaClient`, `OllamaError` |
+| `src/api_clients/embeddings_client.py` | `GigaEmbeddingsClient`, `EmbeddingsError`, `create_embedder` (provider selection) |
 | `src/common/db/qdrant_client.py` | `QdrantRepository` |
 | `src/common/db/redis_client.py` | `RedisClient`, `JobStore`, `DocumentRegistry` |
 | `src/broker/` | Kafka integration: event models `DocumentProcessed` / `DocumentUpdated` / `DocumentDeleted` (`events.py`), `EventOutbox` (`outbox.py`), `KafkaPublisher` (`publisher.py`) |
@@ -74,12 +78,20 @@ Dependencies(
 
 - `OllamaClient` — synchronous Ollama client. `chat(system, user, schema)` performs a request with
   a strict JSON response schema; `embed(texts)` returns vectors; `available()` checks availability.
+- `GigaEmbeddingsClient` — synchronous client for the giga-vectorizer service (OpenAI-compatible
+  `/v1/embeddings` plus a `prompt` extension). `embed_documents(texts)` embeds without an
+  instruction prefix, `embed_query(text)` with one (Giga-Embeddings-instruct is asymmetric).
+  `create_embedder()` returns the client for the configured `DVD_EMBEDDINGS_PROVIDER`; both
+  providers share the `embed_documents` / `embed_query` surface.
 - `QdrantRepository` — a wrapper over the Qdrant client: `ensure_collection()` (idempotent creation
-  of the collection and payload indexes), `upsert(points)`, `search(vector, filter, limit)`,
-  `retrieve(ids)`, `set_other_versions(name, version, other_versions)`.
+  of the collection and payload indexes; in fixed mode also fails fast on a dimension mismatch),
+  `upsert(points)`, `search(vector, filter, limit)`, `retrieve(ids)`,
+  `set_other_versions(name, version, other_versions)`. The physical collection name comes from
+  `Settings.effective_collection` (namespaced per embedding space — see Configuration).
 - `RedisClient` — Redis connection. `JobStore` — job statuses (`dvd:job:{id}`).
-  `DocumentRegistry` — document hashes for deduplication (`dvd:hash:{hash}`) and version sets per
-  document name (`dvd:versions:{name}`).
+  `DocumentRegistry(prefix)` — document hashes for deduplication (`{prefix}:hash:{hash}`) and version
+  sets per document name (`{prefix}:versions:{name}`); `prefix` (`Settings.registry_prefix`) scopes
+  the registry to the physical collection, so each embedding space has independent dedup/version state.
 - `EventOutbox` / `KafkaPublisher` (`src/broker/`) — optional Kafka publishing via the
   [otteroad](https://github.com/IDUclub/otteroad) framework (AVRO + Schema Registry).
   `IngestionService` appends lifecycle events to a Redis outbox list (topic `document.events`):
@@ -202,11 +214,13 @@ Payload indexes are created on `doc_id`, `name`, `version`, `version_id`, `kind`
 
 ## Storage
 
-- Qdrant: a single collection (default `documents`), vector of size `vector_size`, cosine metric.
-  Texts and tables live in the same collection and are distinguished by the `kind` field.
-- Redis: job statuses (`dvd:job:{job_id}`, with TTL), the hash registry (`dvd:hash:{hash}`),
-  versions (`dvd:versions:{name}`), the set of all document names (`dvd:names`, for reference
-  matching) and the pending-reference queues (`dvd:pending_ref:{normalized_name}`).
+- Qdrant: one collection per embedding space (default base `documents`, namespaced to e.g.
+  `documents__giga_embeddings_instruct_2048`), vector of size `vector_size`, cosine metric. Texts and
+  tables live in the same collection and are distinguished by the `kind` field.
+- Redis: job statuses (`dvd:job:{job_id}`, with TTL, not namespaced), and the collection-scoped
+  registry under `{registry_prefix}` (default `dvd:{effective_collection}`): the hash registry
+  (`…:hash:{hash}`), versions (`…:versions:{name}`), the set of all document names (`…:names`, for
+  reference matching) and the pending-reference queues (`…:pending_ref:{normalized_name}`).
 - Learned reference patterns live in a separate, durable Qdrant collection (default `ref_patterns`,
   dummy 1-d vectors used as a key/value store), so they survive a Redis wipe; the seed patterns are
   committed in `reference_patterns.py`.

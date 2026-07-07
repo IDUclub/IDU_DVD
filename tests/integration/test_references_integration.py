@@ -157,7 +157,12 @@ class TestReferenceLinkingStores:
 
 class TestPipelineReferences:
     def test_ingest_produces_references_field(
-        self, temp_collection, require_redis, require_ollama, reset_dependencies
+        self,
+        temp_collection,
+        require_redis,
+        require_ollama,
+        require_embedder,
+        reset_dependencies,
     ):
         from src.dependencies import init_dependencies
         from src.dvd_service.dto import SearchRequest
@@ -193,9 +198,6 @@ class TestPipelineReferences:
             )
             assert all(isinstance(h.references, list) for h in hits.hits)
         finally:
+            # Registry keys are scoped to the collection and cleared by temp_collection;
+            # only the (unscoped) job status key needs explicit cleanup here.
             require_redis.r.delete(f"dvd:job:{job_id}")
-            require_redis.r.delete(f"dvd:hash:{content_hash}")
-            if result:
-                name = result["name"]
-                require_redis.r.srem("dvd:names", name)
-                require_redis.r.delete(f"dvd:versions:{name}")

@@ -89,6 +89,7 @@ jobs:
         env:
           DVD_OLLAMA_BASE: ${{ vars.DVD_OLLAMA_BASE }}
           DVD_OLLAMA_MODEL: ${{ vars.DVD_OLLAMA_MODEL }}
+          DVD_EMBEDDINGS_URL: ${{ vars.DVD_EMBEDDINGS_URL }}
           DVD_KAFKA_BOOTSTRAP_SERVERS: ${{ vars.DVD_KAFKA_BOOTSTRAP_SERVERS }}
           DVD_KAFKA_SCHEMA_REGISTRY_URL: ${{ vars.DVD_KAFKA_SCHEMA_REGISTRY_URL }}
         run: |

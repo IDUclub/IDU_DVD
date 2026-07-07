@@ -38,7 +38,7 @@ SMALL_DOC = [
 
 
 def test_ingest_then_search_end_to_end(
-    temp_collection, require_redis, require_ollama, reset_dependencies
+    temp_collection, require_redis, require_ollama, require_embedder, reset_dependencies
 ):
     from src.dependencies import init_dependencies
 
@@ -63,10 +63,6 @@ def test_ingest_then_search_end_to_end(
         )
         assert hits.count >= 1
     finally:
+        # Registry keys are scoped to the collection and cleared by temp_collection;
+        # only the (unscoped) job status key needs explicit cleanup here.
         require_redis.r.delete(f"dvd:job:{job_id}")
-        require_redis.r.delete(f"dvd:hash:{content_hash}")
-        try:
-            name = result["name"]  # noqa: F821 — defined if ingest succeeded
-            require_redis.r.delete(f"dvd:versions:{name}")
-        except Exception:  # noqa: BLE001
-            pass
