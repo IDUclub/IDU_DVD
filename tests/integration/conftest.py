@@ -11,7 +11,7 @@ import uuid
 
 import pytest
 
-from src.api_clients import OllamaClient
+from src.api_clients import OllamaClient, create_embedder
 from src.common.config import Settings
 from src.common.db.redis_client import RedisClient
 
@@ -53,16 +53,44 @@ def require_ollama():
 
 
 @pytest.fixture
+def require_embedder(live_settings):
+    """The configured embeddings provider (giga-vectorizer or Ollama), or skip."""
+    client = create_embedder()
+    if not client.available():
+        client.close()
+        pytest.skip(
+            f"embeddings provider '{live_settings.embeddings_provider}' unavailable"
+        )
+    yield client
+    client.close()
+
+
+@pytest.fixture
 def temp_collection(live_settings, require_qdrant) -> Settings:
-    """A throwaway Qdrant collection; dropped after the test."""
+    """A throwaway Qdrant collection; dropped after the test.
+
+    Namespacing appends a ``__{model}_{dim}`` suffix (and tests may vary ``vector_size``),
+    so cleanup drops every collection whose name starts with the unique base and clears the
+    scoped Redis registry keys (best-effort — Redis may be absent for Qdrant-only tests).
+    """
     name = f"itest_{uuid.uuid4().hex[:8]}"
     s = live_settings.model_copy(update={"qdrant_collection": name})
     yield s
     from qdrant_client import QdrantClient
 
     try:
-        QdrantClient(url=s.qdrant_url, api_key=s.qdrant_api_key).delete_collection(name)
+        client = QdrantClient(url=s.qdrant_url, api_key=s.qdrant_api_key)
+        for coll in client.get_collections().collections:
+            if coll.name == name or coll.name.startswith(f"{name}__"):
+                client.delete_collection(coll.name)
     except Exception:  # noqa: BLE001 — best-effort cleanup
+        pass
+    try:
+        r = RedisClient(s)
+        if r.ping():
+            for key in r.r.scan_iter(match=f"{s.registry_prefix}:*"):
+                r.r.delete(key)
+    except Exception:  # noqa: BLE001
         pass
 
 

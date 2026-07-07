@@ -38,11 +38,13 @@ services:
       - .env.example
     # Внутри контейнера localhost — это сам контейнер, поэтому адреса из .env.example
     # (localhost) переопределяем: Qdrant/Redis — по именам сервисов compose-сети,
-    # Ollama — через host.docker.internal (локальная Ollama на хосте).
+    # Ollama и giga-vectorizer — через host.docker.internal (запущены на хосте;
+    # giga-vectorizer — отдельный GPU-compose из репозитория giga-vectorizer, порт 8001).
     environment:
       DVD_QDRANT_URL: http://qdrant:6333
       DVD_REDIS_URL: redis://redis:6379/0
       DVD_OLLAMA_BASE: http://host.docker.internal:11434
+      DVD_EMBEDDINGS_URL: http://host.docker.internal:8001
     extra_hosts:
       # На Linux host.docker.internal не резолвится по умолчанию (на Docker Desktop — резолвится).
       - "host.docker.internal:host-gateway"

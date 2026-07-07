@@ -17,10 +17,10 @@ _ANSWER_SCHEMA = {
 
 
 class TestOllamaIntegration:
-    def test_embed_dimension_matches_config(self, require_ollama, live_settings):
+    def test_embed_dimension_matches_model(self, require_ollama, live_settings):
         vectors = require_ollama.embed(["проверка эмбеддинга"])
         assert len(vectors) == 1
-        assert len(vectors[0]) == live_settings.vector_size  # bge-m3 == 1024
+        assert len(vectors[0]) == 1024  # bge-m3 (the "ollama" fallback provider)
 
     def test_chat_returns_valid_json(self, require_ollama):
         data = require_ollama.chat(

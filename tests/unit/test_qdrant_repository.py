@@ -35,6 +35,28 @@ class TestEnsureCollection:
         client.collection_exists.return_value = True
         repo.ensure_collection()
         client.create_collection.assert_not_called()
+        # namespaced name already encodes the dimension -> no runtime dimension probe
+        client.get_collection.assert_not_called()
+
+    def test_namespaced_collection_name_encodes_model_and_dim(self, repo_and_client):
+        repo, _ = repo_and_client
+        assert repo.collection == "documents__giga_embeddings_instruct_2048"
+
+    def test_fixed_mode_raises_on_dimension_mismatch(self, settings):
+        s = settings.model_copy(
+            update={"collection_namespacing": False, "vector_size": 2048}
+        )
+        with patch("src.common.db.qdrant_client.QdrantClient") as Client:
+            client = Client.return_value
+            client.collection_exists.return_value = True
+            client.get_collection.return_value = SimpleNamespace(
+                config=SimpleNamespace(
+                    params=SimpleNamespace(vectors=SimpleNamespace(size=1024))
+                )
+            )
+            repo = QdrantRepository(s)
+            with pytest.raises(RuntimeError, match="vector size 1024"):
+                repo.ensure_collection()
 
 
 class TestUpsert:
@@ -153,4 +175,4 @@ class TestRepr:
     def test_repr_mentions_collection_and_vector_size(self, repo_and_client):
         repo, _ = repo_and_client
         r = repr(repo)
-        assert "collection=documents" in r and "vector_size=1024" in r
+        assert "collection=documents" in r and "vector_size=2048" in r
