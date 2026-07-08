@@ -44,22 +44,24 @@ def pipeline_chat_handler(system: str, user: str, schema: dict) -> dict:
         return {"blocks": [{"id": i, "boundary": "new"} for i in ids]}
     if "parts" in props:  # Stage 1.5: semantic merge
         return {"parts": [{"id": i, "merge_with_previous": False} for i in ids]}
-    if "nodes" in props:
+    if "nodes" in props:  # Stage 2: structure — now also carries fragment tags
         item_props = props["nodes"]["items"]["properties"]
-        if "tags" in item_props:  # tagging
-            return {"nodes": [{"id": i, "tags": [f"tag{i}"]} for i in ids]}
-        return {
-            "nodes": [
-                {
-                    "id": i,
-                    "type": "paragraph",
-                    "numbering": "",  # structure
-                    "relation": "deeper",
-                    "block": "main",
-                }
-                for i in ids
-            ]
-        }
+        out = []
+        for i in ids:
+            node = {"id": i}
+            if "type" in item_props:
+                node.update(
+                    {
+                        "type": "paragraph",
+                        "numbering": "",
+                        "relation": "deeper",
+                        "block": "main",
+                    }
+                )
+            if "tags" in item_props:
+                node["tags"] = [f"tag{i}"]
+            out.append(node)
+        return {"nodes": out}
     if "items" in props:  # reference extraction — no references by default
         return {"items": [{"id": i, "references": []} for i in ids]}
     if "name" in props and "version" in props:  # version detection

@@ -1,36 +1,12 @@
-"""Unit tests for src/dvd_service/modules/tagging — Tagger and VersionDetector.
+"""Unit tests for src/dvd_service/modules/tagging — VersionDetector.
 
-Covers: per-node tag extraction across windows, document name/version detection, graceful
-fallback to "unknown" on LLM failure, and __repr__. LLM is faked.
+Covers: document name/version detection, graceful fallback to "unknown" on LLM failure, and
+__repr__. LLM is faked. (Fragment tagging now shares the structure pass — see test_structure.)
 """
 
 from __future__ import annotations
 
-import pytest
-
-from src.dvd_service.modules.tagging import Tagger, VersionDetector
-
-
-class TestTagger:
-    def test_tag_nodes_returns_tags_per_node(self, settings, fake_ollama):
-        nodes = [
-            {"id": "n0", "text": "первый фрагмент"},
-            {"id": "n1", "text": "второй фрагмент"},
-        ]
-        result = Tagger(settings).tag_nodes(nodes, fake_ollama)
-        assert set(result) == {"n0", "n1"}
-        assert all(isinstance(tags, list) and tags for tags in result.values())
-
-    def test_window_failure_is_skipped_not_fatal(self, settings):
-        class Boom:
-            def chat(self, *a, **k):
-                raise RuntimeError("ollama down")
-
-        result = Tagger(settings).tag_nodes([{"id": "n0", "text": "x"}], Boom())
-        assert result == {}  # window skipped, no crash
-
-    def test_repr(self, settings):
-        assert "window_max_items=" in repr(Tagger(settings))
+from src.dvd_service.modules.tagging import VersionDetector
 
 
 class TestVersionDetector:

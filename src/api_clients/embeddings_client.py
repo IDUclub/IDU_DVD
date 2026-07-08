@@ -100,3 +100,22 @@ def create_embedder() -> GigaEmbeddingsClient | OllamaClient:
     if settings.embeddings_provider == "ollama":
         return OllamaClient()
     return GigaEmbeddingsClient()
+
+
+def probe_embedding_dim() -> int | None:
+    """Actual vector dimension of the active vectorizer, or ``None`` if it is unreachable.
+
+    Embeds a single throwaway string and measures the result, so the Qdrant collection is
+    always created to match the model rather than a hand-set ``DVD_VECTOR_SIZE``. A failure
+    here is non-fatal: the caller keeps the configured fallback and logs it.
+    """
+    try:
+        with create_embedder() as embedder:
+            vectors = embedder.embed_documents(["dimension probe"])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("embedding_dim_probe_failed", error=str(exc))
+        return None
+    if not vectors or not vectors[0]:
+        log.warning("embedding_dim_probe_empty")
+        return None
+    return len(vectors[0])

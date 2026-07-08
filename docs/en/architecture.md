@@ -104,12 +104,12 @@ Dependencies(
 
 - `DocumentParser` — extraction from `.docx` (`extract_raw`), full-text hash (`content_hash`),
   splitting and stitching into logical parts (`to_logical_parts`, `semantic_merge`).
-- `StructureTagger` — structure markup (`tag`), type normalization (`categorize`), removal of the
-  duplicated number from the text (`strip_leading_numbering`), numbering rank
-  (`numbering_rank`, `numbering_ranks`).
+- `StructureTagger` — structure markup **and fragment tagging** in one LLM pass (`tag`), type
+  normalization (`categorize`), removal of the duplicated number from the text
+  (`strip_leading_numbering`), numbering rank (`numbering_rank`, `numbering_ranks`).
 - `HierarchyBuilder` — tree building (`build`), post-validation (`cap_unnumbered_nesting`),
-  amendment grouping (`group_amendment`), flattening into nodes (`flatten`).
-- `Tagger` — fragment tagging (`tag_nodes`).
+  amendment grouping (`group_amendment`), flattening into nodes (`flatten`); carries the tags from
+  the structure pass onto each node.
 - `VersionDetector` — document name and version detection (`detect`).
 
 ### Services

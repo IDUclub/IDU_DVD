@@ -53,9 +53,11 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str | None = None
     qdrant_collection: str = "documents"  # base name (see collection_namespacing)
-    vector_size: int = (
-        2048  # MUST match the provider model (giga = 2048, bge-m3 = 1024)
-    )
+    # Advisory fallback only: the real dimension is probed from the active vectorizer at
+    # startup (see ``probe_embedding_dim`` / ``init_dependencies``) and this value is
+    # overwritten to match, so the Qdrant collection can never disagree with the model. It is
+    # used verbatim only when the vectorizer is unreachable at boot (giga = 2048, bge-m3 = 1024).
+    vector_size: int = 2048
     embed_batch: int = 32
     # When True (default), the physical collection — and its Redis registry namespace —
     # is derived from the base name + embedding model + dimension, so a change to the
@@ -88,7 +90,7 @@ class Settings(BaseSettings):
     window_chars: int = 6000
     window_max_items: int = 22  # max parts per Stage-2 window (structured output)
     overlap_blocks: int = 3
-    semantic_merge_max_passes: int = 2
+    semantic_merge_max_passes: int = 1
     split_sentences: bool = True
     sent_min_len: int = 300
 

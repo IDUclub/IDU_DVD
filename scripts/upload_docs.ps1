@@ -115,16 +115,17 @@ function Get-JobProgress($Job) {
     }
     $fraction = [Math]::Min(1.0, [Math]::Max(0.0, $fraction))
 
-    # Human-readable detail, e.g. "stage 1/8 structure-markup · boundaries · 3/7"; "queued"
-    # while waiting for a free GPU slot on the server.
+    # Human-readable detail, e.g. "stage 1/8 structure-markup | boundaries | 3/7"; "queued"
+    # while waiting for a free GPU slot on the server. ASCII-only separators — Write-Progress
+    # does not render reliably in UTF-8 on the Windows console.
     $detail = $status
     if ($status -eq "processing" -and $stage) {
         $detail = "stage $stageIndex/$stageTotal $stage"
         if ($phase) {
-            $detail += " · $phase"
+            $detail += " | $phase"
         }
         if ($doneTotal) {
-            $detail += " · $done/$doneTotal"
+            $detail += " | $done/$doneTotal"
         }
     }
 

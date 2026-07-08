@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import structlog
 
+from src.api_clients import probe_embedding_dim
 from src.broker.outbox import EventOutbox
 from src.broker.publisher import KafkaPublisher
 from src.common.config import Settings, settings
@@ -19,7 +20,7 @@ from src.dvd_service.modules.doc_parsers import DocumentParser
 from src.dvd_service.modules.hierarchy import HierarchyBuilder
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
-from src.dvd_service.modules.tagging import Tagger, VersionDetector
+from src.dvd_service.modules.tagging import VersionDetector
 from src.dvd_service.services.dvd_service import (
     DocumentsService,
     IngestionService,
@@ -42,6 +43,21 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     configure_logging(s)
     app_logger = structlog.get_logger("app")
 
+    # Pin the Qdrant vector size to whatever the active vectorizer actually returns, so the
+    # collection dimension can never drift from the embedding model. Falls back to the
+    # configured ``vector_size`` when the vectorizer is unreachable at boot.
+    detected_dim = probe_embedding_dim()
+    if detected_dim:
+        if detected_dim != s.vector_size:
+            app_logger.warning(
+                "vector_size_autodetected",
+                configured=s.vector_size,
+                detected=detected_dim,
+            )
+        s.vector_size = detected_dim
+    else:
+        app_logger.warning("vector_size_probe_unavailable", fallback=s.vector_size)
+
     qdrant = QdrantRepository(s)
     qdrant.ensure_collection()
     if s.enable_reference_linking:
@@ -53,7 +69,6 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     parser = DocumentParser(s)
     structure = StructureTagger(s)
     hierarchy = HierarchyBuilder()
-    tagger = Tagger(s)
     version_detector = VersionDetector()
     reference_extractor = ReferenceExtractor(s)
     reference_resolver = ReferenceResolver(qdrant, registry, s)
@@ -68,7 +83,6 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         parser,
         structure,
         hierarchy,
-        tagger,
         version_detector,
         reference_extractor,
         reference_resolver,
@@ -95,7 +109,6 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         parser=parser,
         structure=structure,
         hierarchy=hierarchy,
-        tagger=tagger,
         version_detector=version_detector,
         reference_extractor=reference_extractor,
         reference_resolver=reference_resolver,
