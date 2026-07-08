@@ -1,5 +1,5 @@
 param(
-    [string]$BaseUrl = "http://localhost:8100",
+    [string]$BaseUrl = $env:DVD_UPLOAD_BASE_URL,
     [string]$DocsDir = (Join-Path $PSScriptRoot "..\docs_data"),
     [string]$Corpus = "norm",
     [string]$DocType = "regulation",
@@ -124,6 +124,10 @@ function Get-JobProgress($Job) {
     }
 
     return [pscustomobject]@{ Status = $status; Fraction = $fraction; Detail = $detail }
+}
+
+if (-not $BaseUrl) {
+    throw "Base URL is not set. Pass -BaseUrl http://host:port or set `$env:DVD_UPLOAD_BASE_URL"
 }
 
 $resolvedDocsDir = Resolve-Path -LiteralPath $DocsDir
