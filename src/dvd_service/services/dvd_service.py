@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import difflib
 import os
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,11 +46,16 @@ from src.dvd_service.modules.identity import (
     make_span_id,
     make_version_id,
 )
+from src.dvd_service.modules.progress import Progress
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import Tagger, VersionDetector
 
 log = structlog.get_logger(__name__)
+
+# Number of stages the ingest pipeline reports progress through (see ``ingest``); surfaced as
+# ``stage_index``/``stage_total`` on the job status.
+PIPELINE_STAGES = 8
 
 
 def _version_condition(version: str) -> Filter:
@@ -90,10 +96,16 @@ class IngestionService:
         self.jobs = jobs
         self.settings = settings
         self.outbox = outbox
+        # Serializes the GPU-bound pipeline: at most ``ingest_concurrency`` documents touch the
+        # LLM/embedder at once. A document waits here (status "queued") until the GPU is free, so
+        # a batch upload keeps the GPU busy without oversubscribing it. Process-wide — background
+        # ingest jobs run in the threadpool, hence a threading primitive.
+        self._gpu_gate = threading.BoundedSemaphore(max(1, settings.ingest_concurrency))
 
     def __repr__(self) -> str:
         return (
-            f"{type(self).__name__}(embed_batch={self.settings.embed_batch}, "
+            f"{type(self).__name__}(ingest_concurrency={self.settings.ingest_concurrency}, "
+            f"embed_batch={self.settings.embed_batch}, "
             f"parser={type(self.parser).__name__}, "
             f"structure={type(self.structure).__name__}, "
             f"hierarchy={type(self.hierarchy).__name__}, "
@@ -117,12 +129,15 @@ class IngestionService:
                 idx[num] = n["id"]
         return idx
 
-    def _embed_all(self, texts: list[str]) -> list[list[float]]:
+    def _embed_all(self, texts: list[str], on_progress=None) -> list[list[float]]:
         vectors: list[list[float]] = []
         b = self.settings.embed_batch
+        total = (len(texts) + b - 1) // b
         with create_embedder() as embedder:
-            for i in range(0, len(texts), b):
+            for done, i in enumerate(range(0, len(texts), b), 1):
                 vectors.extend(embedder.embed_documents(texts[i : i + b]))
+                if on_progress:
+                    on_progress(done, total)
         return vectors
 
     def _resolve_identity(
@@ -348,36 +363,59 @@ class IngestionService:
         effective_date: str | None = None,
     ) -> dict:
         doc_id = doc_id or str(uuid.uuid4())
+        # Block until a GPU slot is free: the job stays "queued" while it waits, flips to
+        # "processing" only once it holds the slot (see ``_gpu_gate``). Released in ``finally``.
         if job_id:
-            self.jobs.update(job_id, status="processing")
+            self.jobs.update(job_id, status="queued")
+        self._gpu_gate.acquire()
         client = OllamaClient()
         try:
+            if job_id:
+                self.jobs.update(job_id, status="processing")
+            progress = Progress(self.jobs, job_id, total_stages=PIPELINE_STAGES)
+            progress.stage("structure-markup")
             parts = self.parser.to_logical_parts(raw, client)  # Stage 1 + 1.5
-            self.structure.tag(parts, client)  # Stage 2 + 3
+
+            progress.stage("type-tagging")
+            self.structure.tag(
+                parts, client, on_progress=progress.advance
+            )  # Stage 2 + 3
+
+            progress.stage("hierarchy")
             ranks = self.structure.numbering_ranks(parts)  # Stage 3.5
             tree = self.hierarchy.build(parts, ranks, title=Path(file_path).stem)
             self.hierarchy.cap_unnumbered_nesting(tree)
             self.hierarchy.group_amendment(tree)
             nodes = self.hierarchy.flatten(tree)  # prev/next, kind, html
 
+            progress.stage("identity")
             name, version = self._resolve_identity(
                 parts, client, name_override, version_override
             )
             version, other_versions = self._resolve_version(name, version, content_hash)
 
-            node_tags = self.tagger.tag_nodes(nodes, client)
+            progress.stage("fragment-tagging")
+            node_tags = self.tagger.tag_nodes(
+                nodes, client, on_progress=progress.advance
+            )
             uploaded_at = datetime.now(timezone.utc).isoformat()
 
             # Stage: extract + resolve references (links to other documents/clauses)
+            progress.stage("references")
             numbering_index = self._numbering_index(nodes)
             node_refs: dict[str, list] = {}
             if self.settings.enable_reference_linking:
-                raw_refs = self.reference_extractor.extract(nodes, client)
+                raw_refs = self.reference_extractor.extract(
+                    nodes, client, on_progress=progress.advance
+                )
                 node_refs = self.reference_resolver.resolve(
                     doc_id, name, raw_refs, numbering_index
                 )
 
-            vectors = self._embed_all([n["text"] for n in nodes])
+            progress.stage("embeddings")
+            vectors = self._embed_all(
+                [n["text"] for n in nodes], on_progress=progress.advance
+            )
 
             # --- general-purpose identity + provenance (shared by all consumers) ---
             _, spans = self.parser.source_index(raw)
@@ -419,6 +457,7 @@ class IngestionService:
                 "metadata": metadata or {},
                 "uploaded_at": uploaded_at,
             }
+            progress.stage("indexing")
             points = self._build_points(
                 nodes, vectors, spans, doc_id, node_tags, node_refs, identity
             )
@@ -481,6 +520,7 @@ class IngestionService:
             raise
         finally:
             client.close()
+            self._gpu_gate.release()
 
     def update(
         self,
@@ -508,9 +548,12 @@ class IngestionService:
         version only. Old versions stay searchable untouched.
         """
         if job_id:
-            self.jobs.update(job_id, status="processing")
+            self.jobs.update(job_id, status="queued")
+        self._gpu_gate.acquire()
         client = OllamaClient()
         try:
+            if job_id:
+                self.jobs.update(job_id, status="processing")
             existing = self.qdrant.points_by_name(name)
             if not existing:
                 raise KeyError(f"документ не найден: {name}")
@@ -693,6 +736,7 @@ class IngestionService:
             raise
         finally:
             client.close()
+            self._gpu_gate.release()
 
     def reload(
         self,
