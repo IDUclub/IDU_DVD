@@ -146,3 +146,102 @@ class TestMiddleware:
     def test_honors_incoming_request_id(self, client):
         resp = client.get("/system/logs", headers={REQUEST_ID_HEADER: "TRACE-1"})
         assert resp.headers.get(REQUEST_ID_HEADER) == "TRACE-1"
+
+
+# --------------------------------------------------------------------------------------
+# Settings read/write (the DVD_ environment contract)
+# --------------------------------------------------------------------------------------
+@pytest.fixture
+def settings_controller(tmp_path):
+    s = Settings(qdrant_api_key="supersecret", log_dir=str(tmp_path))
+    return SystemController(s, env_path=tmp_path / ".env")
+
+
+class TestSettingsController:
+    def test_snapshot_masks_secret_and_reports_vector_size(self, settings_controller):
+        snap = settings_controller.settings_snapshot()
+        assert snap["vector_size"] == settings_controller._settings.vector_size
+        items = {i["field"]: i for i in snap["settings"]}
+        # the secret is masked and flagged
+        assert items["qdrant_api_key"]["value"] == "***"
+        assert items["qdrant_api_key"]["sensitive"] is True
+        # structural field is flagged as restart-required; env-name mapping is exposed
+        assert items["vector_size"]["restart_required"] is True
+        assert items["search_limit"]["env"] == "DVD_SEARCH_LIMIT"
+
+    def test_update_live_field_applies_and_persists(
+        self, settings_controller, tmp_path
+    ):
+        res = settings_controller.update_env({"DVD_SEARCH_LIMIT": 20})
+        assert res["live_applied"] == ["search_limit"]
+        assert res["restart_needed"] is False
+        assert settings_controller._settings.search_limit == 20  # applied in-memory
+        env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+        assert "DVD_SEARCH_LIMIT=20" in env_text  # persisted for restart
+
+    def test_update_structural_field_requires_restart(self, settings_controller):
+        before = settings_controller._settings.vector_size
+        res = settings_controller.update_env({"vector_size": 1024})
+        assert res["restart_required"] == ["vector_size"]
+        assert res["restart_needed"] is True
+        # the live value is left untouched — mutating it would misrepresent the running
+        # Qdrant collection, which still has the old dimension until a restart
+        assert settings_controller._settings.vector_size == before
+
+    def test_field_name_and_env_name_both_accepted(self, settings_controller):
+        settings_controller.update_env({"semantic_merge_max_passes": 3})
+        assert settings_controller._settings.semantic_merge_max_passes == 3
+        settings_controller.update_env({"DVD_SEMANTIC_MERGE_MAX_PASSES": 2})
+        assert settings_controller._settings.semantic_merge_max_passes == 2
+
+    def test_unknown_variable_rejected(self, settings_controller):
+        with pytest.raises(ValueError):
+            settings_controller.update_env({"DVD_NOPE": "x"})
+
+    def test_empty_updates_rejected(self, settings_controller):
+        with pytest.raises(ValueError):
+            settings_controller.update_env({})
+
+
+@pytest.fixture
+def settings_client(settings_controller):
+    app = FastAPI()
+    app.include_router(system_router)
+    app.dependency_overrides[Dependencies.get_system] = lambda: settings_controller
+    with TestClient(app) as c:
+        yield c
+
+
+class TestSettingsEndpoint:
+    def test_get_settings(self, settings_client):
+        resp = settings_client.get("/system/settings")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["vector_size"] >= 1
+        fields = {i["field"] for i in data["settings"]}
+        assert {"search_limit", "vector_size", "qdrant_api_key"} <= fields
+        secret = next(i for i in data["settings"] if i["field"] == "qdrant_api_key")
+        assert secret["value"] == "***"
+
+    def test_put_settings_applies_live(self, settings_client, settings_controller):
+        resp = settings_client.put(
+            "/system/settings", json={"updates": {"DVD_SEARCH_LIMIT": 25}}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["live_applied"] == ["search_limit"]
+        assert body["restart_needed"] is False
+        assert settings_controller._settings.search_limit == 25
+
+    def test_put_structural_field_reports_restart(self, settings_client):
+        resp = settings_client.put(
+            "/system/settings", json={"updates": {"DVD_VECTOR_SIZE": 1024}}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["restart_required"] == ["vector_size"]
+
+    def test_put_unknown_returns_422(self, settings_client):
+        resp = settings_client.put(
+            "/system/settings", json={"updates": {"DVD_NOPE": "1"}}
+        )
+        assert resp.status_code == 422

@@ -8,6 +8,7 @@ from src.api_clients.embeddings_client import (  # noqa: F401
     EmbeddingsError,
     GigaEmbeddingsClient,
     create_embedder,
+    probe_embedding_dim,
 )
 from src.api_clients.ollama_client import OllamaClient, OllamaError  # noqa: F401
 
@@ -17,4 +18,5 @@ __all__ = [
     "OllamaClient",
     "OllamaError",
     "create_embedder",
+    "probe_embedding_dim",
 ]

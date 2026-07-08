@@ -18,7 +18,7 @@ from src.dvd_service.modules.doc_parsers import DocumentParser
 from src.dvd_service.modules.hierarchy import HierarchyBuilder
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
-from src.dvd_service.modules.tagging import Tagger, VersionDetector
+from src.dvd_service.modules.tagging import VersionDetector
 from src.dvd_service.services.dvd_service import (
     DocumentsService,
     IngestionService,
@@ -49,7 +49,6 @@ class Dependencies:
         "parser",
         "structure",
         "hierarchy",
-        "tagger",
         "version_detector",
         "reference_extractor",
         "reference_resolver",
@@ -74,7 +73,6 @@ class Dependencies:
     parser: DocumentParser
     structure: StructureTagger
     hierarchy: HierarchyBuilder
-    tagger: Tagger
     version_detector: VersionDetector
     reference_extractor: ReferenceExtractor
     reference_resolver: ReferenceResolver
@@ -105,7 +103,6 @@ class Dependencies:
         parser: DocumentParser,
         structure: StructureTagger,
         hierarchy: HierarchyBuilder,
-        tagger: Tagger,
         version_detector: VersionDetector,
         reference_extractor: ReferenceExtractor,
         reference_resolver: ReferenceResolver,
@@ -128,7 +125,6 @@ class Dependencies:
         self.parser = parser
         self.structure = structure
         self.hierarchy = hierarchy
-        self.tagger = tagger
         self.version_detector = version_detector
         self.reference_extractor = reference_extractor
         self.reference_resolver = reference_resolver
@@ -197,10 +193,6 @@ class Dependencies:
     @classmethod
     def get_hierarchy(cls) -> HierarchyBuilder:
         return cls.instance().hierarchy
-
-    @classmethod
-    def get_tagger(cls) -> Tagger:
-        return cls.instance().tagger
 
     @classmethod
     def get_version_detector(cls) -> VersionDetector:

@@ -49,13 +49,14 @@ from src.dvd_service.modules.identity import (
 from src.dvd_service.modules.progress import Progress
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
-from src.dvd_service.modules.tagging import Tagger, VersionDetector
+from src.dvd_service.modules.tagging import VersionDetector
 
 log = structlog.get_logger(__name__)
 
 # Number of stages the ingest pipeline reports progress through (see ``ingest``); surfaced as
-# ``stage_index``/``stage_total`` on the job status.
-PIPELINE_STAGES = 8
+# ``stage_index``/``stage_total`` on the job status. Type-tagging now also emits fragment tags,
+# so there is no separate tagging stage.
+PIPELINE_STAGES = 7
 
 
 def _version_condition(version: str) -> Filter:
@@ -74,7 +75,6 @@ class IngestionService:
         parser: DocumentParser,
         structure: StructureTagger,
         hierarchy: HierarchyBuilder,
-        tagger: Tagger,
         version_detector: VersionDetector,
         reference_extractor: ReferenceExtractor,
         reference_resolver: ReferenceResolver,
@@ -87,7 +87,6 @@ class IngestionService:
         self.parser = parser
         self.structure = structure
         self.hierarchy = hierarchy
-        self.tagger = tagger
         self.version_detector = version_detector
         self.reference_extractor = reference_extractor
         self.reference_resolver = reference_resolver
@@ -109,7 +108,6 @@ class IngestionService:
             f"parser={type(self.parser).__name__}, "
             f"structure={type(self.structure).__name__}, "
             f"hierarchy={type(self.hierarchy).__name__}, "
-            f"tagger={type(self.tagger).__name__}, "
             f"version_detector={type(self.version_detector).__name__}, "
             f"reference_extractor={type(self.reference_extractor).__name__}, "
             f"reference_resolver={type(self.reference_resolver).__name__}, "
@@ -381,7 +379,7 @@ class IngestionService:
             progress.stage("type-tagging")
             self.structure.tag(
                 parts, client, on_progress=progress.advance
-            )  # Stage 2 + 3
+            )  # Stage 2 + 3 (structural fields + fragment tags in one pass)
 
             progress.stage("hierarchy")
             ranks = self.structure.numbering_ranks(parts)  # Stage 3.5
@@ -396,10 +394,9 @@ class IngestionService:
             )
             version, other_versions = self._resolve_version(name, version, content_hash)
 
-            progress.stage("fragment-tagging")
-            node_tags = self.tagger.tag_nodes(
-                nodes, client, on_progress=progress.advance
-            )
+            # Fragment tags were produced together with the structural fields (see
+            # ``StructureTagger.tag``) and ride the hierarchy onto each node — no extra LLM pass.
+            node_tags = {n["id"]: n.get("tags", []) for n in nodes}
             uploaded_at = datetime.now(timezone.utc).isoformat()
 
             # Stage: extract + resolve references (links to other documents/clauses)
@@ -637,7 +634,7 @@ class IngestionService:
                 n["next_id"] = _mapped(n["next_id"])
                 n["child_ids"] = [_mapped(c) for c in n["child_ids"]]
 
-            node_tags = self.tagger.tag_nodes(new_nodes, client) if new_nodes else {}
+            node_tags = {n["id"]: n.get("tags", []) for n in new_nodes}
             node_refs: dict[str, list] = {}
             if self.settings.enable_reference_linking and new_nodes:
                 numbering_index = {

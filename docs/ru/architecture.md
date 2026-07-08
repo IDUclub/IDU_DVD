@@ -107,12 +107,12 @@ Dependencies(
 
 - `DocumentParser` — извлечение из `.docx` (`extract_raw`), хэш полного текста
   (`content_hash`), дробление и склейка в логические части (`to_logical_parts`, `semantic_merge`).
-- `StructureTagger` — разметка структуры (`tag`), нормализация типа (`categorize`), удаление
-  дублирующего номера из текста (`strip_leading_numbering`), ранг нумерации
-  (`numbering_rank`, `numbering_ranks`).
+- `StructureTagger` — разметка структуры **и тегирование фрагментов** за один прогон LLM (`tag`),
+  нормализация типа (`categorize`), удаление дублирующего номера из текста
+  (`strip_leading_numbering`), ранг нумерации (`numbering_rank`, `numbering_ranks`).
 - `HierarchyBuilder` — построение дерева (`build`), пост-валидация (`cap_unnumbered_nesting`),
-  группировка изменений (`group_amendment`), развёртка в плоские узлы (`flatten`).
-- `Tagger` — тегирование фрагментов (`tag_nodes`).
+  группировка изменений (`group_amendment`), развёртка в плоские узлы (`flatten`); переносит теги из
+  прогона разметки на каждый узел.
 - `VersionDetector` — определение имени и версии документа (`detect`).
 
 ### Сервисы

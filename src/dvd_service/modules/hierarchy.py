@@ -40,6 +40,7 @@ class HierarchyBuilder:
                 "is_table": False,
                 "html": None,
                 "src_ids": [],
+                "tags": [],
                 "parent": None,
             }
         ]
@@ -58,6 +59,7 @@ class HierarchyBuilder:
                     "is_table": p.get("category") == "Table",
                     "html": p.get("html"),
                     "src_ids": p.get("src_ids", []),
+                    "tags": p.get("tags", []),
                     "parent": None,
                 }
             )
@@ -91,6 +93,7 @@ class HierarchyBuilder:
                 "_rank": node["rank"],
                 "_block": node["block"],
                 "_src_ids": node.get("src_ids", []),
+                "_tags": node.get("tags", []),
             }
             kids = [nest(c["_id"]) for c in children.get(node_id, [])]
             if kids:
@@ -143,6 +146,7 @@ class HierarchyBuilder:
                             "_rank": None,
                             "_block": "amendment",
                             "_src_ids": [],
+                            "_tags": [],
                             "children": run,
                         }
                     )
@@ -171,6 +175,7 @@ class HierarchyBuilder:
                 "block": node.get("_block", "main"),
                 "depth": depth,
                 "src_ids": node.get("_src_ids", []),
+                "tags": node.get("_tags", []),
                 "parent_id": parent_id,
                 "parent_text": parent_text,
                 "breadcrumb": " / ".join(path),
