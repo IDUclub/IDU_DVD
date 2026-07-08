@@ -90,11 +90,14 @@ class TestIngest:
 
     def test_progress_reported_through_stages(self, wired, sample_raw):
         seen = []
+        phases = []
         orig = wired.jobs.update
 
         def spy(job_id, **fields):
             if "stage" in fields:
                 seen.append((fields["stage"], fields["stage_index"]))
+                if fields.get("phase"):
+                    phases.append(fields["phase"])
             orig(job_id, **fields)
 
         wired.jobs.update = spy
@@ -106,6 +109,8 @@ class TestIngest:
         assert stages[0] == "structure-markup"
         assert "embeddings" in stages
         assert stages[-1] == "indexing"
+        # structure-markup reports its sub-phases with a per-request counter
+        assert "boundaries" in phases
         final = wired.jobs.get("jp")
         assert final["status"] == "done"
         assert final["stage_index"] == final["stage_total"] == 8
@@ -121,7 +126,7 @@ class TestIngest:
         lock = threading.Lock()
         orig = wired.ingestion.parser.to_logical_parts
 
-        def tracked(raw, client):
+        def tracked(raw, client, on_progress=None):
             with lock:
                 active["cur"] += 1
                 active["max"] = max(active["max"], active["cur"])
@@ -129,7 +134,7 @@ class TestIngest:
                 0.05
             )  # widen the window so an unguarded pipeline would overlap here
             try:
-                return orig(raw, client)
+                return orig(raw, client, on_progress=on_progress)
             finally:
                 with lock:
                     active["cur"] -= 1

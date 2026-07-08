@@ -28,8 +28,28 @@ class TestProgress:
         assert data["progress_total"] == 4
         assert data["status"] == "processing"  # progress updates never clobber status
 
+    def test_phase_is_written_and_cleared(self, settings, fake_redis):
+        jobs = JobStore(RedisClient(settings))
+        jobs.set("j", {"job_id": "j", "status": "processing"})
+        p = Progress(jobs, "j", total_stages=8)
+
+        p.stage("structure-markup")
+        p.advance(2, 7, phase="boundaries")
+        data = jobs.get("j")
+        assert data["phase"] == "boundaries"
+        assert data["progress"] == 2 and data["progress_total"] == 7
+
+        # an advance without a phase clears it (single-phase stages)
+        p.advance(1, 3)
+        assert jobs.get("j")["phase"] is None
+
+        # entering a new stage also clears any leftover phase
+        p.advance(1, 1, phase="semantic-merge pass 1")
+        p.stage("embeddings")
+        assert jobs.get("j")["phase"] is None
+
     def test_noop_without_job(self):
         # No JobStore / job_id -> silently does nothing (unit tests calling the pipeline direct).
         p = Progress(None, None, total_stages=8)
         p.stage("x")
-        p.advance(1, 2)  # must not raise
+        p.advance(1, 2, phase="boundaries")  # must not raise

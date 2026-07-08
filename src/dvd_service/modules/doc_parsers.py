@@ -304,7 +304,7 @@ class DocumentParser:
         data = client.chat(BOUNDARY_SYSTEM, user, BOUNDARY_SCHEMA)
         return {item["id"]: item["boundary"] for item in data["blocks"]}
 
-    def _assemble_boundaries(self, blocks, client):
+    def _assemble_boundaries(self, blocks, client, on_progress=None):
         n = len(blocks)
         heur = ["new"] + [
             self._heuristic_boundary(
@@ -318,12 +318,15 @@ class DocumentParser:
         llm_dec = {}
         if client is not None:
             decisions = []
-            for s, e in make_windows(blocks):
+            windows = list(make_windows(blocks))
+            for done, (s, e) in enumerate(windows, 1):
                 texts = [blocks[k]["text"] for k in range(s, e)]
                 try:
                     decisions.append((s, self._llm_boundaries(client, texts)))
                 except (OllamaError, Exception) as exc:  # noqa: BLE001
                     log.warning("stage1_window_skipped", start=s, end=e, error=str(exc))
+                if on_progress:
+                    on_progress(done, len(windows), "boundaries")
             llm_dec = reconcile(decisions)
         final = ["new"]
         for i in range(1, n):
@@ -363,14 +366,17 @@ class DocumentParser:
             for item in data["parts"]
         }
 
-    def _semantic_merge_pass(self, parts, client):
+    def _semantic_merge_pass(self, parts, client, on_progress=None, npass=1):
         decisions = []
-        for s, e in make_windows(parts):
+        windows = list(make_windows(parts))
+        for done, (s, e) in enumerate(windows, 1):
             texts = [parts[k]["text"] for k in range(s, e)]
             try:
                 decisions.append((s, self._llm_semantic_merge(client, texts)))
             except (OllamaError, Exception) as exc:  # noqa: BLE001
                 log.warning("stage15_window_skipped", start=s, end=e, error=str(exc))
+            if on_progress:
+                on_progress(done, len(windows), f"semantic-merge pass {npass}")
         dec = reconcile(decisions)
         merged, cur = [], None
         for i, p in enumerate(parts):
@@ -404,25 +410,27 @@ class DocumentParser:
             p["id"] = i
         return merged
 
-    def semantic_merge(self, parts, client):
+    def semantic_merge(self, parts, client, on_progress=None):
         if client is None or len(parts) < 2:
             return parts
         for npass in range(1, self.settings.semantic_merge_max_passes + 1):
             before = len(parts)
-            parts = self._semantic_merge_pass(parts, client)
+            parts = self._semantic_merge_pass(parts, client, on_progress, npass)
             log.info("stage15_pass", npass=npass, before=before, after=len(parts))
             if len(parts) == before:
                 break
         return parts
 
     def to_logical_parts(
-        self, raw: list[dict], client: OllamaClient | None
+        self, raw: list[dict], client: OllamaClient | None, on_progress=None
     ) -> list[dict]:
         blocks = self._split_into_segments(raw)
         log.info("stage1_split", blocks=len(raw), segments=len(blocks))
-        parts = self._merge_blocks(blocks, self._assemble_boundaries(blocks, client))
+        parts = self._merge_blocks(
+            blocks, self._assemble_boundaries(blocks, client, on_progress)
+        )
         for i, p in enumerate(parts):
             p["id"] = i
-        parts = self.semantic_merge(parts, client)
+        parts = self.semantic_merge(parts, client, on_progress)
         log.info("stage1_done", parts=len(parts))
         return parts

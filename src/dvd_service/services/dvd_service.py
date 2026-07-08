@@ -374,7 +374,9 @@ class IngestionService:
                 self.jobs.update(job_id, status="processing")
             progress = Progress(self.jobs, job_id, total_stages=PIPELINE_STAGES)
             progress.stage("structure-markup")
-            parts = self.parser.to_logical_parts(raw, client)  # Stage 1 + 1.5
+            parts = self.parser.to_logical_parts(
+                raw, client, on_progress=progress.advance
+            )  # Stage 1 + 1.5
 
             progress.stage("type-tagging")
             self.structure.tag(
