@@ -35,12 +35,13 @@ an enumeration inside a clause, scattered service fragments of the title page an
 that begins with its own structural number (e.g. `1.1`, `4.2`, `а)`, `1)`) is not merged into the
 previous one — adjacent numbered clauses do not stick together.
 
-The merge is iterative: passes repeat until convergence (by default at most two), because some merges
-become apparent only after a previous merge.
+The merge is iterative: passes repeat until convergence (`DVD_SEMANTIC_MERGE_MAX_PASSES`, default 1),
+because some merges become apparent only after a previous merge. Raise the cap to trade extra LLM
+passes for more aggressive merging.
 
 ## Stage 2. Structure markup
 
-`StructureTagger.tag(parts, client)` returns four fields for each part:
+`StructureTagger.tag(parts, client)` returns five fields for each part in a single LLM pass:
 
 - `type` — the kind of structural element by content (`chapter`, `section`, `clause`, `subclause`,
   `list_item`, `paragraph`, `table`, `note`, `definition`, `appendix`, `reference`, etc.; if nothing
@@ -48,7 +49,10 @@ become apparent only after a previous merge.
 - `numbering` — the part's own number, written out verbatim; codes and designations of other
   documents, law numbers and dates are not taken as the number;
 - `relation` — depth relative to the previous part (`top`, `deeper`, `same`, `shallower`);
-- `block` — `amendment` if the part belongs to a change/amendment, otherwise `main`.
+- `block` — `amendment` if the part belongs to a change/amendment, otherwise `main`;
+- `tags` — 2–6 search tags (key topics/objects/terms), lowercase, in the part's language; empty for
+  boilerplate parts. Folding tags into this pass removes what used to be a separate tagging LLM pass
+  over every node; the tags are carried through Stage 4 onto the flat nodes.
 
 After markup the own number is removed from the beginning of the text (kept separately in
 `numbering`) to avoid duplication. The slice is protected against false matches.
@@ -85,7 +89,9 @@ well as `kind` (`text`/`table`) and `table_html`.
 
 - `VersionDetector.detect(parts, client)` determines `name` (short designation) and `version` (full
   revision, including amendments).
-- `Tagger.tag_nodes(nodes, client)` assigns each node tags — key topics and terms.
+- Fragment tags (key topics and terms) are **not** a separate LLM pass: `StructureTagger.tag` emits
+  them alongside the structural fields in Stage 2, and they ride the hierarchy onto each node, so
+  Stage 5 just reads `node["tags"]`.
 - An `uploaded_at` timestamp (current UTC time, ISO 8601) is set once for the whole batch and
   stamped onto every node of this ingest call — used by document listing (`GET /documents`) to
   show and filter by upload time.

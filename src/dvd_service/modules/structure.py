@@ -1,4 +1,9 @@
-"""Stage 2/3/3.5: the StructureTagger class — type/numbering/relation/block, category, number rank."""
+"""Stage 2/3/3.5: the StructureTagger class — type/numbering/relation/block + tags, category, rank.
+
+The single structure pass also emits per-fragment search tags (previously a separate LLM pass):
+one windowed LLM call now returns both the structural fields and the tags for every part, halving
+the LLM traffic over the document. Tags then ride along the hierarchy onto the flat nodes.
+"""
 
 from __future__ import annotations
 
@@ -28,8 +33,9 @@ STRUCT_SCHEMA = {
                         "enum": ["top", "deeper", "same", "shallower"],
                     },
                     "block": {"type": "string", "enum": ["main", "amendment"]},
+                    "tags": {"type": "array", "items": {"type": "string"}},
                 },
-                "required": ["id", "type", "numbering", "relation", "block"],
+                "required": ["id", "type", "numbering", "relation", "block", "tags"],
             },
         }
     },
@@ -37,7 +43,7 @@ STRUCT_SCHEMA = {
 }
 STRUCT_SYSTEM = (
     "Ты анализируешь структуру документа ЛЮБОГО типа и языка. Дан список логических частей по "
-    "порядку, каждая с id. Для каждой части верни четыре поля.\n"
+    "порядку, каждая с id. Для каждой части верни пять полей.\n"
     "type - вид структурного элемента ПО СОДЕРЖАНИЮ (title_page, toc, preface, introduction, "
     "chapter, section, clause, subclause, list_item, paragraph, table, note, definition, "
     "appendix, conclusion, bibliography, reference). Иначе придумай краткий snake_case. Не other.\n"
@@ -46,6 +52,9 @@ STRUCT_SYSTEM = (
     "(ГОСТ 9238, СП 108.13330.2012), номера и даты законов, номера таблиц/рисунков.\n"
     "relation - глубина ОТНОСИТЕЛЬНО ПРЕДЫДУЩЕЙ части: top/deeper/same/shallower.\n"
     'block - "amendment", если часть относится к изменению/поправке; иначе "main".\n'
+    "tags - от 2 до 6 ТЕГОВ (ключевые темы, объекты, термины для поиска): короткие (1-3 слова), "
+    "в нижнем регистре, на языке части, без знаков препинания. Для служебных/малосодержательных "
+    "частей - пустой список.\n"
     "Опирайся на смысл и нумерацию. Текст не меняй. Верни все поля по каждому id."
 )
 
@@ -122,6 +131,10 @@ class StructureTagger:
         ranks = {l: self.numbering_rank(l) for l in labels}
         return {l: r for l, r in ranks.items() if r}
 
+    @staticmethod
+    def _clean_tags(raw) -> list[str]:
+        return [str(x).strip().lower() for x in (raw or []) if str(x).strip()]
+
     def _llm_structure(self, client: OllamaClient, window_texts):
         user = "\n".join("[%d] %s" % (i, t) for i, t in enumerate(window_texts))
         data = client.chat(STRUCT_SYSTEM, user, STRUCT_SCHEMA)
@@ -131,6 +144,7 @@ class StructureTagger:
                 it.get("numbering", ""),
                 it["relation"],
                 it.get("block", "main"),
+                self._clean_tags(it.get("tags")),
             )
             for it in data["nodes"]
         }
@@ -150,14 +164,15 @@ class StructureTagger:
         for p in parts:
             t = tags.get(p["id"])
             if t is None:
-                p["raw_type"], p["numbering"], p["relation"], p["block"] = (
-                    "paragraph",
-                    "",
-                    "deeper",
-                    "main",
-                )
+                (
+                    p["raw_type"],
+                    p["numbering"],
+                    p["relation"],
+                    p["block"],
+                    p["tags"],
+                ) = ("paragraph", "", "deeper", "main", [])
             else:
-                p["raw_type"], p["numbering"], p["relation"], p["block"] = t
+                p["raw_type"], p["numbering"], p["relation"], p["block"], p["tags"] = t
             p["text"] = self.strip_leading_numbering(p["text"], p["numbering"])
             p["type"] = self.categorize(
                 p["raw_type"]

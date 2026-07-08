@@ -21,6 +21,9 @@
 | `GET /library/documents` | список документов из реестра (метадата идентичности/корпуса) |
 | `GET /library/documents/{doc_id}` | один документ: собранный текст + метадата + упорядоченные фрагменты |
 | `GET /library/lookup` | резолв документов по точному ключу / внешнему id |
+| `GET /system/logs` | скачать файл логов приложения (с фильтрами) |
+| `GET /system/settings` | прочитать текущую конфигурацию `DVD_` (секреты замаскированы) |
+| `PUT /system/settings` | записать переменные `DVD_` в `.env` и применить runtime-настройки |
 | `GET /ping` | проверка работоспособности |
 | `GET /` | редирект на `/docs` |
 
@@ -416,6 +419,79 @@ curl "http://localhost:8000/library/lookup?key=СП%2019.13330.2019"
 ```
 curl "http://localhost:8000/library/documents/9f63..."
 ```
+
+## Система
+
+### GET /system/logs
+
+Скачать файл логов приложения в читаемом виде. Необязательные query-параметры `date`
+(`YYYY-MM-DD`) и `request_id` сужают вывод (комбинируются). `404`, если файл логов ещё не создан.
+
+### GET /system/settings
+
+Прочитать текущую эффективную конфигурацию — контракт переменных `DVD_`. Секреты
+(`qdrant_api_key`) возвращаются замаскированными как `***`. Для каждой записи указано имя поля и
+имя переменной среды, а также флаги `restart_required` / `sensitive`. `vector_size` — размерность,
+реально используемая сейчас (определена опросом векторизатора на старте); это самый быстрый способ
+убедиться, что Qdrant хранит вектор 2048.
+
+```json
+{
+  "effective_collection": "documents__giga_embeddings_instruct_2048",
+  "registry_prefix": "dvd:documents__giga_embeddings_instruct_2048",
+  "vector_size": 2048,
+  "embeddings_provider": "giga",
+  "env_file": ".env",
+  "settings": [
+    {"field": "search_limit", "env": "DVD_SEARCH_LIMIT", "value": 10, "restart_required": false, "sensitive": false},
+    {"field": "vector_size", "env": "DVD_VECTOR_SIZE", "value": 2048, "restart_required": true, "sensitive": false},
+    {"field": "qdrant_api_key", "env": "DVD_QDRANT_API_KEY", "value": "***", "restart_required": true, "sensitive": true}
+  ]
+}
+```
+
+### PUT /system/settings
+
+Записать переменные `DVD_` в файл `.env` и сразу применить runtime-настройки к работающему
+приложению. Ключи можно задавать как имена переменных среды (`DVD_SEARCH_LIMIT`) или как имена
+полей (`search_limit`); неизвестные ключи отклоняются с `422`.
+
+- **Runtime-настройки** (параметры поиска/окон/мерджа, тумблеры ссылок, адреса Ollama/векторизатора):
+  применяются в памяти сразу — перечислены в `live_applied` — и действуют со следующего запроса/ingest.
+- **Структурные** (коллекция и размерность Qdrant, провайдер эмбеддингов, обвязка Redis/Kafka,
+  логирование, конкурентность ingest): только записываются в `.env` — перечислены в
+  `restart_required` — и действуют после перезапуска. Их специально не меняют «на живую», чтобы не
+  вводить в заблуждение (например, коллекция Qdrant сохраняет свою размерность до пересоздания).
+
+```json
+{
+  "updates": {"DVD_SEARCH_LIMIT": 20, "DVD_SEMANTIC_MERGE_MAX_PASSES": 1}
+}
+```
+
+Ответ:
+
+```json
+{
+  "updated": [
+    {"field": "search_limit", "env": "DVD_SEARCH_LIMIT", "value": 20, "restart_required": false, "sensitive": false},
+    {"field": "semantic_merge_max_passes", "env": "DVD_SEMANTIC_MERGE_MAX_PASSES", "value": 1, "restart_required": false, "sensitive": false}
+  ],
+  "live_applied": ["search_limit", "semantic_merge_max_passes"],
+  "restart_required": [],
+  "restart_needed": false,
+  "env_file": ".env"
+}
+```
+
+```
+curl -X PUT http://localhost:8000/system/settings \
+  -H "Content-Type: application/json" \
+  -d '{"updates": {"DVD_VECTOR_SIZE": 2048}}'
+```
+
+> Эндпоинты настроек, как и остальной сервис, без аутентификации — держите их в доверенной сети:
+> запись может сменить адреса (Qdrant/Redis/Ollama) и переключить этапы пайплайна.
 
 ## MCP-инструменты
 

@@ -3,7 +3,7 @@
 The pipeline runs a fixed sequence of stages (see :mod:`dvd_service.services.dvd_service`).
 :class:`Progress` writes the current stage, an optional sub-phase, and an in-stage request
 counter into the :class:`~src.common.db.redis_client.JobStore`, so ``GET /documents/{job_id}``
-can report "stage 1/8 structure-markup · boundaries · 3/7" while a document is being processed.
+can report "stage 1/7 structure-markup · boundaries · 3/7" while a document is being processed.
 
 A *stage* is one entry of the fixed pipeline; a *phase* is a sub-step within a stage that runs
 its own batch of LLM requests (e.g. ``structure-markup`` splits into boundary detection and one

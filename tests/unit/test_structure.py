@@ -87,10 +87,12 @@ class TestStripLeadingNumbering:
 
 
 class TestTagPass:
-    def test_tag_assigns_structure_fields(self, tagger, fake_ollama):
+    def test_tag_assigns_structure_fields_and_tags(self, tagger, fake_ollama):
         parts = [{"id": 0, "text": "Раздел"}, {"id": 1, "text": "Пункт"}]
         out = tagger.tag(parts, fake_ollama)
         for p in out:
             assert p["type"] == "paragraph"  # from fake handler
-            assert {"raw_type", "numbering", "relation", "block"} <= p.keys()
+            assert {"raw_type", "numbering", "relation", "block", "tags"} <= p.keys()
+            # fragment tags are produced in the same structure pass
+            assert isinstance(p["tags"], list) and p["tags"]
         assert fake_ollama.chat_calls, "LLM should have been called for structure"

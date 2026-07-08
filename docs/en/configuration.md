@@ -53,7 +53,7 @@ into that new space (embeddings of different models are not comparable).
 | `DVD_QDRANT_URL` | `http://localhost:6333` | Qdrant address |
 | `DVD_QDRANT_API_KEY` | empty | API key (if required) |
 | `DVD_QDRANT_COLLECTION` | `documents` | **base** collection name (see Collection namespacing) |
-| `DVD_VECTOR_SIZE` | `2048` | vector dimension; must match the embeddings provider model (giga = 2048, bge-m3 = 1024) |
+| `DVD_VECTOR_SIZE` | `2048` | **advisory fallback only** — the real dimension is probed from the active vectorizer at startup and this value is overwritten to match; used verbatim only if the vectorizer is unreachable at boot (giga = 2048, bge-m3 = 1024) |
 | `DVD_EMBED_BATCH` | `32` | batch size during vectorization |
 | `DVD_COLLECTION_NAMESPACING` | `true` | derive a distinct physical collection per embedding space (see below) |
 
@@ -69,12 +69,13 @@ documents__giga_embeddings_instruct_2048     # giga / 2048
 documents__bge_m3_1024                        # ollama fallback / 1024
 ```
 
-At startup the service creates the collection its **current** config points at, if it does not
-exist yet. Because the name encodes the embedding space, changing the provider/model/dimension
-lands in a **brand-new** collection and the previous one is left untouched — a provider switch (or
-a rollback) never overwrites or silently mixes vector spaces, and no manual "drop + re-index"
-dance is needed. You still re-ingest documents into the new space (embeddings of different models
-are not comparable), but the old space stays available.
+At startup the service **probes the active vectorizer** for its real embedding dimension and pins
+`vector_size` to it, then creates the collection its **current** config points at, if it does not
+exist yet. Because the name encodes the embedding space (and the auto-detected dimension), changing
+the provider/model/dimension lands in a **brand-new** collection and the previous one is left
+untouched — a provider switch (or a rollback) never overwrites or silently mixes vector spaces, and
+no manual "drop + re-index" dance is needed. You still re-ingest documents into the new space
+(embeddings of different models are not comparable), but the old space stays available.
 
 The Redis document registry (dedup hashes, version sets, document summaries) is namespaced the
 same way (`dvd:{effective_collection}:…`), so a fresh space also gets a clean registry — otherwise
@@ -145,7 +146,7 @@ of a not-yet-stored document announces `DocumentProcessed`.
 | `DVD_WINDOW_CHARS` | `6000` | character budget per window |
 | `DVD_WINDOW_MAX_ITEMS` | `22` | item limit per structure-markup window |
 | `DVD_OVERLAP_BLOCKS` | `3` | window overlap |
-| `DVD_SEMANTIC_MERGE_MAX_PASSES` | `2` | number of semantic-merge passes |
+| `DVD_SEMANTIC_MERGE_MAX_PASSES` | `1` | number of semantic-merge passes (raise for more merge quality at the cost of extra LLM passes) |
 | `DVD_SPLIT_SENTENCES` | `true` | split long blocks into sentences |
 | `DVD_SENT_MIN_LEN` | `300` | minimum block length to split into sentences |
 
@@ -170,11 +171,12 @@ consumers (e.g. MSI-TSIM) override these per upload via form fields / `external_
 
 ## Important notes
 
-- `DVD_VECTOR_SIZE` must match the dimension of the chosen embeddings provider model:
-  Giga-Embeddings-instruct — 2048, `bge-m3` — 1024. The dimension is fixed when the Qdrant
-  collection is created and cannot be changed without recreating it. With collection namespacing on
-  (default) a dimension change simply provisions a new collection; with it off, re-index the
-  existing collection (or switch it on).
+- `DVD_VECTOR_SIZE` is auto-detected at startup by probing the active vectorizer, so it normally
+  matches the model on its own (Giga-Embeddings-instruct — 2048, `bge-m3` — 1024); the configured
+  value is only a fallback for when the vectorizer is unreachable at boot. The dimension is fixed
+  when the Qdrant collection is created and cannot be changed without recreating it. With collection
+  namespacing on (default) a dimension change simply provisions a new collection; with it off,
+  re-index the existing collection (or switch it on).
 - `DVD_PARTITION_STRATEGY` affects only the parsing of formats other than `.docx`; `.docx` is parsed
   through `partition_docx` regardless of the strategy.
 - By default the Ollama address and the LLM point at a shared stand (`a.dgx`, `gpt-oss:20b`). For a

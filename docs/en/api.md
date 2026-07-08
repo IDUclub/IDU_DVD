@@ -20,6 +20,9 @@ request and response models are pydantic-based and defined under `src/dvd_servic
 | `GET /library/documents` | list documents from the registry (identity/corpus metadata) |
 | `GET /library/documents/{doc_id}` | one document: assembled text + metadata + ordered fragments |
 | `GET /library/lookup` | resolve documents by an exact lookup key / external id |
+| `GET /system/logs` | download the application log file (optionally filtered) |
+| `GET /system/settings` | read the current effective `DVD_` configuration (secrets masked) |
+| `PUT /system/settings` | persist `DVD_` variables to `.env` and apply the runtime-tunable ones |
 | `GET /ping` | health check |
 | `GET /` | redirect to `/docs` |
 
@@ -410,6 +413,79 @@ Each fragment carries `id`, `order`, `kind`, `type`, `numbering`, `depth`, `brea
 ```
 curl "http://localhost:8000/library/documents/9f63..."
 ```
+
+## System
+
+### GET /system/logs
+
+Download the application log file as a readable `.log`. Optional query params `date` (`YYYY-MM-DD`)
+and `request_id` narrow the output (combinable). `404` if the log file does not exist yet.
+
+### GET /system/settings
+
+Read the current effective configuration — the `DVD_` environment contract. Secrets
+(`qdrant_api_key`) are returned masked as `***`. Each entry gives both the field name and the
+env-var name, plus `restart_required` / `sensitive` flags. `vector_size` is the dimension actually
+in use (auto-detected from the vectorizer at startup) — the quickest way to confirm Qdrant stores
+2048-d vectors.
+
+```json
+{
+  "effective_collection": "documents__giga_embeddings_instruct_2048",
+  "registry_prefix": "dvd:documents__giga_embeddings_instruct_2048",
+  "vector_size": 2048,
+  "embeddings_provider": "giga",
+  "env_file": ".env",
+  "settings": [
+    {"field": "search_limit", "env": "DVD_SEARCH_LIMIT", "value": 10, "restart_required": false, "sensitive": false},
+    {"field": "vector_size", "env": "DVD_VECTOR_SIZE", "value": 2048, "restart_required": true, "sensitive": false},
+    {"field": "qdrant_api_key", "env": "DVD_QDRANT_API_KEY", "value": "***", "restart_required": true, "sensitive": true}
+  ]
+}
+```
+
+### PUT /system/settings
+
+Persist `DVD_` variables to the `.env` file and apply the runtime-tunable ones to the running app
+immediately. Keys may be env names (`DVD_SEARCH_LIMIT`) or field names (`search_limit`); unknown
+keys are rejected with `422`.
+
+- **Runtime-tunable** (search/window/merge params, reference toggles, Ollama/vectorizer endpoints):
+  applied in-memory at once — listed in `live_applied` — and effective on the next request/ingest.
+- **Structural** (Qdrant collection & dimension, embeddings provider, Redis/Kafka wiring, logging,
+  ingest concurrency): only written to `.env` — listed in `restart_required` — and effective after
+  a restart. They are intentionally *not* mutated live, to avoid misrepresenting the running wiring
+  (e.g. the Qdrant collection keeps its dimension until recreated).
+
+```json
+{
+  "updates": {"DVD_SEARCH_LIMIT": 20, "DVD_SEMANTIC_MERGE_MAX_PASSES": 1}
+}
+```
+
+Response:
+
+```json
+{
+  "updated": [
+    {"field": "search_limit", "env": "DVD_SEARCH_LIMIT", "value": 20, "restart_required": false, "sensitive": false},
+    {"field": "semantic_merge_max_passes", "env": "DVD_SEMANTIC_MERGE_MAX_PASSES", "value": 1, "restart_required": false, "sensitive": false}
+  ],
+  "live_applied": ["search_limit", "semantic_merge_max_passes"],
+  "restart_required": [],
+  "restart_needed": false,
+  "env_file": ".env"
+}
+```
+
+```
+curl -X PUT http://localhost:8000/system/settings \
+  -H "Content-Type: application/json" \
+  -d '{"updates": {"DVD_VECTOR_SIZE": 2048}}'
+```
+
+> The settings endpoints are unauthenticated, like the rest of the service — keep them on a trusted
+> network, since a write can change where the app points (Qdrant/Redis/Ollama) and toggle stages.
 
 ## MCP tools
 

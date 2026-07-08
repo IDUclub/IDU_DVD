@@ -1,6 +1,6 @@
 """Unit tests for src/dvd_service/services/dvd_service — IngestionService and SearchService.
 
-Wires the *real* pipeline modules (parser/structure/hierarchy/tagger/version) but fakes the
+Wires the *real* pipeline modules (parser/structure/hierarchy/version) but fakes the
 external boundaries: LLM (FakeOllama), Qdrant (FakeQdrantRepo) and Redis (fakeredis). This
 exercises the full ingest+search orchestration without any live service.
 
@@ -20,7 +20,7 @@ from src.dvd_service.modules.doc_parsers import DocumentParser
 from src.dvd_service.modules.hierarchy import HierarchyBuilder
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
-from src.dvd_service.modules.tagging import Tagger, VersionDetector
+from src.dvd_service.modules.tagging import VersionDetector
 from src.dvd_service.services.dvd_service import (
     DocumentsService,
     IngestionService,
@@ -43,7 +43,6 @@ def wired(settings, fake_ollama, fake_qdrant, fake_redis, monkeypatch):
         DocumentParser(settings),
         StructureTagger(settings),
         HierarchyBuilder(),
-        Tagger(settings),
         VersionDetector(),
         ReferenceExtractor(settings),
         ReferenceResolver(fake_qdrant, registry, settings),
@@ -113,7 +112,7 @@ class TestIngest:
         assert "boundaries" in phases
         final = wired.jobs.get("jp")
         assert final["status"] == "done"
-        assert final["stage_index"] == final["stage_total"] == 8
+        assert final["stage_index"] == final["stage_total"] == 7
 
     def test_gpu_gate_serializes_concurrent_ingests(self, wired, sample_raw):
         # With ingest_concurrency=1 (default) the GPU-bound pipeline is serialized: two ingests
@@ -258,7 +257,6 @@ class TestIngest:
             DocumentParser(s),
             StructureTagger(s),
             HierarchyBuilder(),
-            Tagger(s),
             VersionDetector(),
             ReferenceExtractor(s),
             ReferenceResolver(fake_qdrant, DocumentRegistry(redis_client), s),
