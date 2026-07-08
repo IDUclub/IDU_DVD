@@ -6,6 +6,7 @@ param(
     [string]$Lang = "ru",
     [string]$Pattern = "*.docx",
     [int]$PollSeconds = 5,
+    [int]$Prefetch = 2,
     [int]$JobTimeoutMinutes = 180,
     [bool]$NameFromFile = $true,
     [bool]$VersionFromFile = $true,
@@ -87,76 +88,42 @@ function Invoke-Upload([System.IO.FileInfo]$File) {
     return $obj
 }
 
-function Wait-Job([string]$JobId, [System.IO.FileInfo]$File, [int]$Index, [int]$Total) {
-    $url = Join-Url $BaseUrl "documents/$JobId"
-    $deadline = (Get-Date).AddMinutes($JobTimeoutMinutes)
-    $lastDetail = $null
+function Get-JobProgress($Job) {
+    # Turn a job-status response into { Status; Fraction (0..1); Detail } for display.
+    # Fields come from the server (see JobStatusDTO): the current pipeline stage plus an
+    # in-stage item counter for the chunked stages.
+    $status = [string]$Job.status
+    $stage = Get-JobField $Job "stage"
+    $stageIndex = Get-JobField $Job "stage_index"
+    $stageTotal = Get-JobField $Job "stage_total"
+    $done = Get-JobField $Job "progress"
+    $doneTotal = Get-JobField $Job "progress_total"
 
-    while ($true) {
-        if ((Get-Date) -gt $deadline) {
-            throw "job timeout after $JobTimeoutMinutes minutes: $JobId"
-        }
-
-        $job = Invoke-RestMethod -Method GET -Uri $url -TimeoutSec 60
-        $status = [string]$job.status
-
-        # Live per-document progress published by the server (see JobStatusDTO): the current
-        # pipeline stage plus an in-stage item counter for the chunked stages.
-        $stage = Get-JobField $job "stage"
-        $stageIndex = Get-JobField $job "stage_index"
-        $stageTotal = Get-JobField $job "stage_total"
-        $done = Get-JobField $job "progress"
-        $doneTotal = Get-JobField $job "progress_total"
-
-        # Fraction of THIS document completed: whole stages done + the counter inside the
-        # current one (each stage weighs 1/stageTotal of the document).
-        $docFraction = 0.0
-        if ($stageTotal) {
-            $docFraction = ($stageIndex - 1) / $stageTotal
-            if ($doneTotal) {
-                $docFraction += ($done / $doneTotal) / $stageTotal
-            }
-        }
-        $docFraction = [Math]::Min(1.0, [Math]::Max(0.0, $docFraction))
-
-        # Human-readable detail, e.g. "stage 7/8 embeddings · 128/256".
-        $detail = $status
-        if ($stage) {
-            $detail = "stage $stageIndex/$stageTotal $stage"
-            if ($doneTotal) {
-                $detail += " · $done/$doneTotal"
-            }
-        }
-
-        # Two bars: parent (Id 1) tracks the whole run, child (Id 2) the current document's
-        # pipeline. The overall percent blends completed files with the current doc's fraction.
-        $overall = [int]((($Index - 1) + $docFraction) * 100 / [Math]::Max($Total, 1))
-        Write-Progress -Id 1 `
-            -Activity "Uploading docs_data to $BaseUrl" `
-            -Status "[$Index/$Total] $($File.Name)" `
-            -PercentComplete $overall
-        Write-Progress -Id 2 -ParentId 1 `
-            -Activity $File.Name `
-            -Status $detail `
-            -PercentComplete ([int]($docFraction * 100))
-
-        # Echo each new stage to the console too — Write-Progress is invisible in captured logs.
-        if ($stage -and $detail -ne $lastDetail) {
-            Write-Host "    $detail"
-            $lastDetail = $detail
-        }
-
-        if ($status -eq "done") {
-            Write-Progress -Id 2 -ParentId 1 -Activity $File.Name -Completed
-            return $job
-        }
-        if ($status -eq "error") {
-            Write-Progress -Id 2 -ParentId 1 -Activity $File.Name -Completed
-            throw "job failed: $($job.error)"
-        }
-
-        Start-Sleep -Seconds $PollSeconds
+    # Fraction of THIS document completed: whole stages done + the counter inside the current
+    # one (each stage weighs 1/stageTotal of the document).
+    $fraction = 0.0
+    if ($status -eq "done") {
+        $fraction = 1.0
     }
+    elseif ($stageTotal) {
+        $fraction = ($stageIndex - 1) / $stageTotal
+        if ($doneTotal) {
+            $fraction += ($done / $doneTotal) / $stageTotal
+        }
+    }
+    $fraction = [Math]::Min(1.0, [Math]::Max(0.0, $fraction))
+
+    # Human-readable detail, e.g. "stage 7/8 embeddings · 128/256"; "queued" while waiting
+    # for a free GPU slot on the server.
+    $detail = $status
+    if ($status -eq "processing" -and $stage) {
+        $detail = "stage $stageIndex/$stageTotal $stage"
+        if ($doneTotal) {
+            $detail += " · $done/$doneTotal"
+        }
+    }
+
+    return [pscustomobject]@{ Status = $status; Fraction = $fraction; Detail = $detail }
 }
 
 $resolvedDocsDir = Resolve-Path -LiteralPath $DocsDir
@@ -174,46 +141,125 @@ Write-Host "Files: $($files.Count)"
 Write-Host "Corpus: $Corpus"
 Write-Host "Doc type: $DocType"
 Write-Host "Lang: $Lang"
+Write-Host "Prefetch: $Prefetch (documents submitted ahead; the server runs one on the GPU at a time)"
 Write-Host "Note: Qdrant collection is selected by the running server configuration; this script sets the logical corpus."
 Write-Host ""
 
 $results = New-Object System.Collections.Generic.List[object]
 $failures = New-Object System.Collections.Generic.List[object]
+$inflight = New-Object System.Collections.Generic.List[object]
+$next = 0            # index of the next file to submit
+$completed = 0       # files finished (done or failed)
+$stopSubmitting = $false
 
-for ($i = 0; $i -lt $files.Count; $i++) {
-    $file = $files[$i]
-    $index = $i + 1
-    $percent = [int](($i) * 100 / [Math]::Max($files.Count, 1))
-    Write-Progress -Id 1 -Activity "Uploading docs_data to $BaseUrl" -Status "[$index/$($files.Count)] $($file.Name): upload" -PercentComplete $percent
-    Write-Host "[$index/$($files.Count)] Uploading $($file.Name)"
-
-    try {
-        $upload = Invoke-Upload $file
-        Write-Host "  job: $($upload.job_id)"
-        $job = Wait-Job $upload.job_id $file $index $files.Count
-        Write-Host "  done: name='$($job.name)' version='$($job.version)' nodes=$($job.nodes)"
-        $results.Add([pscustomobject]@{
-            file = $file.Name
-            job_id = $upload.job_id
-            status = "done"
-            name = $job.name
-            version = $job.version
-            nodes = $job.nodes
-        }) | Out-Null
-    }
-    catch {
-        $message = [string]$_.Exception.Message
-        Write-Host "  failed: $message" -ForegroundColor Red
-        $failures.Add([pscustomobject]@{
-            file = $file.Name
-            error = $message
-        }) | Out-Null
-        if ($StopOnError) {
-            break
+# Pipeline the batch: keep up to $Prefetch documents submitted ahead so the next one is already
+# parsed and queued on the server, ready to grab the GPU the instant the current document frees
+# it. The server serializes GPU work (DVD_INGEST_CONCURRENCY), so extra in-flight docs simply
+# wait there in status "queued" instead of fighting over the card.
+while ($next -lt $files.Count -or $inflight.Count -gt 0) {
+    # Fill the prefetch window.
+    while (-not $stopSubmitting -and $inflight.Count -lt $Prefetch -and $next -lt $files.Count) {
+        $file = $files[$next]
+        $index = $next + 1
+        $next++
+        Write-Host "[$index/$($files.Count)] Uploading $($file.Name)"
+        try {
+            $upload = Invoke-Upload $file
+            Write-Host "  job: $($upload.job_id)"
+            $inflight.Add([pscustomobject]@{
+                File       = $file
+                Index      = $index
+                JobId      = $upload.job_id
+                Deadline   = (Get-Date).AddMinutes($JobTimeoutMinutes)
+                LastDetail = $null
+            }) | Out-Null
         }
+        catch {
+            $message = [string]$_.Exception.Message
+            Write-Host "  failed: $message" -ForegroundColor Red
+            $failures.Add([pscustomobject]@{ file = $file.Name; error = $message }) | Out-Null
+            $completed++
+            if ($StopOnError) { $stopSubmitting = $true }
+        }
+    }
+
+    if ($inflight.Count -eq 0) {
+        if ($stopSubmitting) { break }
+        continue
+    }
+
+    Start-Sleep -Seconds $PollSeconds
+
+    # Poll every in-flight job once, keeping those still running.
+    $stillRunning = New-Object System.Collections.Generic.List[object]
+    $sumFraction = 0.0
+    $activeDetail = $null
+    $activeFraction = 0.0
+    foreach ($item in $inflight) {
+        if ((Get-Date) -gt $item.Deadline) {
+            Write-Host "  timeout: [$($item.Index)/$($files.Count)] $($item.File.Name) after $JobTimeoutMinutes min" -ForegroundColor Red
+            $failures.Add([pscustomobject]@{ file = $item.File.Name; error = "job timeout after $JobTimeoutMinutes minutes" }) | Out-Null
+            $completed++
+            if ($StopOnError) { $stopSubmitting = $true }
+            continue
+        }
+
+        try {
+            $job = Invoke-RestMethod -Method GET -Uri (Join-Url $BaseUrl "documents/$($item.JobId)") -TimeoutSec 60
+        }
+        catch {
+            # Transient poll error — keep the job and retry on the next tick.
+            $stillRunning.Add($item) | Out-Null
+            continue
+        }
+
+        $p = Get-JobProgress $job
+
+        # Echo each new stage to the console (Write-Progress is invisible in captured logs).
+        if ($p.Detail -ne $item.LastDetail) {
+            Write-Host "    [$($item.Index)/$($files.Count)] $($item.File.Name): $($p.Detail)"
+            $item.LastDetail = $p.Detail
+        }
+
+        if ($p.Status -eq "done") {
+            Write-Host "  done: [$($item.Index)/$($files.Count)] name='$($job.name)' version='$($job.version)' nodes=$($job.nodes)"
+            $results.Add([pscustomobject]@{
+                file    = $item.File.Name
+                job_id  = $item.JobId
+                status  = "done"
+                name    = $job.name
+                version = $job.version
+                nodes   = $job.nodes
+            }) | Out-Null
+            $completed++
+        }
+        elseif ($p.Status -eq "error") {
+            Write-Host "  failed: [$($item.Index)/$($files.Count)] $($job.error)" -ForegroundColor Red
+            $failures.Add([pscustomobject]@{ file = $item.File.Name; error = [string]$job.error }) | Out-Null
+            $completed++
+            if ($StopOnError) { $stopSubmitting = $true }
+        }
+        else {
+            $stillRunning.Add($item) | Out-Null
+            $sumFraction += $p.Fraction
+            # The document actually holding the GPU drives the child bar; others sit in "queued".
+            if ($p.Status -eq "processing") {
+                $activeDetail = "[$($item.Index)/$($files.Count)] $($item.File.Name): $($p.Detail)"
+                $activeFraction = $p.Fraction
+            }
+        }
+    }
+    $inflight = $stillRunning
+
+    # Overall progress across the whole batch: finished files + partial progress of the rest.
+    $overall = [int]([Math]::Min(100.0, ($completed + $sumFraction) * 100 / [Math]::Max($files.Count, 1)))
+    Write-Progress -Id 1 -Activity "Uploading docs_data to $BaseUrl" -Status "done $completed/$($files.Count)" -PercentComplete $overall
+    if ($activeDetail) {
+        Write-Progress -Id 2 -ParentId 1 -Activity "current document" -Status $activeDetail -PercentComplete ([int]($activeFraction * 100))
     }
 }
 
+Write-Progress -Id 2 -ParentId 1 -Activity "current document" -Completed
 Write-Progress -Id 1 -Activity "Uploading docs_data to $BaseUrl" -Completed
 Write-Host ""
 Write-Host "Summary: done=$($results.Count), failed=$($failures.Count), total=$($files.Count)"

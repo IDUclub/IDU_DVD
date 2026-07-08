@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import difflib
 import os
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -95,10 +96,16 @@ class IngestionService:
         self.jobs = jobs
         self.settings = settings
         self.outbox = outbox
+        # Serializes the GPU-bound pipeline: at most ``ingest_concurrency`` documents touch the
+        # LLM/embedder at once. A document waits here (status "queued") until the GPU is free, so
+        # a batch upload keeps the GPU busy without oversubscribing it. Process-wide — background
+        # ingest jobs run in the threadpool, hence a threading primitive.
+        self._gpu_gate = threading.BoundedSemaphore(max(1, settings.ingest_concurrency))
 
     def __repr__(self) -> str:
         return (
-            f"{type(self).__name__}(embed_batch={self.settings.embed_batch}, "
+            f"{type(self).__name__}(ingest_concurrency={self.settings.ingest_concurrency}, "
+            f"embed_batch={self.settings.embed_batch}, "
             f"parser={type(self.parser).__name__}, "
             f"structure={type(self.structure).__name__}, "
             f"hierarchy={type(self.hierarchy).__name__}, "
@@ -356,11 +363,16 @@ class IngestionService:
         effective_date: str | None = None,
     ) -> dict:
         doc_id = doc_id or str(uuid.uuid4())
+        # Block until a GPU slot is free: the job stays "queued" while it waits, flips to
+        # "processing" only once it holds the slot (see ``_gpu_gate``). Released in ``finally``.
         if job_id:
-            self.jobs.update(job_id, status="processing")
-        progress = Progress(self.jobs, job_id, total_stages=PIPELINE_STAGES)
+            self.jobs.update(job_id, status="queued")
+        self._gpu_gate.acquire()
         client = OllamaClient()
         try:
+            if job_id:
+                self.jobs.update(job_id, status="processing")
+            progress = Progress(self.jobs, job_id, total_stages=PIPELINE_STAGES)
             progress.stage("structure-markup")
             parts = self.parser.to_logical_parts(raw, client)  # Stage 1 + 1.5
 
@@ -508,6 +520,7 @@ class IngestionService:
             raise
         finally:
             client.close()
+            self._gpu_gate.release()
 
     def update(
         self,
@@ -535,9 +548,12 @@ class IngestionService:
         version only. Old versions stay searchable untouched.
         """
         if job_id:
-            self.jobs.update(job_id, status="processing")
+            self.jobs.update(job_id, status="queued")
+        self._gpu_gate.acquire()
         client = OllamaClient()
         try:
+            if job_id:
+                self.jobs.update(job_id, status="processing")
             existing = self.qdrant.points_by_name(name)
             if not existing:
                 raise KeyError(f"документ не найден: {name}")
@@ -720,6 +736,7 @@ class IngestionService:
             raise
         finally:
             client.close()
+            self._gpu_gate.release()
 
     def reload(
         self,

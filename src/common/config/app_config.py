@@ -92,6 +92,13 @@ class Settings(BaseSettings):
     split_sentences: bool = True
     sent_min_len: int = 300
 
+    # --- Ingestion concurrency ---
+    # How many documents may run the GPU-bound pipeline (LLM markup/tags/refs + embeddings)
+    # at once. Default 1 — a single GPU is the bottleneck, so documents are serialized: a new
+    # one waits (job status "queued") until the current one frees the GPU. Raise only with
+    # more GPU capacity (e.g. a second Ollama instance / card).
+    ingest_concurrency: int = 1
+
     # --- Upload ---
     upload_dir: str = "./_uploads"
     # Lightweight, OCR-free formats handled by unstructured. Scanned PDF/OCR is deferred
