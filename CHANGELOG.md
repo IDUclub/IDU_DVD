@@ -1,3 +1,10 @@
+## v0.8.0 (2026-07-08)
+
+### Feat
+
+- **pipeline**: auto-detect vector size and merge structure/tagging LLM passes (#24)
+- - script
+
 ## v0.7.0 (2026-07-08)
 
 ### Feat
