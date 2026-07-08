@@ -14,6 +14,14 @@ class JobStatusDTO(BaseModel):
     job_id: str
     status: str  # queued | processing | done | error
     filename: str | None = None
+    # --- live per-document progress (populated while status == "processing") ---
+    stage: str | None = None  # human-readable current pipeline stage
+    stage_index: int | None = None  # 1-based index of the current stage
+    stage_total: int | None = None  # total number of stages in the pipeline
+    progress: int | None = None  # items processed within the current stage
+    progress_total: int | None = (
+        None  # total items in the current stage (None if not chunked)
+    )
     doc_id: str | None = None
     name: str | None = None
     version: str | None = None

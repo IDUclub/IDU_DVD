@@ -41,7 +41,9 @@ class GigaEmbeddingsClient:
         self.base = (base or settings.embeddings_url).rstrip("/")
         self.model = model or settings.embeddings_model
         self.query_prompt = (
-            query_prompt if query_prompt is not None else settings.embeddings_query_prompt
+            query_prompt
+            if query_prompt is not None
+            else settings.embeddings_query_prompt
         )
         self.timeout = timeout or settings.embeddings_timeout
         self._client = httpx.Client(timeout=self.timeout)
