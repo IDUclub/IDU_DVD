@@ -108,22 +108,29 @@ class ReferenceExtractor:
             out[it["id"]] = refs
         return out
 
-    def extract(self, nodes, client: OllamaClient) -> dict[str, list[dict]]:
+    def extract(
+        self, nodes, client: OllamaClient, on_progress=None
+    ) -> dict[str, list[dict]]:
         """Return ``{node_id -> [raw reference dicts]}`` for nodes that mention other documents."""
         result: dict[str, list[dict]] = {}
-        for s, e in make_windows(
-            nodes, overlap=0, max_items=self.settings.window_max_items
-        ):
+        windows = list(
+            make_windows(nodes, overlap=0, max_items=self.settings.window_max_items)
+        )
+        for done, (s, e) in enumerate(windows, 1):
             window = nodes[s:e]
             try:
                 local = self._llm_refs(client, [n["text"] for n in window])
             except (OllamaError, Exception) as exc:  # noqa: BLE001
                 log.warning("reference_window_skipped", start=s, end=e, error=str(exc))
+                if on_progress:
+                    on_progress(done, len(windows))
                 continue
             for pos, n in enumerate(window):
                 refs = local.get(pos, [])
                 if refs:
                     result[n["id"]] = refs
+            if on_progress:
+                on_progress(done, len(windows))
         log.info("reference_extraction_done", nodes_with_refs=len(result))
         return result
 
