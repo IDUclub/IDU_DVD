@@ -21,6 +21,13 @@ function Join-Url([string]$Base, [string]$Path) {
     return $Base.TrimEnd("/") + "/" + $Path.TrimStart("/")
 }
 
+function Get-JobField($Job, [string]$Name) {
+    # Safe read under Set-StrictMode: the status DTO may omit stage fields while queued.
+    $prop = $Job.PSObject.Properties[$Name]
+    if ($prop) { return $prop.Value }
+    return $null
+}
+
 function Get-DocumentName([System.IO.FileInfo]$File) {
     $stem = [System.IO.Path]::GetFileNameWithoutExtension($File.Name)
     $normalized = (($stem -replace "_", " ") -replace "\s+", " ").Trim()
@@ -83,6 +90,7 @@ function Invoke-Upload([System.IO.FileInfo]$File) {
 function Wait-Job([string]$JobId, [System.IO.FileInfo]$File, [int]$Index, [int]$Total) {
     $url = Join-Url $BaseUrl "documents/$JobId"
     $deadline = (Get-Date).AddMinutes($JobTimeoutMinutes)
+    $lastDetail = $null
 
     while ($true) {
         if ((Get-Date) -gt $deadline) {
@@ -91,15 +99,59 @@ function Wait-Job([string]$JobId, [System.IO.FileInfo]$File, [int]$Index, [int]$
 
         $job = Invoke-RestMethod -Method GET -Uri $url -TimeoutSec 60
         $status = [string]$job.status
-        Write-Progress `
+
+        # Live per-document progress published by the server (see JobStatusDTO): the current
+        # pipeline stage plus an in-stage item counter for the chunked stages.
+        $stage = Get-JobField $job "stage"
+        $stageIndex = Get-JobField $job "stage_index"
+        $stageTotal = Get-JobField $job "stage_total"
+        $done = Get-JobField $job "progress"
+        $doneTotal = Get-JobField $job "progress_total"
+
+        # Fraction of THIS document completed: whole stages done + the counter inside the
+        # current one (each stage weighs 1/stageTotal of the document).
+        $docFraction = 0.0
+        if ($stageTotal) {
+            $docFraction = ($stageIndex - 1) / $stageTotal
+            if ($doneTotal) {
+                $docFraction += ($done / $doneTotal) / $stageTotal
+            }
+        }
+        $docFraction = [Math]::Min(1.0, [Math]::Max(0.0, $docFraction))
+
+        # Human-readable detail, e.g. "stage 7/8 embeddings · 128/256".
+        $detail = $status
+        if ($stage) {
+            $detail = "stage $stageIndex/$stageTotal $stage"
+            if ($doneTotal) {
+                $detail += " · $done/$doneTotal"
+            }
+        }
+
+        # Two bars: parent (Id 1) tracks the whole run, child (Id 2) the current document's
+        # pipeline. The overall percent blends completed files with the current doc's fraction.
+        $overall = [int]((($Index - 1) + $docFraction) * 100 / [Math]::Max($Total, 1))
+        Write-Progress -Id 1 `
             -Activity "Uploading docs_data to $BaseUrl" `
-            -Status "[$Index/$Total] $($File.Name): $status" `
-            -PercentComplete ([int](($Index - 1) * 100 / [Math]::Max($Total, 1)))
+            -Status "[$Index/$Total] $($File.Name)" `
+            -PercentComplete $overall
+        Write-Progress -Id 2 -ParentId 1 `
+            -Activity $File.Name `
+            -Status $detail `
+            -PercentComplete ([int]($docFraction * 100))
+
+        # Echo each new stage to the console too — Write-Progress is invisible in captured logs.
+        if ($stage -and $detail -ne $lastDetail) {
+            Write-Host "    $detail"
+            $lastDetail = $detail
+        }
 
         if ($status -eq "done") {
+            Write-Progress -Id 2 -ParentId 1 -Activity $File.Name -Completed
             return $job
         }
         if ($status -eq "error") {
+            Write-Progress -Id 2 -ParentId 1 -Activity $File.Name -Completed
             throw "job failed: $($job.error)"
         }
 
@@ -132,7 +184,7 @@ for ($i = 0; $i -lt $files.Count; $i++) {
     $file = $files[$i]
     $index = $i + 1
     $percent = [int](($i) * 100 / [Math]::Max($files.Count, 1))
-    Write-Progress -Activity "Uploading docs_data to $BaseUrl" -Status "[$index/$($files.Count)] $($file.Name): upload" -PercentComplete $percent
+    Write-Progress -Id 1 -Activity "Uploading docs_data to $BaseUrl" -Status "[$index/$($files.Count)] $($file.Name): upload" -PercentComplete $percent
     Write-Host "[$index/$($files.Count)] Uploading $($file.Name)"
 
     try {
@@ -162,7 +214,7 @@ for ($i = 0; $i -lt $files.Count; $i++) {
     }
 }
 
-Write-Progress -Activity "Uploading docs_data to $BaseUrl" -Completed
+Write-Progress -Id 1 -Activity "Uploading docs_data to $BaseUrl" -Completed
 Write-Host ""
 Write-Host "Summary: done=$($results.Count), failed=$($failures.Count), total=$($files.Count)"
 
