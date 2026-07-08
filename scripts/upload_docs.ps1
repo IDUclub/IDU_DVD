@@ -10,7 +10,8 @@ param(
     [int]$JobTimeoutMinutes = 180,
     [bool]$NameFromFile = $true,
     [bool]$VersionFromFile = $true,
-    [switch]$StopOnError
+    [switch]$StopOnError,
+    [switch]$VerboseLog
 )
 
 Set-StrictMode -Version Latest
@@ -96,6 +97,7 @@ function Get-JobProgress($Job) {
     $stage = Get-JobField $Job "stage"
     $stageIndex = Get-JobField $Job "stage_index"
     $stageTotal = Get-JobField $Job "stage_total"
+    $phase = Get-JobField $Job "phase"
     $done = Get-JobField $Job "progress"
     $doneTotal = Get-JobField $Job "progress_total"
 
@@ -113,11 +115,14 @@ function Get-JobProgress($Job) {
     }
     $fraction = [Math]::Min(1.0, [Math]::Max(0.0, $fraction))
 
-    # Human-readable detail, e.g. "stage 7/8 embeddings · 128/256"; "queued" while waiting
-    # for a free GPU slot on the server.
+    # Human-readable detail, e.g. "stage 1/8 structure-markup · boundaries · 3/7"; "queued"
+    # while waiting for a free GPU slot on the server.
     $detail = $status
     if ($status -eq "processing" -and $stage) {
         $detail = "stage $stageIndex/$stageTotal $stage"
+        if ($phase) {
+            $detail += " · $phase"
+        }
         if ($doneTotal) {
             $detail += " · $done/$doneTotal"
         }
@@ -197,8 +202,8 @@ while ($next -lt $files.Count -or $inflight.Count -gt 0) {
     # Poll every in-flight job once, keeping those still running.
     $stillRunning = New-Object System.Collections.Generic.List[object]
     $sumFraction = 0.0
-    $activeDetail = $null
-    $activeFraction = 0.0
+    $activeStatus = $null
+    $queuedStatus = $null
     foreach ($item in $inflight) {
         if ((Get-Date) -gt $item.Deadline) {
             Write-Host "  timeout: [$($item.Index)/$($files.Count)] $($item.File.Name) after $JobTimeoutMinutes min" -ForegroundColor Red
@@ -219,8 +224,9 @@ while ($next -lt $files.Count -or $inflight.Count -gt 0) {
 
         $p = Get-JobProgress $job
 
-        # Echo each new stage to the console (Write-Progress is invisible in captured logs).
-        if ($p.Detail -ne $item.LastDetail) {
+        # -VerboseLog keeps a scrolling per-change line (needed when output is redirected to a
+        # file — Write-Progress is invisible there). Default: only the live bar + lifecycle lines.
+        if ($VerboseLog -and $p.Detail -ne $item.LastDetail) {
             Write-Host "    [$($item.Index)/$($files.Count)] $($item.File.Name): $($p.Detail)"
             $item.LastDetail = $p.Detail
         }
@@ -246,25 +252,28 @@ while ($next -lt $files.Count -or $inflight.Count -gt 0) {
         else {
             $stillRunning.Add($item) | Out-Null
             $sumFraction += $p.Fraction
-            # The document actually holding the GPU drives the child bar; others sit in "queued".
+            $line = "[$($item.Index)/$($files.Count)] $($item.File.Name) - $($p.Detail)"
             if ($p.Status -eq "processing") {
-                $activeDetail = "[$($item.Index)/$($files.Count)] $($item.File.Name): $($p.Detail)"
-                $activeFraction = $p.Fraction
+                $activeStatus = $line    # the doc holding the GPU drives the bar's status line
+            }
+            elseif (-not $queuedStatus) {
+                $queuedStatus = $line    # fallback: a doc waiting for a free GPU slot
             }
         }
     }
     $inflight = $stillRunning
 
-    # Overall progress across the whole batch: finished files + partial progress of the rest.
+    # One consolidated live bar: it fills with overall batch progress, while its status line
+    # shows the active document + stage + sub-phase + per-request counter.
     $overall = [int]([Math]::Min(100.0, ($completed + $sumFraction) * 100 / [Math]::Max($files.Count, 1)))
-    Write-Progress -Id 1 -Activity "Uploading docs_data to $BaseUrl" -Status "done $completed/$($files.Count)" -PercentComplete $overall
-    if ($activeDetail) {
-        Write-Progress -Id 2 -ParentId 1 -Activity "current document" -Status $activeDetail -PercentComplete ([int]($activeFraction * 100))
-    }
+    if ($activeStatus) { $status = $activeStatus }
+    elseif ($queuedStatus) { $status = $queuedStatus }
+    else { $status = "waiting..." }
+    $failNote = if ($failures.Count -gt 0) { ", $($failures.Count) failed" } else { "" }
+    Write-Progress -Id 1 -Activity "Uploading - $completed/$($files.Count) done$failNote" -Status $status -PercentComplete $overall
 }
 
-Write-Progress -Id 2 -ParentId 1 -Activity "current document" -Completed
-Write-Progress -Id 1 -Activity "Uploading docs_data to $BaseUrl" -Completed
+Write-Progress -Id 1 -Activity "Uploading" -Completed
 Write-Host ""
 Write-Host "Summary: done=$($results.Count), failed=$($failures.Count), total=$($files.Count)"
 

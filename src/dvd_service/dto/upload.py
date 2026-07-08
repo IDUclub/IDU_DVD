@@ -18,9 +18,12 @@ class JobStatusDTO(BaseModel):
     stage: str | None = None  # human-readable current pipeline stage
     stage_index: int | None = None  # 1-based index of the current stage
     stage_total: int | None = None  # total number of stages in the pipeline
-    progress: int | None = None  # items processed within the current stage
+    phase: str | None = (
+        None  # sub-phase within the stage (e.g. "boundaries", "semantic-merge pass 2")
+    )
+    progress: int | None = None  # LLM requests processed within the current stage/phase
     progress_total: int | None = (
-        None  # total items in the current stage (None if not chunked)
+        None  # total requests in the current stage/phase (None if not chunked)
     )
     doc_id: str | None = None
     name: str | None = None
