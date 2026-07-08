@@ -88,6 +88,28 @@ class TestIngest:
         assert wired.registry.has_hash(h)
         assert res["version"] in wired.registry.versions(res["name"])
 
+    def test_progress_reported_through_stages(self, wired, sample_raw):
+        seen = []
+        orig = wired.jobs.update
+
+        def spy(job_id, **fields):
+            if "stage" in fields:
+                seen.append((fields["stage"], fields["stage_index"]))
+            orig(job_id, **fields)
+
+        wired.jobs.update = spy
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest("doc.docx", sample_raw, h, job_id="jp")
+
+        stages = [s for s, _ in seen]
+        # the full ordered pipeline is walked, ending on the final indexing stage
+        assert stages[0] == "structure-markup"
+        assert "embeddings" in stages
+        assert stages[-1] == "indexing"
+        final = wired.jobs.get("jp")
+        assert final["status"] == "done"
+        assert final["stage_index"] == final["stage_total"] == 8
+
     def test_document_processed_event_enqueued(self, wired, sample_raw):
         h = DocumentParser.content_hash(sample_raw)
         res = wired.ingestion.ingest("doc.docx", sample_raw, h)
@@ -159,7 +181,7 @@ class TestIngest:
         monkeypatch.setattr(
             wired.ingestion.reference_extractor,
             "extract",
-            lambda nodes, client: {
+            lambda nodes, client, on_progress=None: {
                 nodes[1]["id"]: [
                     {
                         "raw": "ГОСТ 9999, п. 5.1",

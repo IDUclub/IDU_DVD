@@ -67,19 +67,26 @@ class Tagger:
             for it in data["nodes"]
         }
 
-    def tag_nodes(self, nodes, client: OllamaClient) -> dict[str, list[str]]:
+    def tag_nodes(
+        self, nodes, client: OllamaClient, on_progress=None
+    ) -> dict[str, list[str]]:
         result: dict[str, list[str]] = {}
-        for s, e in make_windows(
-            nodes, overlap=0, max_items=self.settings.window_max_items
-        ):
+        windows = list(
+            make_windows(nodes, overlap=0, max_items=self.settings.window_max_items)
+        )
+        for done, (s, e) in enumerate(windows, 1):
             window = nodes[s:e]
             try:
                 local = self._llm_tags(client, [n["text"] for n in window])
             except (OllamaError, Exception) as exc:  # noqa: BLE001
                 log.warning("tagging_window_skipped", start=s, end=e, error=str(exc))
+                if on_progress:
+                    on_progress(done, len(windows))
                 continue
             for pos, n in enumerate(window):
                 result[n["id"]] = local.get(pos, [])
+            if on_progress:
+                on_progress(done, len(windows))
         log.info("tagging_done", tagged=len(result))
         return result
 

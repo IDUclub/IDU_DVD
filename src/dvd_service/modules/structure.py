@@ -135,14 +135,17 @@ class StructureTagger:
             for it in data["nodes"]
         }
 
-    def tag(self, parts, client: OllamaClient) -> list[dict]:
+    def tag(self, parts, client: OllamaClient, on_progress=None) -> list[dict]:
         decisions = []
-        for s, e in make_windows(parts, max_items=self.settings.window_max_items):
+        windows = list(make_windows(parts, max_items=self.settings.window_max_items))
+        for done, (s, e) in enumerate(windows, 1):
             texts = [parts[k]["text"] for k in range(s, e)]
             try:
                 decisions.append((s, self._llm_structure(client, texts)))
             except (OllamaError, Exception) as exc:  # noqa: BLE001
                 log.warning("stage2_window_skipped", start=s, end=e, error=str(exc))
+            if on_progress:
+                on_progress(done, len(windows))
         tags = reconcile(decisions)
         for p in parts:
             t = tags.get(p["id"])
