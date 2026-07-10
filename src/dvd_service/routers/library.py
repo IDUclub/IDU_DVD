@@ -6,12 +6,19 @@ ordered fragments — what a consumer needs to hydrate its own derived entities.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 
 from src.dependencies import Dependencies
-from src.dvd_service.dto import DocumentDetail, DocumentList
-from src.dvd_service.services.dvd_service import LibraryService
+from src.dvd_service.dto import (
+    DocumentDetail,
+    DocumentFragment,
+    DocumentList,
+    DocumentUpdateRequest,
+    DocumentUpdateResponse,
+    FragmentUpdateRequest,
+)
+from src.dvd_service.services.dvd_service import DocumentEditorService, LibraryService
 
 router = APIRouter(prefix="/library", tags=["library"])
 
@@ -43,3 +50,44 @@ async def get_document(
     if detail is None:
         raise HTTPException(404, "document not found")
     return detail
+
+
+@router.patch("/documents/{doc_id}", response_model=DocumentUpdateResponse)
+async def update_document_metadata(
+    doc_id: str,
+    body: DocumentUpdateRequest = Body(...),
+    editor: DocumentEditorService = Depends(Dependencies.get_editor),
+):
+    """Manually update metadata/tags on every fragment belonging to a document."""
+    try:
+        return await run_in_threadpool(
+            editor.update_document, doc_id, body.model_dump(exclude_unset=True)
+        )
+    except KeyError as exc:
+        raise HTTPException(404, str(exc.args[0]))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+
+
+@router.patch(
+    "/documents/{doc_id}/fragments/{fragment_id}", response_model=DocumentFragment
+)
+async def update_document_fragment(
+    doc_id: str,
+    fragment_id: str,
+    body: FragmentUpdateRequest = Body(...),
+    editor: DocumentEditorService = Depends(Dependencies.get_editor),
+):
+    """Edit one fragment; changing text recalculates and atomically stores its embedding."""
+    try:
+        result = await run_in_threadpool(
+            editor.update_fragment,
+            doc_id,
+            fragment_id,
+            body.model_dump(exclude_unset=True),
+        )
+    except KeyError as exc:
+        raise HTTPException(404, str(exc.args[0]))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    return DocumentFragment(**result)

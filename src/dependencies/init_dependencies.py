@@ -22,6 +22,7 @@ from src.dvd_service.modules.references import ReferenceExtractor, ReferenceReso
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import VersionDetector
 from src.dvd_service.services.dvd_service import (
+    DocumentEditorService,
     DocumentsService,
     IngestionService,
     LibraryService,
@@ -94,6 +95,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     )
     search = SearchService(qdrant, s)
     documents = DocumentsService(qdrant)
+    editor = DocumentEditorService(qdrant, registry, s)
     library = LibraryService(qdrant, registry)
     tags = TagsService(qdrant)
 
@@ -117,6 +119,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         ingestion=ingestion,
         search=search,
         documents=documents,
+        editor=editor,
         library=library,
         tags=tags,
         system=system,

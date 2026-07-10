@@ -137,6 +137,40 @@ class QdrantRepository:
         recs = self.client.retrieve(self.collection, ids=list(ids), with_payload=True)
         return {str(r.id): (r.payload or {}) for r in recs}
 
+    def get_point(self, point_id: str) -> tuple[list[float], dict] | None:
+        """Return one point with its vector and payload for safe manual editing."""
+        recs = self.client.retrieve(
+            self.collection, ids=[point_id], with_payload=True, with_vectors=True
+        )
+        if not recs:
+            return None
+        rec = recs[0]
+        vector = rec.vector
+        if isinstance(vector, dict):
+            raise ValueError("named vectors are not supported by the document editor")
+        return list(vector or []), rec.payload or {}
+
+    def replace_point(
+        self, point_id: str, vector: Sequence[float], payload: dict
+    ) -> None:
+        """Replace a point after text and its embedding have been edited together."""
+        self.client.upsert(
+            self.collection,
+            points=[PointStruct(id=point_id, vector=list(vector), payload=payload)],
+        )
+
+    def set_point_payload(self, point_id: str, payload: dict) -> None:
+        self.client.set_payload(self.collection, payload=payload, points=[point_id])
+
+    def set_document_payload(self, doc_id: str, payload: dict) -> None:
+        self.client.set_payload(
+            self.collection,
+            payload=payload,
+            points=Filter(
+                must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]
+            ),
+        )
+
     def list_by_doc(self, doc_id: str, limit: int = 10000) -> list[dict]:
         """All point payloads of a document (for the document-level read API).
 

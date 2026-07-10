@@ -142,6 +142,21 @@ class FakeQdrantRepo:
     def retrieve(self, ids):
         return {str(i): self.points[str(i)][1] for i in ids if str(i) in self.points}
 
+    def get_point(self, point_id):
+        return self.points.get(str(point_id))
+
+    def replace_point(self, point_id, vector, payload):
+        self.points[str(point_id)] = (list(vector), dict(payload))
+
+    def set_point_payload(self, point_id, payload):
+        vector, current = self.points[str(point_id)]
+        self.points[str(point_id)] = (vector, {**current, **payload})
+
+    def set_document_payload(self, doc_id, payload):
+        for point_id, (vector, current) in list(self.points.items()):
+            if current.get("doc_id") == doc_id:
+                self.points[point_id] = (vector, {**current, **payload})
+
     def set_other_versions(self, name, version, other_versions) -> None:
         self.set_other_versions_calls.append((name, version, other_versions))
 

@@ -11,6 +11,9 @@ from src.dvd_service.dto.document import (  # noqa: F401
     DocumentList,
     DocumentListResponse,
     DocumentSummary,
+    DocumentUpdateRequest,
+    DocumentUpdateResponse,
+    FragmentUpdateRequest,
 )
 from src.dvd_service.dto.node_payload import NodePayload  # noqa: F401
 from src.dvd_service.dto.reference import DocumentRef  # noqa: F401
@@ -36,6 +39,9 @@ __all__ = [
     "DocumentFragment",
     "DocumentDetail",
     "DocumentList",
+    "DocumentUpdateRequest",
+    "DocumentUpdateResponse",
+    "FragmentUpdateRequest",
     "UploadResponse",
     "ActiveJobsResponse",
     "JobStatusDTO",

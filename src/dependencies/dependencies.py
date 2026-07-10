@@ -20,6 +20,7 @@ from src.dvd_service.modules.references import ReferenceExtractor, ReferenceReso
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import VersionDetector
 from src.dvd_service.services.dvd_service import (
+    DocumentEditorService,
     DocumentsService,
     IngestionService,
     LibraryService,
@@ -57,6 +58,7 @@ class Dependencies:
         "ingestion",
         "search",
         "documents",
+        "editor",
         "library",
         "tags",
         "system",
@@ -81,6 +83,7 @@ class Dependencies:
     ingestion: IngestionService
     search: SearchService
     documents: DocumentsService
+    editor: DocumentEditorService
     library: LibraryService
     tags: TagsService
     system: SystemController
@@ -111,6 +114,7 @@ class Dependencies:
         ingestion: IngestionService,
         search: SearchService,
         documents: DocumentsService,
+        editor: DocumentEditorService,
         library: LibraryService,
         tags: TagsService,
         system: SystemController,
@@ -133,6 +137,7 @@ class Dependencies:
         self.ingestion = ingestion
         self.search = search
         self.documents = documents
+        self.editor = editor
         self.library = library
         self.tags = tags
         self.system = system
@@ -225,6 +230,10 @@ class Dependencies:
     @classmethod
     def get_documents(cls) -> DocumentsService:
         return cls.instance().documents
+
+    @classmethod
+    def get_editor(cls) -> DocumentEditorService:
+        return cls.instance().editor
 
     @classmethod
     def get_library(cls) -> LibraryService:
