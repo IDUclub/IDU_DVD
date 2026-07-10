@@ -35,6 +35,13 @@ class JobStatusDTO(BaseModel):
         None  # delta update: fragments shared with the base version
     )
     error: str | None = None
+    operation: str | None = None  # upload | update | reload
+    created_at: str | None = None
+
+
+class ActiveJobsResponse(BaseModel):
+    count: int
+    jobs: list[JobStatusDTO]
 
 
 class DeleteResponse(BaseModel):

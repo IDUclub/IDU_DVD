@@ -55,6 +55,13 @@ class FakeJobs:
     def get(self, jid):
         return self.store.get(jid)
 
+    def active(self):
+        return [
+            job
+            for job in self.store.values()
+            if job.get("status") in {"queued", "processing"}
+        ]
+
 
 class FakeIngestion:
     def __init__(self):
@@ -293,6 +300,16 @@ class TestListDocuments:
 
 
 class TestJobStatus:
+    def test_lists_active_jobs(self, client):
+        c, fakes = client
+        fakes["jobs"].set(
+            "j1", {"job_id": "j1", "status": "processing", "filename": "a.docx"}
+        )
+        fakes["jobs"].set("j2", {"job_id": "j2", "status": "done"})
+        resp = c.get("/documents/jobs/active")
+        assert resp.status_code == 200
+        assert resp.json()["count"] == 1 and resp.json()["jobs"][0]["job_id"] == "j1"
+
     def test_found(self, client):
         c, fakes = client
         fakes["jobs"].set("j1", {"job_id": "j1", "status": "done"})

@@ -21,6 +21,7 @@ from src.dvd_service.dto.search import (  # noqa: F401
     TagsResponse,
 )
 from src.dvd_service.dto.upload import (  # noqa: F401
+    ActiveJobsResponse,
     DeleteResponse,
     JobStatusDTO,
     UploadResponse,
@@ -36,6 +37,7 @@ __all__ = [
     "DocumentDetail",
     "DocumentList",
     "UploadResponse",
+    "ActiveJobsResponse",
     "JobStatusDTO",
     "DeleteResponse",
     "SearchRequest",

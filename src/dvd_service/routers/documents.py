@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import uuid
+from datetime import datetime, timezone
 
 import structlog
 from fastapi import (
@@ -24,6 +25,7 @@ from src.common.config import Settings
 from src.common.db.redis_client import DocumentRegistry, JobStore
 from src.dependencies import Dependencies
 from src.dvd_service.dto import (
+    ActiveJobsResponse,
     DeleteResponse,
     DocumentListResponse,
     JobStatusDTO,
@@ -34,6 +36,19 @@ from src.dvd_service.services.dvd_service import DocumentsService, IngestionServ
 
 log = structlog.get_logger(__name__)
 router = APIRouter(tags=["documents"])
+
+
+def _queued_job(
+    job_id: str, filename: str | None, operation: str, name: str | None = None
+) -> dict:
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "filename": filename,
+        "operation": operation,
+        "name": name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _parse_json_field(name: str, value: str | None) -> dict:
@@ -144,7 +159,7 @@ async def upload_document(
     path, raw, content_hash = await _receive_file(file, settings, parser, job_id)
     _reject_duplicate(registry, content_hash, path)
 
-    jobs.set(job_id, {"job_id": job_id, "status": "queued", "filename": file.filename})
+    jobs.set(job_id, _queued_job(job_id, file.filename, "upload", name))
     background.add_task(
         _run_job,
         job_id,
@@ -187,7 +202,7 @@ async def update_document(
     path, raw, content_hash = await _receive_file(file, settings, parser, job_id)
     _reject_duplicate(registry, content_hash, path)
 
-    jobs.set(job_id, {"job_id": job_id, "status": "queued", "filename": file.filename})
+    jobs.set(job_id, _queued_job(job_id, file.filename, "update", name))
     background.add_task(
         _run_job,
         job_id,
@@ -224,7 +239,7 @@ async def reload_document(
     job_id = str(uuid.uuid4())
     path, raw, content_hash = await _receive_file(file, settings, parser, job_id)
 
-    jobs.set(job_id, {"job_id": job_id, "status": "queued", "filename": file.filename})
+    jobs.set(job_id, _queued_job(job_id, file.filename, "reload", name))
     background.add_task(
         _run_job,
         job_id,
@@ -278,6 +293,15 @@ async def list_documents(
     """
     return await run_in_threadpool(
         documents.list_documents, name, version, block, tags, uploaded_from, uploaded_to
+    )
+
+
+@router.get("/documents/jobs/active", response_model=ActiveJobsResponse)
+async def active_jobs(jobs: JobStore = Depends(Dependencies.get_jobs)):
+    """All queued and currently processing ingestion jobs."""
+    active = jobs.active()
+    return ActiveJobsResponse(
+        count=len(active), jobs=[JobStatusDTO(**job) for job in active]
     )
 
 

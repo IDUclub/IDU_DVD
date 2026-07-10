@@ -57,6 +57,21 @@ class JobStore:
         data.update(fields)
         self.set(job_id, data)
 
+    def active(self) -> list[dict]:
+        """Return queued and processing jobs, newest first."""
+        jobs: list[dict] = []
+        for key in self.r.scan_iter(match="dvd:job:*"):
+            value = self.r.get(key)
+            if not value:
+                continue
+            try:
+                job = json.loads(value)
+            except json.JSONDecodeError:
+                continue
+            if job.get("status") in {"queued", "processing"}:
+                jobs.append(job)
+        return sorted(jobs, key=lambda item: item.get("created_at", ""), reverse=True)
+
 
 class DocumentRegistry:
     """Registry of uploaded documents: hashes (for deduplication) and versions per document name.
