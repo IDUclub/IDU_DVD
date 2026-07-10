@@ -63,7 +63,11 @@ async def login_page(
 ):
     if _authenticated(request, settings):
         return RedirectResponse("/admin/ui", status_code=303)
-    configured = "" if settings.admin_password else "Пароль администратора не настроен. Задайте DVD_ADMIN_PASSWORD."
+    configured = (
+        ""
+        if settings.admin_password
+        else "Пароль администратора не настроен. Задайте DVD_ADMIN_PASSWORD."
+    )
     return _html("login.html", error="", configured=configured)
 
 
@@ -110,7 +114,10 @@ async def asset(filename: str):
     return Response(
         (_ROOT / "static" / filename).read_text(encoding="utf-8"),
         media_type=allowed[filename],
-        headers={"Cache-Control": "public, max-age=3600", "X-Content-Type-Options": "nosniff"},
+        headers={
+            "Cache-Control": "public, max-age=3600",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
