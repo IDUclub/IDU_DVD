@@ -28,7 +28,7 @@ log = structlog.get_logger(__name__)
 _PRIMARY_KEYS = (TIMESTAMP_KEY, "level", "logger", "request_id", "event")
 
 # Values never returned in clear text by the read endpoint (nor echoed back on write).
-_SENSITIVE_FIELDS: frozenset[str] = frozenset({"qdrant_api_key"})
+_SENSITIVE_FIELDS: frozenset[str] = frozenset({"qdrant_api_key", "admin_password"})
 
 # Settings captured at startup (service wiring, Qdrant collection/dimension, logging sinks,
 # the GPU semaphore). Persisting them updates ``.env`` but they only fully take effect after a
@@ -53,6 +53,8 @@ _RESTART_REQUIRED_FIELDS: frozenset[str] = frozenset(
         "log_file",
         "log_level",
         "ingest_concurrency",
+        "admin_password",
+        "admin_session_hours",
     }
 )
 
@@ -157,7 +159,12 @@ class SystemController:
             if field not in Settings.model_fields:
                 unknown.append(key)
             else:
-                normalized[field] = str(val)
+                if isinstance(val, (list, dict)):
+                    normalized[field] = json.dumps(val, ensure_ascii=False)
+                elif isinstance(val, bool):
+                    normalized[field] = str(val).lower()
+                else:
+                    normalized[field] = str(val)
         if unknown:
             raise ValueError("Неизвестные переменные: " + ", ".join(sorted(unknown)))
 

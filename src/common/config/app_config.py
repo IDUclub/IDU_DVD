@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     redis_job_ttl: int = 86400  # seconds, job status TTL
 
+    # --- Admin UI ---
+    # No insecure default: /admin/ui stays unavailable until a password is configured.
+    # The password also derives the HMAC key for the short-lived login cookie.
+    admin_password: str | None = None
+    admin_session_hours: int = 12
+
     # --- Search ---
     search_limit: int = 10
     max_context_height: int = 6  # cap on context height (neighbours before/after)

@@ -49,6 +49,19 @@ class TestJobStore:
     def test_repr(self, client):
         assert "ttl=" in repr(JobStore(client))
 
+    def test_active_returns_only_queued_and_processing_newest_first(self, client):
+        jobs = JobStore(client)
+        jobs.set(
+            "old", {"job_id": "old", "status": "processing", "created_at": "2026-01-01"}
+        )
+        jobs.set(
+            "new", {"job_id": "new", "status": "queued", "created_at": "2026-02-01"}
+        )
+        jobs.set(
+            "done", {"job_id": "done", "status": "done", "created_at": "2026-03-01"}
+        )
+        assert [job["job_id"] for job in jobs.active()] == ["new", "old"]
+
 
 class TestDocumentRegistry:
     def test_register_sets_hash_and_version(self, client):

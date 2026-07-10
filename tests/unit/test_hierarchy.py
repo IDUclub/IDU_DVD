@@ -10,7 +10,12 @@ from src.dvd_service.modules.hierarchy import HierarchyBuilder
 
 
 def _count_nodes(node) -> int:
-    return 1 + sum(_count_nodes(c) for c in node.get("children", []))
+    count, stack = 0, [node]
+    while stack:
+        n = stack.pop()
+        count += 1
+        stack.extend(n.get("children", []))
+    return count
 
 
 class TestBuildAndFlatten:
@@ -91,6 +96,44 @@ class TestCapUnnumberedNesting:
         total_before = _count_nodes(tree)
         out = HierarchyBuilder().cap_unnumbered_nesting(tree, max_u=1)
         assert _count_nodes(out) == total_before  # nodes re-parented, never dropped
+
+
+class TestDeepDegenerateChain:
+    """Regression: a structure-tagging pass that marks nearly every fragment 'deeper'
+    than the previous one (no numbering to anchor rank) builds a near-linear chain as
+    deep as the node count. build/cap_unnumbered_nesting/flatten used plain recursion
+    and blew Python's recursion limit (~1000) on documents like this; they're now
+    iterative and must handle depths well past that limit.
+    """
+
+    def _deep_unnumbered_parts(self, n: int) -> list[dict]:
+        return [
+            {
+                "id": i,
+                "text": f"Пункт {i}",
+                "numbering": "",
+                "type": "paragraph",
+                "relation": "deeper",
+                "block": "main",
+                "category": "NarrativeText",
+                "html": None,
+            }
+            for i in range(n)
+        ]
+
+    def test_build_does_not_hit_recursion_limit(self):
+        parts = self._deep_unnumbered_parts(5000)
+        tree = HierarchyBuilder().build(parts, rank_map={}, title="doc")
+        assert _count_nodes(tree) == len(parts) + 1
+
+    def test_full_pipeline_does_not_hit_recursion_limit(self):
+        hb = HierarchyBuilder()
+        parts = self._deep_unnumbered_parts(5000)
+        tree = hb.build(parts, rank_map={}, title="doc")
+        hb.cap_unnumbered_nesting(tree)
+        hb.group_amendment(tree)
+        nodes = hb.flatten(tree)
+        assert len(nodes) == len(parts) + 1
 
 
 class TestRepr:

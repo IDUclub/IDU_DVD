@@ -22,6 +22,7 @@ from src.dvd_service.modules.references import ReferenceExtractor, ReferenceReso
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import VersionDetector
 from src.dvd_service.services.dvd_service import (
+    DocumentEditorService,
     DocumentsService,
     IngestionService,
     LibraryService,
@@ -55,12 +56,14 @@ def wired(settings, fake_ollama, fake_qdrant, fake_redis, monkeypatch):
     search = SearchService(fake_qdrant, settings)
     documents = DocumentsService(fake_qdrant)
     library = LibraryService(fake_qdrant, registry)
+    editor = DocumentEditorService(fake_qdrant, registry, settings)
     tags = TagsService(fake_qdrant)
     return SimpleNS(
         ingestion=ingestion,
         search=search,
         documents=documents,
         library=library,
+        editor=editor,
         tags=tags,
         jobs=jobs,
         registry=registry,
@@ -789,6 +792,57 @@ class TestLibrary:
 
     def test_repr(self, wired):
         assert repr(wired.library).startswith("LibraryService(")
+
+
+class TestDocumentEditor:
+    def test_updates_document_metadata_and_all_fragment_tags(self, wired, sample_raw):
+        result = wired.ingestion.ingest(
+            "doc.docx", sample_raw, DocumentParser.content_hash(sample_raw)
+        )
+        response = wired.editor.update_document(
+            result["doc_id"],
+            {
+                "title": "Ручной заголовок",
+                "tags": ["проверено"],
+                "metadata": {"owner": "admin"},
+                "external_ids": {"code": "MANUAL-1"},
+            },
+        )
+        assert response.points_updated == result["nodes"]
+        payloads = wired.qdrant.list_by_doc(result["doc_id"])
+        assert all(p["title"] == "Ручной заголовок" for p in payloads)
+        assert all(p["tags"] == ["проверено"] for p in payloads)
+        assert "MANUAL-1" in payloads[0]["lookup_keys"]
+        assert wired.registry.get_document(result["doc_id"])["metadata"] == {
+            "owner": "admin"
+        }
+
+    def test_text_edit_reembeds_fragment(self, wired, sample_raw):
+        result = wired.ingestion.ingest(
+            "doc.docx", sample_raw, DocumentParser.content_hash(sample_raw)
+        )
+        fragment_id = next(iter(wired.qdrant.points))
+        old_vector = wired.qdrant.points[fragment_id][0]
+        # The hermetic fake intentionally uses tiny vectors; align the configured dimension
+        # with that fake while retaining the production mismatch guard in the service.
+        wired.editor.settings.vector_size = len(old_vector)
+        updated = wired.editor.update_fragment(
+            result["doc_id"], fragment_id, {"text": "Новый ручной текст"}
+        )
+        new_vector, payload = wired.qdrant.points[fragment_id]
+        assert updated["text"] == payload["text"] == "Новый ручной текст"
+        assert (
+            new_vector is not old_vector
+            and len(new_vector) == wired.editor.settings.vector_size
+        )
+
+    def test_rejects_fragment_from_another_document(self, wired, sample_raw):
+        wired.ingestion.ingest(
+            "doc.docx", sample_raw, DocumentParser.content_hash(sample_raw)
+        )
+        fragment_id = next(iter(wired.qdrant.points))
+        with pytest.raises(KeyError):
+            wired.editor.update_fragment("other-doc", fragment_id, {"tags": ["x"]})
 
 
 class TestTagsService:

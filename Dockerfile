@@ -17,6 +17,15 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
+# Vendored spaCy model (en_core_web_sm) for `unstructured`'s docx parsing heuristics.
+# `unstructured` otherwise lazily fetches this wheel from github.com on first parse
+# (see unstructured/nlp/tokenize.py) — baking it in avoids relying on runtime network
+# access to GitHub, which is unreliable/blocked on some deployment networks.
+COPY vendor/en_core_web_sm-3.8.0-py3-none-any.whl /tmp/
+RUN uv pip install --python /app/.venv/bin/python --no-deps \
+        /tmp/en_core_web_sm-3.8.0-py3-none-any.whl \
+    && rm /tmp/en_core_web_sm-3.8.0-py3-none-any.whl
+
 COPY src ./src
 
 EXPOSE 8000

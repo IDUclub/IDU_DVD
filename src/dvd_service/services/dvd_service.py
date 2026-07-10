@@ -31,6 +31,7 @@ from src.dvd_service.dto import (
     DocumentList,
     DocumentListResponse,
     DocumentSummary,
+    DocumentUpdateResponse,
     NodePayload,
     SearchHit,
     SearchRequest,
@@ -488,6 +489,11 @@ class IngestionService:
                     "content_hash": content_hash,
                     "node_count": count,
                     "uploaded_at": uploaded_at,
+                    "effective_date": effective_date,
+                    "metadata": metadata or {},
+                    "tags": sorted(
+                        {tag for values in node_tags.values() for tag in values}
+                    ),
                 },
             )
 
@@ -707,6 +713,12 @@ class IngestionService:
                     "content_hash": content_hash,
                     "node_count": len(reused_ids) + count,
                     "uploaded_at": uploaded_at,
+                    "effective_date": effective_date,
+                    "metadata": metadata or {},
+                    "tags": sorted(
+                        {tag for point in base_points for tag in point.get("tags", [])}
+                        | {tag for values in node_tags.values() for tag in values}
+                    ),
                 },
             )
 
@@ -1144,6 +1156,9 @@ class LibraryService:
             content_hash=pl.get("content_hash"),
             node_count=node_count,
             uploaded_at=pl.get("uploaded_at"),
+            effective_date=pl.get("effective_date"),
+            metadata=pl.get("metadata", {}) or {},
+            tags=pl.get("tags", []) or [],
         )
 
     def list_documents(self) -> DocumentList:
@@ -1162,7 +1177,6 @@ class LibraryService:
             if rec
             else self._summary_from_payload(payloads[0], len(payloads))
         )
-
         fragments = [
             DocumentFragment(
                 **{k: pl.get(k) for k in DocumentFragment.model_fields if k in pl}
@@ -1181,6 +1195,107 @@ class LibraryService:
             if rec:
                 docs.append(self._summary_from_record(rec))
         return DocumentList(count=len(docs), documents=docs)
+
+
+class DocumentEditorService:
+    """Manual edits that keep Qdrant payloads, Redis summaries and embeddings coherent."""
+
+    DOCUMENT_FIELDS = {
+        "title",
+        "doc_type",
+        "corpus",
+        "lang",
+        "status",
+        "effective_date",
+        "external_ids",
+        "metadata",
+        "tags",
+    }
+    FRAGMENT_FIELDS = {"text", "tags", "metadata", "table_html"}
+
+    def __init__(
+        self,
+        qdrant: QdrantRepository,
+        registry: DocumentRegistry,
+        settings: Settings,
+    ) -> None:
+        self.qdrant = qdrant
+        self.registry = registry
+        self.settings = settings
+
+    def update_document(self, doc_id: str, updates: dict) -> DocumentUpdateResponse:
+        points = self.qdrant.list_by_doc(doc_id)
+        if not points:
+            raise KeyError("document not found")
+        changes = {k: v for k, v in updates.items() if k in self.DOCUMENT_FIELDS}
+        if not changes:
+            raise ValueError("no editable fields supplied")
+
+        first = points[0]
+        if "external_ids" in changes:
+            external_ids = changes["external_ids"] or {}
+            changes["aliases"] = build_aliases(first.get("name", ""), external_ids)
+            changes["lookup_keys"] = build_lookup_keys(
+                first.get("name", ""), external_ids
+            )
+        changes["manual_edited_at"] = datetime.now(timezone.utc).isoformat()
+        self.qdrant.set_document_payload(doc_id, changes)
+
+        record = self.registry.get_document(doc_id) or {
+            k: first.get(k) for k in DocumentSummary.model_fields
+        }
+        record.update(
+            {k: v for k, v in changes.items() if k in DocumentSummary.model_fields}
+        )
+        self.registry.register_document(doc_id, record)
+        return DocumentUpdateResponse(
+            doc_id=doc_id,
+            points_updated=len(points),
+            fields_updated=sorted(k for k in changes if k != "manual_edited_at"),
+        )
+
+    def update_fragment(self, doc_id: str, fragment_id: str, updates: dict) -> dict:
+        point = self.qdrant.get_point(fragment_id)
+        if point is None:
+            raise KeyError("fragment not found")
+        vector, payload = point
+        if payload.get("doc_id") != doc_id:
+            raise KeyError("fragment does not belong to this document")
+        changes = {k: v for k, v in updates.items() if k in self.FRAGMENT_FIELDS}
+        if not changes:
+            raise ValueError("no editable fields supplied")
+        if "text" in changes and not str(changes["text"] or "").strip():
+            raise ValueError("fragment text cannot be empty")
+
+        edited = {
+            **payload,
+            **changes,
+            "manual_edited_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if "text" in changes and changes["text"] != payload.get("text"):
+            with create_embedder() as embedder:
+                vectors = embedder.embed_documents([changes["text"]])
+            if not vectors or len(vectors[0]) != self.settings.vector_size:
+                raise ValueError(
+                    "embedding service returned an unexpected vector dimension"
+                )
+            self.qdrant.replace_point(fragment_id, vectors[0], edited)
+        else:
+            self.qdrant.set_point_payload(
+                fragment_id, changes | {"manual_edited_at": edited["manual_edited_at"]}
+            )
+        if "tags" in changes:
+            record = self.registry.get_document(doc_id)
+            if record:
+                record["tags"] = sorted(
+                    {
+                        tag
+                        for point in self.qdrant.list_by_doc(doc_id)
+                        for tag in point.get("tags", [])
+                    }
+                )
+                self.registry.register_document(doc_id, record)
+        return {**edited, "id": fragment_id}
 
 
 class TagsService:
