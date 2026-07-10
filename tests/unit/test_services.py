@@ -756,6 +756,29 @@ class TestLibrary:
     def test_get_missing_document_returns_none(self, wired):
         assert wired.library.get_document("nope") is None
 
+    def test_get_document_surfaces_references(self, wired, sample_raw, monkeypatch):
+        # Force one external reference onto a fragment, then read the whole document back
+        # and assert the reference is surfaced on the fragment (not dropped by the DTO).
+        monkeypatch.setattr(
+            wired.ingestion.reference_extractor,
+            "extract",
+            lambda nodes, client, on_progress=None: {
+                nodes[1]["id"]: [
+                    {
+                        "raw": "ГОСТ 9999, п. 5.1",
+                        "target_name": "ГОСТ 9999",
+                        "target_numbering": "5.1",
+                    }
+                ]
+            },
+        )
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest("doc.docx", sample_raw, h)
+
+        detail = wired.library.get_document(res["doc_id"])
+        all_refs = [r for f in detail.fragments for r in f.references]
+        assert any(r.target_name == "ГОСТ 9999" for r in all_refs)
+
     def test_find_by_external_id(self, wired, sample_raw):
         h = DocumentParser.content_hash(sample_raw)
         res = wired.ingestion.ingest(

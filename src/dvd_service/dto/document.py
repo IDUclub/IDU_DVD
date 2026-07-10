@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from src.dvd_service.dto.reference import DocumentRef
+
 
 class DocumentInfo(BaseModel):
     doc_id: str
@@ -61,6 +63,7 @@ class DocumentFragment(BaseModel):
     parent_id: str | None = None
     prev_id: str | None = None
     next_id: str | None = None
+    child_ids: list[str] = Field(default_factory=list)
     char_start: int | None = None
     char_end: int | None = None
     page_start: int | None = None
@@ -68,6 +71,9 @@ class DocumentFragment(BaseModel):
     span_id: str | None = None
     tags: list[str] = Field(default_factory=list)
     metadata: dict = Field(default_factory=dict)
+    # Outgoing links to other documents/clauses (from the node payload), so a consumer can
+    # rebuild the cross-document reference graph from a single read instead of via search.
+    references: list[DocumentRef] = Field(default_factory=list)
     text: str = ""
     table_html: str | None = None
 
