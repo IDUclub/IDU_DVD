@@ -81,9 +81,22 @@ class HierarchyBuilder:
         children = {}
         for n in nodes:
             children.setdefault(n["parent"], []).append(n)
+        node_by_id = {n["_id"]: n for n in nodes}
 
-        def nest(node_id):
-            node = next(n for n in nodes if n["_id"] == node_id)
+        # Iterative post-order build (not recursive `nest`): a document whose
+        # structure-tagging pass marks most fragments "deeper" than the previous
+        # one degenerates into a near-linear chain as deep as the node count,
+        # which blows Python's recursion limit if built via plain recursion.
+        built: dict[int, dict] = {}
+        stack: list[tuple[int, bool]] = [(0, False)]
+        while stack:
+            node_id, expanded = stack.pop()
+            if not expanded:
+                stack.append((node_id, True))
+                for c in children.get(node_id, []):
+                    stack.append((c["_id"], False))
+                continue
+            node = node_by_id[node_id]
             out = {
                 "type": node["type"],
                 "text": node["text"],
@@ -95,35 +108,40 @@ class HierarchyBuilder:
                 "_src_ids": node.get("src_ids", []),
                 "_tags": node.get("tags", []),
             }
-            kids = [nest(c["_id"]) for c in children.get(node_id, [])]
+            kids = [built.pop(c["_id"]) for c in children.get(node_id, [])]
             if kids:
                 out["children"] = kids
-            return out
+            built[node_id] = out
 
-        return nest(0)
+        return built[0]
 
     def cap_unnumbered_nesting(self, tree, max_u=1):
         def collect_flat(c):
-            out = [c]
-            for ch in list(c.get("children", [])):
-                out.extend(collect_flat(ch))
-            c["children"] = []
+            out = []
+            stack = [c]
+            while stack:
+                node = stack.pop()
+                node_children = list(node.get("children", []))
+                node["children"] = []
+                out.append(node)
+                stack.extend(reversed(node_children))
             return out
 
-        def walk(node, u):
+        stack = [(tree, 0)]
+        while stack:
+            node, u = stack.pop()
             survivors, moved = [], []
             for c in list(node.get("children", [])):
                 if c.get("_rank") is not None:
-                    walk(c, 0)
                     survivors.append(c)
+                    stack.append((c, 0))
                 elif u < max_u:
-                    walk(c, u + 1)
                     survivors.append(c)
+                    stack.append((c, u + 1))
                 else:
                     moved.extend(collect_flat(c))
             node["children"] = survivors + moved
 
-        walk(tree, 0)
         return tree
 
     def group_amendment(self, tree):
@@ -163,7 +181,13 @@ class HierarchyBuilder:
         """Flatten into a flat list (reading order) with parent/child/prev/next/kind/html."""
         nodes: list[dict] = []
 
-        def walk(node, parent_id, parent_text, depth, path):
+        # Iterative pre-order (not recursive `walk`): see the note in `build` —
+        # a degenerate deep tree would otherwise blow the recursion limit here too.
+        stack: list[tuple[dict, dict | None, str | None, int, list[str]]] = [
+            (tree, None, None, 0, [])
+        ]
+        while stack:
+            node, parent_rec, parent_text, depth, path = stack.pop()
             nid = str(uuid.uuid4())
             rec = {
                 "id": nid,
@@ -176,7 +200,7 @@ class HierarchyBuilder:
                 "depth": depth,
                 "src_ids": node.get("_src_ids", []),
                 "tags": node.get("_tags", []),
-                "parent_id": parent_id,
+                "parent_id": parent_rec["id"] if parent_rec else None,
                 "parent_text": parent_text,
                 "breadcrumb": " / ".join(path),
                 "child_ids": [],
@@ -184,17 +208,15 @@ class HierarchyBuilder:
                 "next_id": None,
             }
             nodes.append(rec)
+            if parent_rec is not None:
+                parent_rec["child_ids"].append(nid)
             label = (node.get("numbering", "") + " " + node.get("text", "")).strip()[
                 :60
             ]
-            for ch in node.get("children", []):
-                cid = walk(
-                    ch, nid, node.get("text", "")[:300], depth + 1, path + [label]
+            for ch in reversed(node.get("children", [])):
+                stack.append(
+                    (ch, rec, node.get("text", "")[:300], depth + 1, path + [label])
                 )
-                rec["child_ids"].append(cid)
-            return nid
-
-        walk(tree, None, None, 0, [])
 
         # prev/next in reading order (DFS preorder = document order)
         for i, n in enumerate(nodes):
