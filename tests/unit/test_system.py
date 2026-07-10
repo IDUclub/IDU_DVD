@@ -194,6 +194,12 @@ class TestSettingsController:
         settings_controller.update_env({"DVD_SEMANTIC_MERGE_MAX_PASSES": 2})
         assert settings_controller._settings.semantic_merge_max_passes == 2
 
+    def test_list_setting_is_serialized_as_json(self, settings_controller, tmp_path):
+        settings_controller.update_env({"languages": ["rus", "eng"]})
+        assert settings_controller._settings.languages == ["rus", "eng"]
+        env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+        assert 'DVD_LANGUAGES=["rus", "eng"]' in env_text
+
     def test_unknown_variable_rejected(self, settings_controller):
         with pytest.raises(ValueError):
             settings_controller.update_env({"DVD_NOPE": "x"})
