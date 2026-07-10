@@ -384,8 +384,9 @@ One document as `DocumentDetail` — the `DocumentSummary` fields above plus the
 (fragments joined in reading order) and the `fragments` array. If the document is not found — `404`.
 
 Each fragment carries `id`, `order`, `kind`, `type`, `numbering`, `depth`, `breadcrumb`,
-`parent_id`/`prev_id`/`next_id`, the source grounding (`char_start`, `char_end`, `page_start`,
-`page_end`, `span_id`), `tags`, `metadata`, `text` and `table_html`.
+`parent_id`/`prev_id`/`next_id`/`child_ids`, the source grounding (`char_start`, `char_end`,
+`page_start`, `page_end`, `span_id`), `tags`, `metadata`, `references` (outgoing links to other
+documents/clauses — same shape as in search hits), `text` and `table_html`.
 
 ```json
 {
