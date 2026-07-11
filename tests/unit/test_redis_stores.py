@@ -288,4 +288,7 @@ class TestUserIndexRegistry:
             reg.create("u1", "s3", "p1", parent_scenario_id="s2")
 
     def test_repr(self, client):
-        assert repr(UserIndexRegistry(client, prefix="dvd")) == "UserIndexRegistry(prefix=dvd)"
+        assert (
+            repr(UserIndexRegistry(client, prefix="dvd"))
+            == "UserIndexRegistry(prefix=dvd)"
+        )

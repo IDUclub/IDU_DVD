@@ -48,7 +48,9 @@ async def get_tags(tags_svc: TagsService = Depends(Dependencies.get_tags)):
 
 def _require_user_index_scope(req: SearchRequest) -> SearchRequest:
     if not req.user_id or not req.scenario_id:
-        raise HTTPException(400, "user_id and scenario_id are required for index-only search")
+        raise HTTPException(
+            400, "user_id and scenario_id are required for index-only search"
+        )
     return req.model_copy(update={"include_shared": False})
 
 
@@ -77,6 +79,4 @@ async def search_user_index_all(
     req: SearchRequest, search: SearchService = Depends(Dependencies.get_search)
 ):
     """Search only a user document index (all entities) — never the shared corpus."""
-    return await run_in_threadpool(
-        search.search, _require_user_index_scope(req), None
-    )
+    return await run_in_threadpool(search.search, _require_user_index_scope(req), None)

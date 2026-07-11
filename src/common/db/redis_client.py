@@ -246,7 +246,9 @@ class UserIndexRegistry:
         v = self.r.get(self._key(user_id, scenario_id))
         return json.loads(v) if v else None
 
-    def _would_cycle(self, user_id: str, scenario_id: str, parent_scenario_id: str) -> bool:
+    def _would_cycle(
+        self, user_id: str, scenario_id: str, parent_scenario_id: str
+    ) -> bool:
         """True if ``parent_scenario_id`` already (transitively) descends from ``scenario_id``."""
         if parent_scenario_id == scenario_id:
             return True
@@ -274,7 +276,9 @@ class UserIndexRegistry:
             "parent_scenario_id": parent_scenario_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
-        self.r.set(self._key(user_id, scenario_id), json.dumps(record, ensure_ascii=False))
+        self.r.set(
+            self._key(user_id, scenario_id), json.dumps(record, ensure_ascii=False)
+        )
         self.r.sadd(self._by_user_key(user_id), scenario_id)
         return record
 

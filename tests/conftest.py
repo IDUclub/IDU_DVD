@@ -161,7 +161,9 @@ class FakeQdrantRepo:
             if current.get("doc_id") == doc_id:
                 self.points[point_id] = (vector, {**current, **payload})
 
-    def set_other_versions(self, name, version, other_versions, extra_must=None) -> None:
+    def set_other_versions(
+        self, name, version, other_versions, extra_must=None
+    ) -> None:
         self.set_other_versions_calls.append((name, version, other_versions))
 
     def find_node(self, name, numbering="", version=None, extra_must=None):
@@ -292,7 +294,9 @@ class FakeDocumentStorage:
     def ensure_bucket(self) -> None:
         pass
 
-    def upload(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> None:
+    def upload(
+        self, key: str, data: bytes, content_type: str = "application/octet-stream"
+    ) -> None:
         if self.fail_upload:
             raise RuntimeError("simulated MinIO failure")
         self.upload_calls.append(key)

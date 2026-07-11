@@ -605,7 +605,9 @@ class TestSourceFileStorage:
         self, wired, sample_raw
     ):
         h = DocumentParser.content_hash(sample_raw)
-        res = wired.ingestion.ingest("doc.docx", sample_raw, h, source_object_key="key-v1")
+        res = wired.ingestion.ingest(
+            "doc.docx", sample_raw, h, source_object_key="key-v1"
+        )
         assert all(
             pl.get("source_object_key") == "key-v1"
             for _v, pl in wired.qdrant.points.values()
@@ -615,7 +617,9 @@ class TestSourceFileStorage:
 
     def test_delete_whole_document_removes_its_source_object(self, wired, sample_raw):
         h = DocumentParser.content_hash(sample_raw)
-        res = wired.ingestion.ingest("doc.docx", sample_raw, h, source_object_key="key-v1")
+        res = wired.ingestion.ingest(
+            "doc.docx", sample_raw, h, source_object_key="key-v1"
+        )
         wired.ingestion.delete_document(res["name"])
         assert wired.storage.delete_calls == ["key-v1"]
 
@@ -776,9 +780,7 @@ class TestSearch:
 
     def test_search_hit_source_file_url_reflects_stored_object(self, wired, sample_raw):
         h = DocumentParser.content_hash(sample_raw)
-        wired.ingestion.ingest(
-            "doc.docx", sample_raw, h, source_object_key="key-v1"
-        )
+        wired.ingestion.ingest("doc.docx", sample_raw, h, source_object_key="key-v1")
         resp = wired.search.search(SearchRequest(query="требования", limit=5), None)
         assert resp.hits[0].source_file_url is not None
         assert resp.hits[0].source_file_url.startswith("/documents/")

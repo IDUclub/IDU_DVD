@@ -149,7 +149,9 @@ def pick_source_point(points: list[dict], version: str | None) -> dict:
 
 def download_response(data: bytes, content_type: str | None, filename: str) -> Response:
     """A file download response with an RFC-5987-safe filename (names may be Cyrillic/spaced)."""
-    ascii_fallback = filename.encode("ascii", "replace").decode("ascii").replace('"', "_")
+    ascii_fallback = (
+        filename.encode("ascii", "replace").decode("ascii").replace('"', "_")
+    )
     disposition = (
         f'attachment; filename="{ascii_fallback}"; '
         f"filename*=UTF-8''{quote(filename, safe='')}"

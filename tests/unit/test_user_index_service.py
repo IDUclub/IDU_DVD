@@ -38,7 +38,11 @@ def service(
     fake_qdrant, redis_client, index_registry, settings, fake_document_storage
 ) -> UserIndexService:
     return UserIndexService(
-        fake_qdrant, redis_client, index_registry, settings, storage=fake_document_storage
+        fake_qdrant,
+        redis_client,
+        index_registry,
+        settings,
+        storage=fake_document_storage,
     )
 
 
@@ -97,7 +101,11 @@ class TestDeleteIndex:
                 PointStruct(
                     id="pt2",
                     vector=[0.0],
-                    payload={"user_id": "u1", "scenario_id": "OTHER", "project_id": "p1"},
+                    payload={
+                        "user_id": "u1",
+                        "scenario_id": "OTHER",
+                        "project_id": "p1",
+                    },
                 ),
             ]
         )

@@ -60,4 +60,6 @@ class DocumentStorage:
         try:
             self.client.remove_object(self.bucket, key)
         except S3Error as exc:
-            log.warning("minio_delete_failed", bucket=self.bucket, key=key, error=str(exc))
+            log.warning(
+                "minio_delete_failed", bucket=self.bucket, key=key, error=str(exc)
+            )

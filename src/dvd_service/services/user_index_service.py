@@ -21,7 +21,12 @@ from src.common.db.qdrant_client import (
     ScopedQdrantRepository,
     user_scope_conditions,
 )
-from src.common.db.redis_client import DocumentRegistry, JobStore, RedisClient, UserIndexRegistry
+from src.common.db.redis_client import (
+    DocumentRegistry,
+    JobStore,
+    RedisClient,
+    UserIndexRegistry,
+)
 from src.dvd_service.dto.user_index import (
     UserIndexDeleteResponse,
     UserIndexInfo,
@@ -103,7 +108,8 @@ def build_user_ingestion_from_deps(
     deps: "Dependencies", *, user_id: str, project_id: str, scenario_id: str
 ) -> IngestionService:
     """Convenience wrapper around ``build_user_ingestion`` reading from the ``Dependencies``
-    singleton — the single implementation shared by the REST router and the MCP tools."""
+    singleton — the single implementation shared by the REST router and the MCP tools.
+    """
     return build_user_ingestion(
         settings=deps.settings,
         qdrant=deps.qdrant,
@@ -125,7 +131,8 @@ def build_user_ingestion_from_deps(
 
 class UserIndexService:
     """Create/list/delete user document indices (the `(user_id, scenario_id)` buckets themselves,
-    not the documents inside them — those go through the per-request `IngestionService`)."""
+    not the documents inside them — those go through the per-request `IngestionService`).
+    """
 
     def __init__(
         self,
@@ -178,7 +185,9 @@ class UserIndexService:
             raise KeyError(f"index not found: {user_id}/{scenario_id}")
         flt = Filter(must=user_scope_conditions(user_id, [scenario_id]))
         payloads = self.qdrant.scroll_payloads(flt)
-        source_keys = {pl["source_object_key"] for pl in payloads if pl.get("source_object_key")}
+        source_keys = {
+            pl["source_object_key"] for pl in payloads if pl.get("source_object_key")
+        }
         points_deleted = len(payloads)
         self.qdrant.delete_by_filter(flt)
         for key in source_keys:

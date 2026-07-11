@@ -27,7 +27,9 @@ class SearchRequest(BaseModel):
     # --- user-scoped index search (both user_id and scenario_id, or neither) ---
     user_id: str | None = None  # owner of the user document index to search
     project_id: str | None = None  # filter tag only, not an isolation boundary
-    scenario_id: str | None = None  # scenario whose index (+ inheritance chain) to search
+    scenario_id: str | None = (
+        None  # scenario whose index (+ inheritance chain) to search
+    )
     include_shared: bool = (
         True  # also match the shared/regular document corpus (combined search)
     )

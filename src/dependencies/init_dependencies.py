@@ -7,7 +7,6 @@ objects and stores them in the ``Dependencies`` singleton.
 from __future__ import annotations
 
 import structlog
-
 from minio import Minio
 
 from src.api_clients import probe_embedding_dim

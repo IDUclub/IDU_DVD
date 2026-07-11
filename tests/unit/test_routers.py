@@ -161,9 +161,9 @@ def client(tmp_path, fake_qdrant, fake_document_storage):
     app.dependency_overrides[Dependencies.get_documents] = lambda: fakes["documents"]
     app.dependency_overrides[Dependencies.get_tags] = lambda: fakes["tags"]
     app.dependency_overrides[Dependencies.get_qdrant] = lambda: fakes["qdrant"]
-    app.dependency_overrides[Dependencies.get_document_storage] = (
-        lambda: fakes["document_storage"]
-    )
+    app.dependency_overrides[Dependencies.get_document_storage] = lambda: fakes[
+        "document_storage"
+    ]
     with TestClient(app) as c:
         yield c, fakes
 
@@ -294,7 +294,9 @@ class TestDeleteDocument:
 
 
 class TestDownloadSource:
-    def _seed(self, fakes, *, name="СП 1", version="v1", key="obj-key.docx", data=b"hi"):
+    def _seed(
+        self, fakes, *, name="СП 1", version="v1", key="obj-key.docx", data=b"hi"
+    ):
         from qdrant_client.models import PointStruct
 
         fakes["qdrant"].upsert(
@@ -302,7 +304,11 @@ class TestDownloadSource:
                 PointStruct(
                     id="pt1",
                     vector=[0.0],
-                    payload={"name": name, "version": version, "source_object_key": key},
+                    payload={
+                        "name": name,
+                        "version": version,
+                        "source_object_key": key,
+                    },
                 )
             ]
         )
@@ -331,7 +337,11 @@ class TestDownloadSource:
         from qdrant_client.models import PointStruct
 
         fakes["qdrant"].upsert(
-            [PointStruct(id="pt1", vector=[0.0], payload={"name": "СП 1", "version": "v1"})]
+            [
+                PointStruct(
+                    id="pt1", vector=[0.0], payload={"name": "СП 1", "version": "v1"}
+                )
+            ]
         )
         assert c.get("/documents/СП 1/source").status_code == 404
 
@@ -344,7 +354,11 @@ class TestDownloadSource:
                 PointStruct(
                     id="pt1",
                     vector=[0.0],
-                    payload={"name": "СП 1", "version": "v1", "source_object_key": "ghost"},
+                    payload={
+                        "name": "СП 1",
+                        "version": "v1",
+                        "source_object_key": "ghost",
+                    },
                 )
             ]
         )

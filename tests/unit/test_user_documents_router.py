@@ -78,11 +78,17 @@ def _reset_singleton():
 
 
 @pytest.fixture
-def client(tmp_path, settings, fake_redis, fake_qdrant, fake_document_storage, monkeypatch):
+def client(
+    tmp_path, settings, fake_redis, fake_qdrant, fake_document_storage, monkeypatch
+):
     redis_client = RedisClient(settings)
     index_registry = UserIndexRegistry(redis_client, prefix=settings.registry_prefix)
     user_index_service = UserIndexService(
-        fake_qdrant, redis_client, index_registry, settings, storage=fake_document_storage
+        fake_qdrant,
+        redis_client,
+        index_registry,
+        settings,
+        storage=fake_document_storage,
     )
     fake_ingestion = FakeIngestion()
 
@@ -104,8 +110,12 @@ def client(tmp_path, settings, fake_redis, fake_qdrant, fake_document_storage, m
     app.dependency_overrides[Dependencies.get_settings] = lambda: upload_settings
     app.dependency_overrides[Dependencies.get_parser] = lambda: FakeParser()
     app.dependency_overrides[Dependencies.get_redis] = lambda: redis_client
-    app.dependency_overrides[Dependencies.get_user_index_registry] = lambda: index_registry
-    app.dependency_overrides[Dependencies.get_user_index_service] = lambda: user_index_service
+    app.dependency_overrides[Dependencies.get_user_index_registry] = (
+        lambda: index_registry
+    )
+    app.dependency_overrides[Dependencies.get_user_index_service] = (
+        lambda: user_index_service
+    )
     app.dependency_overrides[Dependencies.get_qdrant] = lambda: fake_qdrant
     app.dependency_overrides[Dependencies.get_user_document_storage] = (
         lambda: fake_document_storage
@@ -298,9 +308,7 @@ class TestUpdateReloadDeleteDocument:
 class TestListUserDocuments:
     def test_empty_index_returns_no_documents(self, client):
         c, _, _, _ = client
-        resp = c.get(
-            "/user-documents", params={"user_id": "u1", "scenario_id": "s1"}
-        )
+        resp = c.get("/user-documents", params={"user_id": "u1", "scenario_id": "s1"})
         assert resp.status_code == 200
         assert resp.json() == {"count": 0, "documents": []}
 
@@ -342,7 +350,9 @@ class TestDownloadUserSource:
     def test_downloads_the_original_file(self, client, fake_qdrant):
         c, _, _, storage = client
         self._create_index(c, "u1", "s1")
-        self._seed_point(fake_qdrant, storage, user_id="u1", scenario_id="s1", key="k", data=b"hi")
+        self._seed_point(
+            fake_qdrant, storage, user_id="u1", scenario_id="s1", key="k", data=b"hi"
+        )
 
         resp = c.get(
             "/user-documents/doc/source", params={"user_id": "u1", "scenario_id": "s1"}
@@ -353,7 +363,9 @@ class TestDownloadUserSource:
     def test_different_user_gets_404(self, client, fake_qdrant):
         c, _, _, storage = client
         self._create_index(c, "u1", "s1")
-        self._seed_point(fake_qdrant, storage, user_id="u1", scenario_id="s1", key="k", data=b"hi")
+        self._seed_point(
+            fake_qdrant, storage, user_id="u1", scenario_id="s1", key="k", data=b"hi"
+        )
 
         resp = c.get(
             "/user-documents/doc/source", params={"user_id": "u2", "scenario_id": "s1"}
@@ -364,7 +376,9 @@ class TestDownloadUserSource:
         c, _, _, storage = client
         self._create_index(c, "u1", "s1")
         self._create_index(c, "u1", "s2", parent_scenario_id="s1")
-        self._seed_point(fake_qdrant, storage, user_id="u1", scenario_id="s1", key="k", data=b"hi")
+        self._seed_point(
+            fake_qdrant, storage, user_id="u1", scenario_id="s1", key="k", data=b"hi"
+        )
 
         resp = c.get(
             "/user-documents/doc/source", params={"user_id": "u1", "scenario_id": "s2"}
@@ -372,11 +386,15 @@ class TestDownloadUserSource:
         assert resp.status_code == 200
         assert resp.content == b"hi"
 
-    def test_include_inherited_false_excludes_parent_scenario(self, client, fake_qdrant):
+    def test_include_inherited_false_excludes_parent_scenario(
+        self, client, fake_qdrant
+    ):
         c, _, _, storage = client
         self._create_index(c, "u1", "s1")
         self._create_index(c, "u1", "s2", parent_scenario_id="s1")
-        self._seed_point(fake_qdrant, storage, user_id="u1", scenario_id="s1", key="k", data=b"hi")
+        self._seed_point(
+            fake_qdrant, storage, user_id="u1", scenario_id="s1", key="k", data=b"hi"
+        )
 
         resp = c.get(
             "/user-documents/doc/source",

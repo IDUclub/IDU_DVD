@@ -33,30 +33,18 @@ from src.dvd_service.dto import (
     UploadResponse,
 )
 from src.dvd_service.modules.doc_parsers import DocumentParser
-from src.dvd_service.routers._upload_common import (
-    document_meta as _document_meta,
-)
+from src.dvd_service.routers._upload_common import document_meta as _document_meta
 from src.dvd_service.routers._upload_common import (
     download_response as _download_response,
 )
 from src.dvd_service.routers._upload_common import (
     pick_source_point as _pick_source_point,
 )
-from src.dvd_service.routers._upload_common import (
-    queued_job as _queued_job,
-)
-from src.dvd_service.routers._upload_common import (
-    receive_file as _receive_file,
-)
-from src.dvd_service.routers._upload_common import (
-    reject_duplicate as _reject_duplicate,
-)
-from src.dvd_service.routers._upload_common import (
-    run_job as _run_job,
-)
-from src.dvd_service.routers._upload_common import (
-    save_source as _save_source,
-)
+from src.dvd_service.routers._upload_common import queued_job as _queued_job
+from src.dvd_service.routers._upload_common import receive_file as _receive_file
+from src.dvd_service.routers._upload_common import reject_duplicate as _reject_duplicate
+from src.dvd_service.routers._upload_common import run_job as _run_job
+from src.dvd_service.routers._upload_common import save_source as _save_source
 from src.dvd_service.services.dvd_service import DocumentsService, IngestionService
 
 log = structlog.get_logger(__name__)

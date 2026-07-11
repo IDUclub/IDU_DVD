@@ -9,7 +9,9 @@ class UserIndexCreateRequest(BaseModel):
     user_id: str
     scenario_id: str
     project_id: str
-    parent_scenario_id: str | None = None  # scenario to inherit documents from (live, recursive)
+    parent_scenario_id: str | None = (
+        None  # scenario to inherit documents from (live, recursive)
+    )
 
 
 class UserIndexInfo(BaseModel):
@@ -18,7 +20,9 @@ class UserIndexInfo(BaseModel):
     project_id: str
     parent_scenario_id: str | None = None
     created_at: str
-    document_count: int = 0  # this scenario's own documents, not counting inherited ones
+    document_count: int = (
+        0  # this scenario's own documents, not counting inherited ones
+    )
 
 
 class UserIndexListResponse(BaseModel):

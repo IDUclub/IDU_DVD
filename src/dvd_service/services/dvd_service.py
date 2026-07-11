@@ -853,7 +853,9 @@ class IngestionService:
                 | {t for p in existing for t in self._version_tags(p)}
             )
             doc_ids = {p["doc_id"] for p in existing if p.get("doc_id")}
-            source_keys = {p["source_object_key"] for p in existing if p.get("source_object_key")}
+            source_keys = {
+                p["source_object_key"] for p in existing if p.get("source_object_key")
+            }
             self.qdrant.delete_by_name(name)
             self.registry.remove_hashes(name)
             for did in doc_ids:

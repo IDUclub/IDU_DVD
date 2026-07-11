@@ -196,7 +196,9 @@ class TestCountAndDeleteByFilter:
 
     def test_delete_by_filter_passes_filter_through(self, repo_and_client):
         repo, client = repo_and_client
-        flt = Filter(must=[FieldCondition(key="scenario_id", match=MatchValue(value="s1"))])
+        flt = Filter(
+            must=[FieldCondition(key="scenario_id", match=MatchValue(value="s1"))]
+        )
         repo.delete_by_filter(flt)
         client.delete.assert_called_once()
         assert client.delete.call_args.kwargs["points_selector"] is flt
