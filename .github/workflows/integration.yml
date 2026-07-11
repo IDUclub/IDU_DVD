@@ -6,8 +6,9 @@ name: Integration tests
 #   - kafka-integration: the broker outbox->Kafka->consumer round-trip
 #     (Kafka KRaft + Schema Registry via tests/integration/kafka-compose.yaml).
 #   - pipeline-integration: the real ingestion pipeline (Ollama LLM on CPU,
-#     Qdrant, Redis). Uses qwen2.5:3b-instruct — CPU-friendly, and the suite's
-#     assertions are model-quality-tolerant (validated: all tests pass with it).
+#     Qdrant, Redis, MinIO for original source file storage). Uses
+#     qwen2.5:3b-instruct — CPU-friendly, and the suite's assertions are
+#     model-quality-tolerant (validated: all tests pass with it).
 
 on:
   workflow_dispatch:
@@ -90,6 +91,14 @@ jobs:
         image: ollama/ollama:latest
         ports:
           - 11434:11434
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+          MINIO_DEFAULT_BUCKETS: dvd-documents,dvd-user-documents
+        ports:
+          - 9000:9000
 
     steps:
       - uses: actions/checkout@v4
@@ -105,7 +114,7 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      - name: Wait for Ollama and Qdrant
+      - name: Wait for Ollama, Qdrant and MinIO
         run: |
           for i in $(seq 1 30); do
             curl -sf http://localhost:11434/api/tags > /dev/null && break
@@ -117,6 +126,11 @@ jobs:
             sleep 2
           done
           curl -sf http://localhost:6333/readyz > /dev/null
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:9000/minio/health/live > /dev/null && break
+            sleep 2
+          done
+          curl -sf http://localhost:9000/minio/health/live > /dev/null
 
       - name: Pull models (LLM + embeddings)
         run: |
@@ -141,4 +155,8 @@ jobs:
           DVD_VECTOR_SIZE: "1024"
           DVD_QDRANT_URL: http://localhost:6333
           DVD_REDIS_URL: redis://localhost:6379/0
+          DVD_MINIO_ENDPOINT: localhost:9000
+          DVD_MINIO_ACCESS_KEY: minioadmin
+          DVD_MINIO_SECRET_KEY: minioadmin
+          DVD_MINIO_SECURE: "false"
         run: uv run pytest tests/integration -m integration -rs

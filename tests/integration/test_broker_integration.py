@@ -89,7 +89,18 @@ async def test_outbox_event_reaches_kafka(broker_settings, require_redis):
 
 
 def _find_event(publisher: KafkaPublisher, settings, marker: str) -> bool:
-    """Scan ``document.events`` from the beginning for our marker event."""
+    """Scan ``document.events`` from the beginning for our marker event.
+
+    Deserializes via ``DocumentProcessed.deserialize`` directly rather than
+    ``publisher._producer.deserialize_message``: otteroad's generic model
+    lookup (``AvroSerializerMixin._get_model_class``) resolves a schema ID to
+    a model class by comparing the registry's schema string (stored with
+    default ``json.dumps`` spacing) against a compact-separator re-dump of
+    each candidate model's schema — the two never match, so it always warns
+    "No registered model for given schema" and returns None. Since we already
+    know which model we published, ask that model to deserialize the payload
+    itself and skip the broken lookup.
+    """
     from confluent_kafka import Consumer
 
     consumer = Consumer(
@@ -107,8 +118,10 @@ def _find_event(publisher: KafkaPublisher, settings, marker: str) -> bool:
             msg = consumer.poll(timeout=1.0)
             if msg is None or msg.error():
                 continue
-            event = publisher._producer.deserialize_message(msg)
-            if isinstance(event, DocumentProcessed) and event.document_name == marker:
+            event = DocumentProcessed.deserialize(
+                msg.value(), publisher._producer.schema_registry
+            )
+            if event.document_name == marker:
                 return True
         return False
     finally:
