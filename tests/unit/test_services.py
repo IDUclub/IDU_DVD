@@ -172,7 +172,11 @@ class TestIngest:
 
         entry = wired.outbox.peek()
         assert entry["model"] == "DocumentProcessed"
-        assert entry["payload"] == {"document_name": res["name"]}
+        assert entry["payload"] == {
+            "document_name": res["name"],
+            "user_id": None,
+            "scenario_id": None,
+        }
         assert wired.outbox.size() == 1
 
     def test_no_event_without_outbox(self, wired, sample_raw):
@@ -479,6 +483,8 @@ class TestUpdateDocument:
         assert events[1]["payload"] == {
             "document_name": res1["name"],
             "version": res2["version"],
+            "user_id": None,
+            "scenario_id": None,
         }
 
     def test_update_unknown_name_raises(self, wired):
@@ -564,6 +570,8 @@ class TestDeleteDocument:
             "document_name": res["name"],
             "versions_removed": [res["version"]],
             "document_removed": True,
+            "user_id": None,
+            "scenario_id": None,
         }
 
     def test_version_delete_emits_event_with_document_kept(self, wired, sample_raw):
@@ -587,6 +595,8 @@ class TestDeleteDocument:
             "document_name": res1["name"],
             "versions_removed": ["ред. 2"],
             "document_removed": False,  # the 2020 edition is still stored
+            "user_id": None,
+            "scenario_id": None,
         }
 
 
@@ -740,6 +750,8 @@ class TestReloadDocument:
         assert events[1]["payload"] == {
             "document_name": res1["name"],
             "version": res2["version"],
+            "user_id": None,
+            "scenario_id": None,
         }
 
     def test_reload_of_absent_document_emits_processed(self, wired, sample_raw):
@@ -747,7 +759,11 @@ class TestReloadDocument:
         wired.ingestion.reload("Новый документ", "doc.docx", sample_raw, h)
         events = outbox_entries(wired.outbox)
         assert [e["model"] for e in events] == ["DocumentProcessed"]
-        assert events[0]["payload"] == {"document_name": "Новый документ"}
+        assert events[0]["payload"] == {
+            "document_name": "Новый документ",
+            "user_id": None,
+            "scenario_id": None,
+        }
 
 
 class TestSearch:

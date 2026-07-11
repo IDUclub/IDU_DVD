@@ -20,7 +20,7 @@ class DocumentProcessed(AvroEventModel):
 
     topic: ClassVar[str] = "document.events"
     namespace: ClassVar[str] = "documents"
-    schema_version: ClassVar[int] = 1
+    schema_version: ClassVar[int] = 2
     schema_compatibility: ClassVar[str] = "BACKWARD"
 
     # NB: keep descriptions/docstrings ASCII-only — otteroad matches consumed messages
@@ -31,6 +31,15 @@ class DocumentProcessed(AvroEventModel):
         description="unique document name (registry key), enough to fetch all "
         "fragments and versions of the document from the DVD API",
     )
+    user_id: str | None = Field(
+        None,
+        description="owner of the user-scoped index this document was ingested into; "
+        "null for the shared/regular document corpus",
+    )
+    scenario_id: str | None = Field(
+        None,
+        description="scenario the document belongs to, when part of a user-scoped index",
+    )
 
 
 class DocumentUpdated(AvroEventModel):
@@ -40,7 +49,7 @@ class DocumentUpdated(AvroEventModel):
 
     topic: ClassVar[str] = "document.events"
     namespace: ClassVar[str] = "documents"
-    schema_version: ClassVar[int] = 1
+    schema_version: ClassVar[int] = 2
     schema_compatibility: ClassVar[str] = "BACKWARD"
 
     document_name: str = Field(
@@ -52,6 +61,15 @@ class DocumentUpdated(AvroEventModel):
         description="version tag the update was indexed under; fragments of this "
         "version are retrievable from the DVD API by name + version",
     )
+    user_id: str | None = Field(
+        None,
+        description="owner of the user-scoped index this document belongs to; "
+        "null for the shared/regular document corpus",
+    )
+    scenario_id: str | None = Field(
+        None,
+        description="scenario the document belongs to, when part of a user-scoped index",
+    )
 
 
 class DocumentDeleted(AvroEventModel):
@@ -60,7 +78,7 @@ class DocumentDeleted(AvroEventModel):
 
     topic: ClassVar[str] = "document.events"
     namespace: ClassVar[str] = "documents"
-    schema_version: ClassVar[int] = 1
+    schema_version: ClassVar[int] = 2
     schema_compatibility: ClassVar[str] = "BACKWARD"
 
     document_name: str = Field(
@@ -74,4 +92,13 @@ class DocumentDeleted(AvroEventModel):
     document_removed: bool = Field(
         ...,
         description="true when no versions of the document remain in the store",
+    )
+    user_id: str | None = Field(
+        None,
+        description="owner of the user-scoped index this document belonged to; "
+        "null for the shared/regular document corpus",
+    )
+    scenario_id: str | None = Field(
+        None,
+        description="scenario the document belonged to, when part of a user-scoped index",
     )

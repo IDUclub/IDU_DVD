@@ -36,7 +36,7 @@ class TestEventModels:
     def test_topic_and_schema_metadata(self, model):
         assert model.topic == "document.events"
         assert model.namespace == "documents"
-        assert model.schema_version == 1
+        assert model.schema_version == 2
 
     @pytest.mark.parametrize(
         "event",
@@ -71,12 +71,20 @@ class TestEventOutbox:
 
         head = outbox.peek()
         assert head["model"] == "DocumentProcessed"
-        assert head["payload"] == {"document_name": "doc A"}
+        assert head["payload"] == {
+            "document_name": "doc A",
+            "user_id": None,
+            "scenario_id": None,
+        }
         assert head["attempts"] == 0
         assert head["enqueued_at"]
 
         outbox.commit()
-        assert outbox.peek()["payload"] == {"document_name": "doc B"}
+        assert outbox.peek()["payload"] == {
+            "document_name": "doc B",
+            "user_id": None,
+            "scenario_id": None,
+        }
         outbox.commit()
         assert outbox.peek() is None
         assert outbox.size() == 0
@@ -103,7 +111,11 @@ class TestEventOutbox:
         dead = [json.loads(v) for v in outbox.r.lrange(outbox.dead_key, 0, -1)]
         assert len(dead) == 1
         assert dead[0]["attempts"] == 2
-        assert dead[0]["payload"] == {"document_name": "doc"}
+        assert dead[0]["payload"] == {
+            "document_name": "doc",
+            "user_id": None,
+            "scenario_id": None,
+        }
 
 
 class TestKafkaPublisher:
