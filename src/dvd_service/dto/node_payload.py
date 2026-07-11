@@ -55,6 +55,11 @@ class NodePayload(BaseModel):
         default_factory=list
     )  # exact-match keys (normalized name + external id forms)
 
+    # --- user-scoped index (None for the shared/regular document corpus) ---
+    user_id: str | None = None  # root of the isolation key (user_id, scenario_id)
+    project_id: str | None = None  # filter-only tag, not an isolation boundary
+    scenario_id: str | None = None  # scenario this document was uploaded into
+
     # --- version lifecycle (general-purpose) ---
     status: str = "active"  # active | archived
     effective_date: str | None = None
@@ -64,6 +69,9 @@ class NodePayload(BaseModel):
     # --- source / provenance ---
     source: str | None = None  # original filename (compat)
     source_uri: str | None = None  # file path / URL of the source
+    source_object_key: str | None = (
+        None  # MinIO object key of the original file (closed-contour storage)
+    )
 
     # --- source grounding (path back to the source span) ---
     src_block_ids: list[int] = Field(

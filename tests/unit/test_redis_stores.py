@@ -8,7 +8,12 @@ from __future__ import annotations
 
 import pytest
 
-from src.common.db.redis_client import DocumentRegistry, JobStore, RedisClient
+from src.common.db.redis_client import (
+    DocumentRegistry,
+    JobStore,
+    RedisClient,
+    UserIndexRegistry,
+)
 
 
 @pytest.fixture
@@ -185,3 +190,105 @@ class TestPendingReferences:
 
     def test_pop_missing_returns_empty(self, client):
         assert DocumentRegistry(client).pop_pending("nope") == []
+
+
+class TestDocumentRegistryWipe:
+    def test_wipe_removes_only_this_prefix(self, client):
+        a = DocumentRegistry(client, prefix="dvd:coll_a")
+        b = DocumentRegistry(client, prefix="dvd:coll_b")
+        a.register("h1", "Док", "v1", "d1")
+        a.register_document("d1", {"doc_id": "d1"})
+        b.register("h2", "Док", "v1", "d2")
+
+        a.wipe()
+
+        assert a.has_hash("h1") is False
+        assert a.get_document("d1") is None
+        assert a.names() == []
+        assert b.has_hash("h2") is True  # a different registry is untouched
+
+
+class TestUserIndexRegistry:
+    def test_create_then_get(self, client):
+        reg = UserIndexRegistry(client, prefix="dvd")
+        record = reg.create("u1", "s1", "p1")
+        assert record["user_id"] == "u1"
+        assert record["scenario_id"] == "s1"
+        assert record["project_id"] == "p1"
+        assert record["parent_scenario_id"] is None
+        assert record["created_at"]
+        assert reg.get("u1", "s1") == record
+
+    def test_get_missing_returns_none(self, client):
+        assert UserIndexRegistry(client, prefix="dvd").get("u1", "nope") is None
+
+    def test_create_duplicate_raises(self, client):
+        reg = UserIndexRegistry(client, prefix="dvd")
+        reg.create("u1", "s1", "p1")
+        with pytest.raises(ValueError):
+            reg.create("u1", "s1", "p1")
+
+    def test_get_or_create_is_idempotent(self, client):
+        reg = UserIndexRegistry(client, prefix="dvd")
+        first = reg.get_or_create("u1", "s1", "p1")
+        second = reg.get_or_create("u1", "s1", "p-ignored")
+        assert first == second  # second call did not overwrite project_id
+
+    def test_delete_removes_record_and_listing_entry(self, client):
+        reg = UserIndexRegistry(client, prefix="dvd")
+        reg.create("u1", "s1", "p1")
+        reg.delete("u1", "s1")
+        assert reg.get("u1", "s1") is None
+        assert reg.list_for_user("u1") == []
+
+    def test_list_for_user_sorted_and_scoped(self, client):
+        reg = UserIndexRegistry(client, prefix="dvd")
+        reg.create("u1", "s2", "p1")
+        reg.create("u1", "s1", "p1")
+        reg.create("u2", "s1", "p1")  # different user, must not leak in
+        assert [r["scenario_id"] for r in reg.list_for_user("u1")] == ["s1", "s2"]
+
+    def test_ancestor_chain_single_scenario(self, client):
+        reg = UserIndexRegistry(client, prefix="dvd")
+        reg.create("u1", "s1", "p1")
+        assert reg.ancestor_chain("u1", "s1") == ["s1"]
+
+    def test_ancestor_chain_follows_parent_link(self, client):
+        reg = UserIndexRegistry(client, prefix="dvd")
+        reg.create("u1", "s1", "p1")
+        reg.create("u1", "s2", "p1", parent_scenario_id="s1")
+        reg.create("u1", "s3", "p1", parent_scenario_id="s2")
+        assert reg.ancestor_chain("u1", "s3") == ["s3", "s2", "s1"]
+
+    def test_ancestor_chain_includes_declared_parent_even_without_its_own_record(
+        self, client
+    ):
+        # The declared parent id is still a valid scenario_id to match documents against
+        # even if its own index metadata is gone (e.g. deleted) — the chain just can't
+        # walk any further past it, since there's no record to find a grandparent from.
+        reg = UserIndexRegistry(client, prefix="dvd")
+        reg.create("u1", "s2", "p1", parent_scenario_id="s1")  # s1 never created
+        assert reg.ancestor_chain("u1", "s2") == ["s2", "s1"]
+
+    def test_ancestor_chain_of_unknown_scenario_is_itself(self, client):
+        reg = UserIndexRegistry(client, prefix="dvd")
+        assert reg.ancestor_chain("u1", "ghost") == ["ghost"]
+
+    def test_create_rejects_direct_cycle(self, client):
+        reg = UserIndexRegistry(client, prefix="dvd")
+        with pytest.raises(ValueError):
+            reg.create("u1", "s1", "p1", parent_scenario_id="s1")
+
+    def test_create_rejects_transitive_cycle(self, client):
+        reg = UserIndexRegistry(client, prefix="dvd")
+        reg.create("u1", "s1", "p1", parent_scenario_id="s3")
+        reg.create("u1", "s2", "p1", parent_scenario_id="s1")
+        # s3 -> s1 -> s2, so s3 inheriting from s2 would close the loop
+        with pytest.raises(ValueError):
+            reg.create("u1", "s3", "p1", parent_scenario_id="s2")
+
+    def test_repr(self, client):
+        assert (
+            repr(UserIndexRegistry(client, prefix="dvd"))
+            == "UserIndexRegistry(prefix=dvd)"
+        )

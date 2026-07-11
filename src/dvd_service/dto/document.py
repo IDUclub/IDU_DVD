@@ -27,6 +27,11 @@ class DocumentInfo(BaseModel):
     node_count: int = 0
     uploaded_at: str | None = None
     source: str | None = None
+    # populated only via the user-index listing path — the scenario a listed document actually
+    # belongs to (own vs. inherited from a parent scenario)
+    scenario_id: str | None = None
+    # proxied download link (this service, not a raw MinIO URL) — None if no source was stored
+    source_file_url: str | None = None
 
 
 class DocumentListResponse(BaseModel):
@@ -53,6 +58,8 @@ class DocumentSummary(BaseModel):
     effective_date: str | None = None
     metadata: dict = Field(default_factory=dict)
     tags: list[str] = Field(default_factory=list)
+    # proxied download link (this service, not a raw MinIO URL) — None if no source was stored
+    source_file_url: str | None = None
 
 
 class DocumentFragment(BaseModel):

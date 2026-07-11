@@ -136,7 +136,7 @@ class FakeTags:
 
 
 @pytest.fixture
-def client(tmp_path):
+def client(tmp_path, fake_qdrant, fake_document_storage):
     fakes = {
         "settings": Settings(upload_dir=str(tmp_path)),
         "parser": FakeParser(),
@@ -146,6 +146,8 @@ def client(tmp_path):
         "search": FakeSearch(),
         "documents": FakeDocuments(),
         "tags": FakeTags(),
+        "qdrant": fake_qdrant,
+        "document_storage": fake_document_storage,
     }
     app = FastAPI()
     app.include_router(documents_router)
@@ -158,6 +160,10 @@ def client(tmp_path):
     app.dependency_overrides[Dependencies.get_search] = lambda: fakes["search"]
     app.dependency_overrides[Dependencies.get_documents] = lambda: fakes["documents"]
     app.dependency_overrides[Dependencies.get_tags] = lambda: fakes["tags"]
+    app.dependency_overrides[Dependencies.get_qdrant] = lambda: fakes["qdrant"]
+    app.dependency_overrides[Dependencies.get_document_storage] = lambda: fakes[
+        "document_storage"
+    ]
     with TestClient(app) as c:
         yield c, fakes
 
@@ -194,6 +200,21 @@ class TestUpload:
         _, kwargs = fakes["ingestion"].calls[-1]
         assert kwargs["name_override"] == "СП 5.2025"
         assert kwargs["version_override"] == "2025"
+
+    def test_saves_source_to_minio_and_forwards_object_key(self, client):
+        c, fakes = client
+        resp = c.post("/documents", files={"file": ("doc.docx", b"data")})
+        assert resp.status_code == 202
+        assert fakes["document_storage"].upload_calls  # saved before the job was queued
+        _, kwargs = fakes["ingestion"].calls[-1]
+        assert kwargs["source_object_key"] == fakes["document_storage"].upload_calls[-1]
+
+    def test_storage_failure_rejects_upload_and_never_queues_a_job(self, client):
+        c, fakes = client
+        fakes["document_storage"].fail_upload = True
+        resp = c.post("/documents", files={"file": ("doc.docx", b"data")})
+        assert resp.status_code == 502
+        assert not fakes["ingestion"].calls
 
 
 class TestUpdateDocument:
@@ -270,6 +291,86 @@ class TestDeleteDocument:
     def test_unknown_name_returns_404(self, client):
         c, _ = client
         assert c.delete("/documents/нет такого").status_code == 404
+
+
+class TestDownloadSource:
+    def _seed(
+        self, fakes, *, name="СП 1", version="v1", key="obj-key.docx", data=b"hi"
+    ):
+        from qdrant_client.models import PointStruct
+
+        fakes["qdrant"].upsert(
+            [
+                PointStruct(
+                    id="pt1",
+                    vector=[0.0],
+                    payload={
+                        "name": name,
+                        "version": version,
+                        "source_object_key": key,
+                    },
+                )
+            ]
+        )
+        fakes["document_storage"].upload(key, data, "application/octet-stream")
+
+    def test_downloads_the_original_file(self, client):
+        c, fakes = client
+        self._seed(fakes)
+        resp = c.get("/documents/СП 1/source")
+        assert resp.status_code == 200
+        assert resp.content == b"hi"
+        assert "attachment" in resp.headers["content-disposition"]
+
+    def test_unknown_document_returns_404(self, client):
+        c, _ = client
+        assert c.get("/documents/нет такого/source").status_code == 404
+
+    def test_unknown_version_returns_404(self, client):
+        c, fakes = client
+        self._seed(fakes)
+        resp = c.get("/documents/СП 1/source", params={"version": "nope"})
+        assert resp.status_code == 404
+
+    def test_document_without_stored_source_returns_404(self, client):
+        c, fakes = client
+        from qdrant_client.models import PointStruct
+
+        fakes["qdrant"].upsert(
+            [
+                PointStruct(
+                    id="pt1", vector=[0.0], payload={"name": "СП 1", "version": "v1"}
+                )
+            ]
+        )
+        assert c.get("/documents/СП 1/source").status_code == 404
+
+    def test_missing_object_in_storage_returns_404(self, client):
+        c, fakes = client
+        from qdrant_client.models import PointStruct
+
+        fakes["qdrant"].upsert(
+            [
+                PointStruct(
+                    id="pt1",
+                    vector=[0.0],
+                    payload={
+                        "name": "СП 1",
+                        "version": "v1",
+                        "source_object_key": "ghost",
+                    },
+                )
+            ]
+        )
+        assert c.get("/documents/СП 1/source").status_code == 404
+
+    def test_defaults_to_latest_version(self, client):
+        c, fakes = client
+        self._seed(fakes, version="v1", key="key-v1.docx", data=b"old")
+        self._seed(fakes, version="v2", key="key-v2.docx", data=b"new")
+        resp = c.get("/documents/СП 1/source")
+        assert resp.status_code == 200
+        assert resp.content == b"new"
 
 
 class TestListDocuments:
@@ -349,3 +450,30 @@ class TestSearchEndpoints:
         resp = c.post(path, json={"query": "требования"})
         assert resp.status_code == 200 and resp.json()["count"] == 1
         assert fakes["search"].calls[-1][1] == expected_kind
+
+
+class TestUserIndexSearchEndpoints:
+    @pytest.mark.parametrize(
+        "path,expected_kind",
+        [
+            ("/search/user-index/texts", "text"),
+            ("/search/user-index/tables", "table"),
+            ("/search/user-index", None),
+        ],
+    )
+    def test_requires_user_id_and_scenario_id(self, client, path, expected_kind):
+        c, _ = client
+        resp = c.post(path, json={"query": "требования"})
+        assert resp.status_code == 400
+
+    def test_forces_include_shared_false(self, client):
+        c, fakes = client
+        resp = c.post(
+            "/search/user-index/texts",
+            json={"query": "требования", "user_id": "u1", "scenario_id": "s1"},
+        )
+        assert resp.status_code == 200
+        req, kind = fakes["search"].calls[-1]
+        assert kind == "text"
+        assert req.user_id == "u1" and req.scenario_id == "s1"
+        assert req.include_shared is False

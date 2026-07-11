@@ -7,5 +7,13 @@ marks the package and re-exports each module's ``router`` under a descriptive na
 from src.dvd_service.routers.documents import router as documents_router  # noqa: F401
 from src.dvd_service.routers.library import router as library_router  # noqa: F401
 from src.dvd_service.routers.search import router as search_router  # noqa: F401
+from src.dvd_service.routers.user_documents import (  # noqa: F401
+    router as user_documents_router,
+)
 
-__all__ = ["documents_router", "search_router", "library_router"]
+__all__ = [
+    "documents_router",
+    "search_router",
+    "library_router",
+    "user_documents_router",
+]
