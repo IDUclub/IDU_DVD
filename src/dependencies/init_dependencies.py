@@ -120,7 +120,12 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     library = LibraryService(qdrant, registry)
     tags = TagsService(qdrant)
     user_index_service = UserIndexService(
-        qdrant, redis, user_index_registry, s, storage=user_document_storage
+        qdrant,
+        redis,
+        user_index_registry,
+        s,
+        storage=user_document_storage,
+        outbox=outbox if publisher.enabled else None,
     )
 
     system = SystemController(s)

@@ -34,6 +34,11 @@ def index_registry(redis_client, settings) -> UserIndexRegistry:
 
 
 @pytest.fixture
+def real_outbox(redis_client, settings) -> EventOutbox:
+    return EventOutbox(redis_client, settings)
+
+
+@pytest.fixture
 def service(
     fake_qdrant, redis_client, index_registry, settings, fake_document_storage
 ) -> UserIndexService:
@@ -44,6 +49,34 @@ def service(
         settings,
         storage=fake_document_storage,
     )
+
+
+@pytest.fixture
+def service_with_outbox(
+    fake_qdrant,
+    redis_client,
+    index_registry,
+    settings,
+    fake_document_storage,
+    real_outbox,
+) -> UserIndexService:
+    return UserIndexService(
+        fake_qdrant,
+        redis_client,
+        index_registry,
+        settings,
+        storage=fake_document_storage,
+        outbox=real_outbox,
+    )
+
+
+def _drain(outbox: EventOutbox) -> list[dict]:
+    """Pop every queued entry off the outbox, decoded (model name + payload)."""
+    entries = []
+    while (entry := outbox.peek()) is not None:
+        entries.append(entry)
+        outbox.commit()
+    return entries
 
 
 class TestCreateIndex:
@@ -178,6 +211,102 @@ class TestDeleteIndex:
     def test_delete_missing_index_raises(self, service):
         with pytest.raises(KeyError):
             service.delete_index("u1", "ghost")
+
+    def test_no_outbox_no_event(self, service, fake_qdrant):
+        # The default `service` fixture has no outbox — delete_index must not blow up.
+        from qdrant_client.models import PointStruct
+
+        service.create_index("u1", "s1", "p1")
+        fake_qdrant.upsert(
+            [
+                PointStruct(
+                    id="pt1",
+                    vector=[0.0],
+                    payload={
+                        "user_id": "u1",
+                        "scenario_id": "s1",
+                        "project_id": "p1",
+                        "name": "Doc A",
+                        "version": "v1",
+                    },
+                ),
+            ]
+        )
+        service.delete_index("u1", "s1")  # must not raise
+
+    def test_emits_scoped_document_deleted_per_name(
+        self, service_with_outbox, fake_qdrant, real_outbox
+    ):
+        from qdrant_client.models import PointStruct
+
+        service_with_outbox.create_index("u1", "s1", "p1")
+        fake_qdrant.upsert(
+            [
+                PointStruct(
+                    id="pt1",
+                    vector=[0.0],
+                    payload={
+                        "user_id": "u1",
+                        "scenario_id": "s1",
+                        "project_id": "p1",
+                        "name": "Doc A",
+                        "version": "v1",
+                    },
+                ),
+                PointStruct(
+                    id="pt2",
+                    vector=[0.0],
+                    payload={
+                        "user_id": "u1",
+                        "scenario_id": "s1",
+                        "project_id": "p1",
+                        "name": "Doc A",
+                        "version": "v2",
+                    },
+                ),
+                PointStruct(
+                    id="pt3",
+                    vector=[0.0],
+                    payload={
+                        "user_id": "u1",
+                        "scenario_id": "s1",
+                        "project_id": "p1",
+                        "name": "Doc B",
+                        "version": "v1",
+                    },
+                ),
+                # A different scenario's document — must not generate an event here.
+                PointStruct(
+                    id="pt4",
+                    vector=[0.0],
+                    payload={
+                        "user_id": "u1",
+                        "scenario_id": "OTHER",
+                        "project_id": "p1",
+                        "name": "Doc C",
+                        "version": "v1",
+                    },
+                ),
+            ]
+        )
+
+        service_with_outbox.delete_index("u1", "s1")
+
+        entries = _drain(real_outbox)
+        assert {e["model"] for e in entries} == {"DocumentDeleted"}
+        by_name = {e["payload"]["document_name"]: e["payload"] for e in entries}
+        assert set(by_name) == {"Doc A", "Doc B"}
+        assert sorted(by_name["Doc A"]["versions_removed"]) == ["v1", "v2"]
+        assert by_name["Doc A"]["document_removed"] is True
+        # ScopedEventOutbox stamps user_id/scenario_id on every enqueued event.
+        assert by_name["Doc A"]["user_id"] == "u1"
+        assert by_name["Doc A"]["scenario_id"] == "s1"
+        assert by_name["Doc B"]["versions_removed"] == ["v1"]
+
+    def test_no_events_for_empty_index(self, service_with_outbox, real_outbox):
+        service_with_outbox.create_index("u1", "s1", "p1")
+        service_with_outbox.delete_index("u1", "s1")
+        assert _drain(real_outbox) == []
 
 
 class TestBuildUserIngestion:
