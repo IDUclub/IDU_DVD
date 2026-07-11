@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 import structlog
 from qdrant_client.models import Filter
 
+from src.broker.events import DocumentDeleted
 from src.broker.outbox import EventOutbox, ScopedEventOutbox
 from src.common.config import Settings
 from src.common.db.minio_client import DocumentStorage
@@ -142,12 +143,14 @@ class UserIndexService:
         settings: Settings,
         *,
         storage: DocumentStorage,
+        outbox: EventOutbox | None = None,
     ) -> None:
         self.qdrant = qdrant
         self.redis = redis
         self.index_registry = index_registry
         self.settings = settings
         self.storage = storage
+        self.outbox = outbox
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(qdrant={type(self.qdrant).__name__})"
@@ -181,6 +184,13 @@ class UserIndexService:
         return UserIndexListResponse(count=len(indices), indices=indices)
 
     def delete_index(self, user_id: str, scenario_id: str) -> UserIndexDeleteResponse:
+        """Wipe a user document index entirely.
+
+        Announces a ``DocumentDeleted`` event (``document_removed=True``) per distinct document
+        name found in the index, scoped via ``ScopedEventOutbox`` — otherwise a consumer built on
+        top of ``document.events`` (e.g. NormGraph) has no way to learn a whole index was wiped in
+        one call, since this bypasses ``IngestionService.delete_document``'s own per-document event.
+        """
         if self.index_registry.get(user_id, scenario_id) is None:
             raise KeyError(f"index not found: {user_id}/{scenario_id}")
         flt = Filter(must=user_scope_conditions(user_id, [scenario_id]))
@@ -188,6 +198,15 @@ class UserIndexService:
         source_keys = {
             pl["source_object_key"] for pl in payloads if pl.get("source_object_key")
         }
+        versions_by_name: dict[str, set[str]] = {}
+        for pl in payloads:
+            name = pl.get("name")
+            if not name:
+                continue
+            tags = versions_by_name.setdefault(name, set())
+            if pl.get("version"):
+                tags.add(pl["version"])
+            tags.update(pl.get("versions") or [])
         points_deleted = len(payloads)
         self.qdrant.delete_by_filter(flt)
         for key in source_keys:
@@ -196,11 +215,24 @@ class UserIndexService:
             self.redis, prefix=_registry_prefix(self.settings, user_id, scenario_id)
         ).wipe()
         self.index_registry.delete(user_id, scenario_id)
+        if self.outbox is not None:
+            scoped_outbox = ScopedEventOutbox(
+                self.outbox, user_id=user_id, scenario_id=scenario_id
+            )
+            for name, versions in versions_by_name.items():
+                scoped_outbox.enqueue(
+                    DocumentDeleted(
+                        document_name=name,
+                        versions_removed=sorted(versions),
+                        document_removed=True,
+                    )
+                )
         log.info(
             "user_index_deleted",
             user_id=user_id,
             scenario_id=scenario_id,
             points_deleted=points_deleted,
+            documents_deleted=len(versions_by_name),
         )
         return UserIndexDeleteResponse(
             user_id=user_id, scenario_id=scenario_id, points_deleted=points_deleted
