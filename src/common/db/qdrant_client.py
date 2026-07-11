@@ -11,8 +11,10 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    IsEmptyCondition,
     MatchAny,
     MatchValue,
+    PayloadField,
     PayloadSchemaType,
     PointStruct,
     VectorParams,
@@ -44,7 +46,30 @@ _PAYLOAD_INDEXES: dict[str, PayloadSchemaType] = {
     "lookup_keys": PayloadSchemaType.KEYWORD,
     "span_id": PayloadSchemaType.KEYWORD,
     "order": PayloadSchemaType.INTEGER,
+    # user-scoped document index (None for the shared/regular corpus)
+    "user_id": PayloadSchemaType.KEYWORD,
+    "project_id": PayloadSchemaType.KEYWORD,
+    "scenario_id": PayloadSchemaType.KEYWORD,
 }
+
+
+def shared_only_condition() -> IsEmptyCondition:
+    """Match points with no ``user_id`` (absent or empty) — the shared/regular document corpus.
+
+    Applied by default wherever a caller does not opt into user-scoped search/listing, so
+    user-uploaded documents never leak into unscoped results now that they share the collection.
+    """
+    return IsEmptyCondition(is_empty=PayloadField(key="user_id"))
+
+
+def user_scope_conditions(
+    user_id: str, scenario_ids: Sequence[str]
+) -> list[FieldCondition]:
+    """``[user_id == user_id, scenario_id in scenario_ids]`` — a user index's isolation key."""
+    return [
+        FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+        FieldCondition(key="scenario_id", match=MatchAny(any=list(scenario_ids))),
+    ]
 
 
 class QdrantRepository:
@@ -171,14 +196,20 @@ class QdrantRepository:
             ),
         )
 
-    def list_by_doc(self, doc_id: str, limit: int = 10000) -> list[dict]:
+    def list_by_doc(
+        self,
+        doc_id: str,
+        limit: int = 10000,
+        extra_must: list[FieldCondition] | None = None,
+    ) -> list[dict]:
         """All point payloads of a document (for the document-level read API).
 
         The point id (the node's stable id) is injected as ``id`` since it lives on the point,
-        not inside the payload.
+        not inside the payload. ``extra_must`` narrows the match further (e.g. user-index scoping).
         """
         flt = Filter(
             must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]
+            + (extra_must or [])
         )
         points, _ = self.client.scroll(
             self.collection,
@@ -208,9 +239,17 @@ class QdrantRepository:
                 seen.append(did)
         return seen
 
-    def points_by_name(self, name: str) -> list[dict]:
-        """All point payloads of a document by name, each with its point ``id`` injected."""
-        flt = Filter(must=[FieldCondition(key="name", match=MatchValue(value=name))])
+    def points_by_name(
+        self, name: str, extra_must: list[FieldCondition] | None = None
+    ) -> list[dict]:
+        """All point payloads of a document by name, each with its point ``id`` injected.
+
+        ``extra_must`` narrows the match further (e.g. user-index scoping).
+        """
+        flt = Filter(
+            must=[FieldCondition(key="name", match=MatchValue(value=name))]
+            + (extra_must or [])
+        )
         out: list[dict] = []
         offset = None
         while True:
@@ -238,19 +277,41 @@ class QdrantRepository:
         if point_ids:
             self.client.delete(self.collection, points_selector=list(point_ids))
 
-    def delete_by_name(self, name: str) -> None:
-        """Delete every point of a document (all its versions)."""
+    def delete_by_name(
+        self, name: str, extra_must: list[FieldCondition] | None = None
+    ) -> None:
+        """Delete every point of a document (all its versions).
+
+        ``extra_must`` narrows the match further (e.g. user-index scoping).
+        """
         self.client.delete(
             self.collection,
             points_selector=Filter(
                 must=[FieldCondition(key="name", match=MatchValue(value=name))]
+                + (extra_must or [])
             ),
         )
 
+    def delete_by_filter(self, query_filter: Filter) -> None:
+        """Delete every point matching an arbitrary filter (e.g. wiping a whole user index)."""
+        self.client.delete(self.collection, points_selector=query_filter)
+
+    def count(self, query_filter: Filter | None = None) -> int:
+        return self.client.count(
+            self.collection, count_filter=query_filter, exact=True
+        ).count
+
     def set_other_versions(
-        self, name: str, version: str, other_versions: list[str]
+        self,
+        name: str,
+        version: str,
+        other_versions: list[str],
+        extra_must: list[FieldCondition] | None = None,
     ) -> None:
-        """Update the other_versions field on all points of a specific document version."""
+        """Update the other_versions field on all points of a specific document version.
+
+        ``extra_must`` narrows the match further (e.g. user-index scoping).
+        """
         self.client.set_payload(
             self.collection,
             payload={"other_versions": other_versions},
@@ -259,12 +320,17 @@ class QdrantRepository:
                     FieldCondition(key="name", match=MatchValue(value=name)),
                     FieldCondition(key="version", match=MatchValue(value=version)),
                 ]
+                + (extra_must or [])
             ),
         )
 
     # --- reference resolution ---
     def find_node(
-        self, name: str, numbering: str = "", version: str | None = None
+        self,
+        name: str,
+        numbering: str = "",
+        version: str | None = None,
+        extra_must: list[FieldCondition] | None = None,
     ) -> dict | None:
         """Locate a node by document name (+ optional clause numbering / version).
 
@@ -278,6 +344,7 @@ class QdrantRepository:
             )
         if version:
             must.append(FieldCondition(key="version", match=MatchValue(value=version)))
+        must.extend(extra_must or [])
         recs, _ = self.client.scroll(
             self.collection,
             scroll_filter=Filter(must=must),
@@ -334,3 +401,74 @@ class QdrantRepository:
             if offset is None:
                 break
         return out
+
+
+class ScopedQdrantRepository:
+    """Write-path wrapper restricting ``IngestionService`` to one user document index.
+
+    Stamps ``user_id``/``project_id``/``scenario_id`` onto every upserted point and narrows every
+    name/doc_id-based lookup or mutation to that exact ``(user_id, scenario_id)`` pair — never the
+    inheritance chain, so a write can never touch a parent scenario's data. Implements exactly the
+    subset of :class:`QdrantRepository`'s interface that :class:`IngestionService` calls, so it can
+    be swapped in without any change to the ingestion pipeline itself.
+    """
+
+    def __init__(
+        self,
+        inner: QdrantRepository,
+        *,
+        user_id: str,
+        project_id: str,
+        scenario_id: str,
+    ) -> None:
+        self._inner = inner
+        self.collection = inner.collection
+        self.settings = inner.settings
+        self._stamp = {
+            "user_id": user_id,
+            "project_id": project_id,
+            "scenario_id": scenario_id,
+        }
+        self._scope_must = user_scope_conditions(user_id, [scenario_id])
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(inner={self._inner!r}, scope={self._stamp})"
+
+    def upsert(self, points: Iterable[PointStruct]) -> int:
+        points = list(points)
+        for p in points:
+            p.payload = {**(p.payload or {}), **self._stamp}
+        return self._inner.upsert(points)
+
+    def points_by_name(self, name: str) -> list[dict]:
+        return self._inner.points_by_name(name, extra_must=self._scope_must)
+
+    def list_by_doc(self, doc_id: str, limit: int = 10000) -> list[dict]:
+        return self._inner.list_by_doc(doc_id, limit=limit, extra_must=self._scope_must)
+
+    def delete_by_name(self, name: str) -> None:
+        self._inner.delete_by_name(name, extra_must=self._scope_must)
+
+    def set_other_versions(
+        self, name: str, version: str, other_versions: list[str]
+    ) -> None:
+        self._inner.set_other_versions(
+            name, version, other_versions, extra_must=self._scope_must
+        )
+
+    def find_node(
+        self, name: str, numbering: str = "", version: str | None = None
+    ) -> dict | None:
+        return self._inner.find_node(
+            name, numbering, version, extra_must=self._scope_must
+        )
+
+    # --- point-id-targeted operations: already scoped by construction, pass straight through ---
+    def set_versions(self, point_ids: Sequence[str], versions: list[str]) -> None:
+        self._inner.set_versions(point_ids, versions)
+
+    def delete_points(self, point_ids: Sequence[str]) -> None:
+        self._inner.delete_points(point_ids)
+
+    def retrieve(self, ids: Sequence[str]) -> dict[str, dict]:
+        return self._inner.retrieve(ids)

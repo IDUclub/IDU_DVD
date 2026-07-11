@@ -8,7 +8,12 @@ from src.__version__ import VERSION
 from src.admin_service.router import router as admin_router
 from src.common.middlewares import RequestLoggingMiddleware
 from src.dependencies import init_dependencies
-from src.dvd_service.routers import documents_router, library_router, search_router
+from src.dvd_service.routers import (
+    documents_router,
+    library_router,
+    search_router,
+    user_documents_router,
+)
 from src.mcp_server.app import mcp_app
 from src.system_service.routers import system_router
 
@@ -36,6 +41,7 @@ app.add_middleware(RequestLoggingMiddleware)
 app.include_router(documents_router)
 app.include_router(search_router)
 app.include_router(library_router)
+app.include_router(user_documents_router)
 app.include_router(system_router)
 app.include_router(admin_router)
 app.mount("/mcp", mcp_app)

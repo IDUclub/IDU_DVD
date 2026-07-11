@@ -24,8 +24,12 @@ from src.broker.events import DocumentDeleted, DocumentProcessed, DocumentUpdate
 from src.broker.outbox import EventOutbox
 from src.common.config import Settings
 from src.common.db.minio_client import DocumentStorage
-from src.common.db.qdrant_client import QdrantRepository
-from src.common.db.redis_client import DocumentRegistry, JobStore
+from src.common.db.qdrant_client import (
+    QdrantRepository,
+    shared_only_condition,
+    user_scope_conditions,
+)
+from src.common.db.redis_client import DocumentRegistry, JobStore, UserIndexRegistry
 from src.dvd_service.dto import (
     DocumentDetail,
     DocumentFragment,
@@ -934,9 +938,15 @@ class IngestionService:
 
 
 class SearchService:
-    def __init__(self, qdrant: QdrantRepository, settings: Settings) -> None:
+    def __init__(
+        self,
+        qdrant: QdrantRepository,
+        settings: Settings,
+        user_index_registry: UserIndexRegistry,
+    ) -> None:
         self.qdrant = qdrant
         self.settings = settings
+        self.user_index_registry = user_index_registry
 
     def __repr__(self) -> str:
         return (
@@ -977,7 +987,29 @@ class SearchService:
             must.append(
                 FieldCondition(key="name", match=MatchAny(any=req.document_names))
             )
-        return Filter(must=must) if must else None
+        if req.project_id:
+            must.append(
+                FieldCondition(key="project_id", match=MatchValue(value=req.project_id))
+            )
+
+        if req.user_id and req.scenario_id:
+            chain = (
+                self.user_index_registry.ancestor_chain(req.user_id, req.scenario_id)
+                if req.include_inherited
+                else [req.scenario_id]
+            )
+            user_scope = Filter(must=user_scope_conditions(req.user_id, chain))
+            if req.include_shared:
+                return Filter(
+                    must=must,
+                    should=[Filter(must=[shared_only_condition()]), user_scope],
+                )
+            return Filter(must=must + user_scope.must)
+
+        # Default: exclude user-scoped documents so unscoped callers see no behavior
+        # change now that user indices share this collection.
+        must.append(shared_only_condition())
+        return Filter(must=must)
 
     def _expand_context(self, payload: dict, height: int) -> str:
         """Append `height` fragments before and after along the prev_id/next_id chain."""
@@ -1034,6 +1066,9 @@ class SearchService:
                     corpus=pl.get("corpus", "default"),
                     lang=pl.get("lang"),
                     external_ids=pl.get("external_ids", {}) or {},
+                    user_id=pl.get("user_id"),
+                    project_id=pl.get("project_id"),
+                    scenario_id=pl.get("scenario_id"),
                     kind=pl.get("kind", "text"),
                     type=pl.get("type", ""),
                     block=pl.get("block", "main"),
@@ -1080,7 +1115,12 @@ class DocumentsService:
 
     @staticmethod
     def _build_filter(
-        name: str | None, version: str | None, block: str | None, tags: list[str] | None
+        name: str | None,
+        version: str | None,
+        block: str | None,
+        tags: list[str] | None,
+        user_id: str | None = None,
+        scenario_ids: list[str] | None = None,
     ) -> Filter | None:
         must = []
         if name:
@@ -1091,7 +1131,12 @@ class DocumentsService:
             must.append(FieldCondition(key="block", match=MatchValue(value=block)))
         if tags:
             must.append(FieldCondition(key="tags", match=MatchAny(any=tags)))
-        return Filter(must=must) if must else None
+        if user_id and scenario_ids:
+            must.extend(user_scope_conditions(user_id, scenario_ids))
+        else:
+            # Default: exclude user-scoped documents — same backward-compat fix as search.
+            must.append(shared_only_condition())
+        return Filter(must=must)
 
     def list_documents(
         self,
@@ -1101,16 +1146,21 @@ class DocumentsService:
         tags: list[str] | None = None,
         uploaded_from: str | None = None,
         uploaded_to: str | None = None,
+        *,
+        user_id: str | None = None,
+        scenario_ids: list[str] | None = None,
     ) -> DocumentListResponse:
         """Aggregated, per-document view, optionally narrowed by the given filters.
 
         ``uploaded_from``/``uploaded_to`` compare against the ISO 8601 ``uploaded_at`` timestamp
         as plain strings (lexicographic order matches chronological order for ISO 8601) and are
         applied after aggregation, since upload time is a per-document fact, not an indexed
-        per-fragment field.
+        per-fragment field. ``user_id``/``scenario_ids`` scope the listing to a user document
+        index (and, when ``scenario_ids`` holds more than one id, its inheritance chain); both
+        default to the shared/regular document corpus.
         """
         payloads = self.qdrant.scroll_payloads(
-            self._build_filter(name, version, block, tags)
+            self._build_filter(name, version, block, tags, user_id, scenario_ids)
         )
 
         groups: dict[tuple[str, str], dict] = {}
@@ -1386,8 +1436,8 @@ class TagsService:
         return f"{type(self).__name__}(qdrant={type(self.qdrant).__name__})"
 
     def get_tags(self) -> TagsResponse:
-        """Return a sorted list of all distinct tag values across the collection."""
-        payloads = self.qdrant.scroll_payloads()
+        """Return a sorted list of all distinct tag values across the shared document corpus."""
+        payloads = self.qdrant.scroll_payloads(Filter(must=[shared_only_condition()]))
         tags: set[str] = set()
         for pl in payloads:
             tags.update(pl.get("tags", []) or [])

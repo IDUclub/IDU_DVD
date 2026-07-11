@@ -121,6 +121,8 @@ class FakeQdrantRepo:
         self.points: dict[str, tuple] = {}  # id -> (vector, payload)
         self.set_other_versions_calls: list[tuple] = []
         self.ensured = False
+        self.collection = "documents"  # ScopedQdrantRepository passthrough target
+        self.settings = None
 
     def ensure_collection(self) -> None:
         self.ensured = True
@@ -134,6 +136,8 @@ class FakeQdrantRepo:
     def search(self, vector, query_filter, limit):
         out = []
         for i, (pid, (_vec, payload)) in enumerate(self.points.items()):
+            if query_filter is not None and not self._matches(payload, query_filter):
+                continue
             out.append(SimpleNamespace(id=pid, score=1.0 - 0.01 * i, payload=payload))
             if len(out) >= limit:
                 break
@@ -157,10 +161,10 @@ class FakeQdrantRepo:
             if current.get("doc_id") == doc_id:
                 self.points[point_id] = (vector, {**current, **payload})
 
-    def set_other_versions(self, name, version, other_versions) -> None:
+    def set_other_versions(self, name, version, other_versions, extra_must=None) -> None:
         self.set_other_versions_calls.append((name, version, other_versions))
 
-    def find_node(self, name, numbering="", version=None):
+    def find_node(self, name, numbering="", version=None, extra_must=None):
         best = None
         for pid, (_vec, pl) in self.points.items():
             if pl.get("name") != name:
@@ -168,6 +172,8 @@ class FakeQdrantRepo:
             if numbering and pl.get("numbering") != numbering:
                 continue
             if version and pl.get("version") != version:
+                continue
+            if extra_must and not all(self._matches(pl, c) for c in extra_must):
                 continue
             cand = {
                 "node_id": pid,
@@ -181,10 +187,18 @@ class FakeQdrantRepo:
 
     @staticmethod
     def _matches(pl, cond) -> bool:
-        if (
-            getattr(cond, "should", None) is not None
-        ):  # nested Filter: any should-clause
-            return any(FakeQdrantRepo._matches(pl, c) for c in cond.should)
+        if hasattr(cond, "must"):  # a nested Filter: AND(must) & OR(should)
+            must = cond.must or []
+            should = cond.should or []
+            if not all(FakeQdrantRepo._matches(pl, c) for c in must):
+                return False
+            if should and not any(FakeQdrantRepo._matches(pl, c) for c in should):
+                return False
+            return True
+        is_empty = getattr(cond, "is_empty", None)
+        if is_empty is not None:
+            val = pl.get(is_empty.key)
+            return val is None or val == "" or val == []
         val = pl.get(cond.key)
         m = cond.match
         if hasattr(m, "value"):
@@ -201,17 +215,17 @@ class FakeQdrantRepo:
         payloads = [pl for _vec, pl in self.points.values()]
         if query_filter is None:
             return payloads
-        return [
-            pl
-            for pl in payloads
-            if all(self._matches(pl, cond) for cond in query_filter.must)
-        ]
+        return [pl for pl in payloads if self._matches(pl, query_filter)]
 
-    def points_by_name(self, name):
+    def count(self, query_filter=None) -> int:
+        return len(self.scroll_payloads(query_filter))
+
+    def points_by_name(self, name, extra_must=None):
         return [
             {**pl, "id": str(pid)}
             for pid, (_vec, pl) in self.points.items()
             if pl.get("name") == name
+            and (not extra_must or all(self._matches(pl, c) for c in extra_must))
         ]
 
     def set_versions(self, point_ids, versions) -> None:
@@ -223,11 +237,19 @@ class FakeQdrantRepo:
         for pid in point_ids:
             self.points.pop(str(pid), None)
 
-    def delete_by_name(self, name) -> None:
+    def delete_by_name(self, name, extra_must=None) -> None:
         self.points = {
             pid: (vec, pl)
             for pid, (vec, pl) in self.points.items()
             if pl.get("name") != name
+            or (extra_must and not all(self._matches(pl, c) for c in extra_must))
+        }
+
+    def delete_by_filter(self, query_filter) -> None:
+        self.points = {
+            pid: (vec, pl)
+            for pid, (vec, pl) in self.points.items()
+            if not self._matches(pl, query_filter)
         }
 
     def update_references(self, node_id, references) -> None:
@@ -238,11 +260,14 @@ class FakeQdrantRepo:
             pl["references"] = references
             self.points[nid] = (vec, pl)
 
-    def list_by_doc(self, doc_id, limit=10000):
+    def list_by_doc(self, doc_id, limit=10000, extra_must=None):
         out = []
         for pid, (_vec, payload) in self.points.items():
-            if (payload or {}).get("doc_id") == doc_id:
-                out.append({**payload, "id": str(pid)})
+            if (payload or {}).get("doc_id") != doc_id:
+                continue
+            if extra_must and not all(self._matches(payload, c) for c in extra_must):
+                continue
+            out.append({**payload, "id": str(pid)})
         return out
 
     def doc_ids_by_lookup_key(self, key, limit=1000):
@@ -325,6 +350,14 @@ def fake_redis(monkeypatch):
 
     monkeypatch.setattr(redis.Redis, "from_url", staticmethod(_from_url))
     return server
+
+
+@pytest.fixture
+def user_index_registry(settings, fake_redis):
+    """A real ``UserIndexRegistry`` backed by fakeredis (needs the ``fake_redis`` patch active)."""
+    from src.common.db.redis_client import RedisClient, UserIndexRegistry
+
+    return UserIndexRegistry(RedisClient(settings), prefix="test")
 
 
 @pytest.fixture

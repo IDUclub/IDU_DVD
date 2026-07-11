@@ -436,3 +436,30 @@ class TestSearchEndpoints:
         resp = c.post(path, json={"query": "требования"})
         assert resp.status_code == 200 and resp.json()["count"] == 1
         assert fakes["search"].calls[-1][1] == expected_kind
+
+
+class TestUserIndexSearchEndpoints:
+    @pytest.mark.parametrize(
+        "path,expected_kind",
+        [
+            ("/search/user-index/texts", "text"),
+            ("/search/user-index/tables", "table"),
+            ("/search/user-index", None),
+        ],
+    )
+    def test_requires_user_id_and_scenario_id(self, client, path, expected_kind):
+        c, _ = client
+        resp = c.post(path, json={"query": "требования"})
+        assert resp.status_code == 400
+
+    def test_forces_include_shared_false(self, client):
+        c, fakes = client
+        resp = c.post(
+            "/search/user-index/texts",
+            json={"query": "требования", "user_id": "u1", "scenario_id": "s1"},
+        )
+        assert resp.status_code == 200
+        req, kind = fakes["search"].calls[-1]
+        assert kind == "text"
+        assert req.user_id == "u1" and req.scenario_id == "s1"
+        assert req.include_shared is False

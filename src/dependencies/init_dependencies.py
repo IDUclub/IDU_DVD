@@ -16,7 +16,12 @@ from src.broker.publisher import KafkaPublisher
 from src.common.config import Settings, settings
 from src.common.db.minio_client import DocumentStorage
 from src.common.db.qdrant_client import QdrantRepository
-from src.common.db.redis_client import DocumentRegistry, JobStore, RedisClient
+from src.common.db.redis_client import (
+    DocumentRegistry,
+    JobStore,
+    RedisClient,
+    UserIndexRegistry,
+)
 from src.common.logger import configure_logging
 from src.dependencies.dependencies import Dependencies
 from src.dvd_service.modules.doc_parsers import DocumentParser
@@ -32,6 +37,7 @@ from src.dvd_service.services.dvd_service import (
     SearchService,
     TagsService,
 )
+from src.dvd_service.services.user_index_service import UserIndexService
 from src.system_service.controllers import SystemController
 
 log = structlog.get_logger(__name__)
@@ -69,6 +75,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     redis = RedisClient(s)
     jobs = JobStore(redis)
     registry = DocumentRegistry(redis, prefix=s.registry_prefix)
+    user_index_registry = UserIndexRegistry(redis, prefix=s.registry_prefix)
 
     minio_client = Minio(
         s.minio_endpoint,
@@ -108,11 +115,14 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         s,
         outbox=outbox if publisher.enabled else None,
     )
-    search = SearchService(qdrant, s)
+    search = SearchService(qdrant, s, user_index_registry)
     documents = DocumentsService(qdrant)
     editor = DocumentEditorService(qdrant, registry, s)
     library = LibraryService(qdrant, registry)
     tags = TagsService(qdrant)
+    user_index_service = UserIndexService(
+        qdrant, redis, user_index_registry, s, storage=user_document_storage
+    )
 
     system = SystemController(s)
 
@@ -139,6 +149,8 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         editor=editor,
         library=library,
         tags=tags,
+        user_index_registry=user_index_registry,
+        user_index_service=user_index_service,
         system=system,
     )
     log.info("dependencies_initialized", dependencies=repr(deps))

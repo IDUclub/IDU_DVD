@@ -32,7 +32,15 @@ from src.dvd_service.services.dvd_service import (
 
 
 @pytest.fixture
-def wired(settings, fake_ollama, fake_qdrant, fake_redis, fake_document_storage, monkeypatch):
+def wired(
+    settings,
+    fake_ollama,
+    fake_qdrant,
+    fake_redis,
+    fake_document_storage,
+    user_index_registry,
+    monkeypatch,
+):
     """Build IngestionService + SearchService with real modules and faked boundaries."""
     monkeypatch.setattr(svc, "OllamaClient", lambda *a, **k: fake_ollama)
     monkeypatch.setattr(svc, "create_embedder", lambda *a, **k: fake_ollama)
@@ -54,7 +62,7 @@ def wired(settings, fake_ollama, fake_qdrant, fake_redis, fake_document_storage,
         settings,
         outbox=outbox,
     )
-    search = SearchService(fake_qdrant, settings)
+    search = SearchService(fake_qdrant, settings, user_index_registry)
     documents = DocumentsService(fake_qdrant)
     library = LibraryService(fake_qdrant, registry)
     editor = DocumentEditorService(fake_qdrant, registry, settings)
@@ -72,6 +80,7 @@ def wired(settings, fake_ollama, fake_qdrant, fake_redis, fake_document_storage,
         qdrant=fake_qdrant,
         storage=fake_document_storage,
         ollama=fake_ollama,
+        user_index_registry=user_index_registry,
     )
 
 
@@ -766,25 +775,193 @@ class TestSearch:
         )
         assert resp.hits[0].context is not None
 
+    def test_search_excludes_user_scoped_documents_by_default(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest("doc.docx", sample_raw, h)
+        from qdrant_client.models import PointStruct
+
+        wired.qdrant.upsert(
+            [
+                PointStruct(
+                    id="user-pt",
+                    vector=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    payload={
+                        "doc_id": "u-doc",
+                        "name": "User doc",
+                        "version": "v1",
+                        "kind": "text",
+                        "type": "clause",
+                        "text": "требования пользователя",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "scenario_id": "s1",
+                    },
+                )
+            ]
+        )
+        resp = wired.search.search(SearchRequest(query="требования", limit=50), None)
+        assert all(h.name != "User doc" for h in resp.hits)
+
+    def test_search_combined_includes_shared_and_user_index(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest("doc.docx", sample_raw, h)
+        from qdrant_client.models import PointStruct
+
+        wired.qdrant.upsert(
+            [
+                PointStruct(
+                    id="user-pt",
+                    vector=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    payload={
+                        "doc_id": "u-doc",
+                        "name": "User doc",
+                        "version": "v1",
+                        "kind": "text",
+                        "type": "clause",
+                        "text": "требования пользователя",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "scenario_id": "s1",
+                    },
+                )
+            ]
+        )
+        resp = wired.search.search(
+            SearchRequest(query="требования", limit=50, user_id="u1", scenario_id="s1"),
+            None,
+        )
+        names = {h.name for h in resp.hits}
+        assert "User doc" in names and "ТЕСТ 1" in names
+
+    def test_search_index_only_excludes_shared(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest("doc.docx", sample_raw, h)
+        from qdrant_client.models import PointStruct
+
+        wired.qdrant.upsert(
+            [
+                PointStruct(
+                    id="user-pt",
+                    vector=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    payload={
+                        "doc_id": "u-doc",
+                        "name": "User doc",
+                        "version": "v1",
+                        "kind": "text",
+                        "type": "clause",
+                        "text": "требования пользователя",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "scenario_id": "s1",
+                    },
+                )
+            ]
+        )
+        resp = wired.search.search(
+            SearchRequest(
+                query="требования",
+                limit=50,
+                user_id="u1",
+                scenario_id="s1",
+                include_shared=False,
+            ),
+            None,
+        )
+        names = {h.name for h in resp.hits}
+        assert names == {"User doc"}
+
+    def test_search_inherits_from_parent_scenario(self, wired):
+        from qdrant_client.models import PointStruct
+
+        wired.qdrant.upsert(
+            [
+                PointStruct(
+                    id="parent-pt",
+                    vector=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    payload={
+                        "doc_id": "d1",
+                        "name": "Parent doc",
+                        "version": "v1",
+                        "kind": "text",
+                        "type": "clause",
+                        "text": "наследование сценария",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "scenario_id": "s1",
+                    },
+                )
+            ]
+        )
+        wired.user_index_registry.create("u1", "s1", "p1")
+        wired.user_index_registry.create("u1", "s2", "p1", parent_scenario_id="s1")
+
+        resp = wired.search.search(
+            SearchRequest(
+                query="наследование",
+                limit=50,
+                user_id="u1",
+                scenario_id="s2",
+                include_shared=False,
+            ),
+            None,
+        )
+        assert {h.name for h in resp.hits} == {"Parent doc"}
+
+        resp_no_inherit = wired.search.search(
+            SearchRequest(
+                query="наследование",
+                limit=50,
+                user_id="u1",
+                scenario_id="s2",
+                include_shared=False,
+                include_inherited=False,
+            ),
+            None,
+        )
+        assert resp_no_inherit.hits == []
+
     def test_build_filter_combines_conditions(self, wired):
         req = SearchRequest(query="q", name="СП 1", version="v1", tags=["a", "b"])
         flt = wired.search._build_filter(req, kind="text")
-        assert flt is not None and len(flt.must) == 4  # kind + name + version + tags
+        # kind + name + version + tags + default shared-only exclusion
+        assert flt is not None and len(flt.must) == 5
 
     def test_build_filter_with_block_and_types(self, wired):
         req = SearchRequest(query="q", block="amendment", types=["clause", "subclause"])
         flt = wired.search._build_filter(req, kind=None)
-        assert flt is not None and len(flt.must) == 2  # block + types
+        assert flt is not None and len(flt.must) == 3  # block + types + shared-only
 
     def test_build_filter_document_names(self, wired):
         req = SearchRequest(query="q", document_names=["СП 1", "СП 2"])
         flt = wired.search._build_filter(req, kind=None)
-        assert flt is not None and len(flt.must) == 1
+        assert flt is not None and len(flt.must) == 2  # document_names + shared-only
         cond = flt.must[0]
         assert cond.key == "name" and set(cond.match.any) == {"СП 1", "СП 2"}
 
     def test_build_filter_none_when_no_constraints(self, wired):
-        assert wired.search._build_filter(SearchRequest(query="q"), kind=None) is None
+        # No longer None: a default filter always excludes user-scoped documents so
+        # unscoped callers keep seeing only the shared/regular document corpus.
+        flt = wired.search._build_filter(SearchRequest(query="q"), kind=None)
+        assert flt is not None and len(flt.must) == 1
+        assert flt.must[0].is_empty.key == "user_id"
+
+    def test_build_filter_user_scope_combined(self, wired):
+        req = SearchRequest(query="q", user_id="u1", scenario_id="s1")
+        flt = wired.search._build_filter(req, kind=None)
+        assert flt.should is not None and len(flt.should) == 2
+
+    def test_build_filter_user_scope_index_only(self, wired):
+        req = SearchRequest(
+            query="q", user_id="u1", scenario_id="s1", include_shared=False
+        )
+        flt = wired.search._build_filter(req, kind=None)
+        assert flt.should is None
+        keys = {c.key for c in flt.must}
+        assert keys == {"user_id", "scenario_id"}
+
+    def test_build_filter_requires_user_id_and_scenario_id_together(self):
+        with pytest.raises(ValueError):
+            SearchRequest(query="q", user_id="u1")
 
     def test_repr(self, wired):
         assert repr(wired.search).startswith("SearchService(")
@@ -838,6 +1015,101 @@ class TestDocumentsService:
         wired.ingestion.ingest("doc.docx", sample_raw, h)
         doc = wired.documents.list_documents().documents[0]
         assert doc.source_file_url is None
+
+    def test_default_listing_excludes_user_scoped_documents(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest("doc.docx", sample_raw, h)
+        from qdrant_client.models import PointStruct
+
+        wired.qdrant.upsert(
+            [
+                PointStruct(
+                    id="user-pt",
+                    vector=[0.0],
+                    payload={
+                        "doc_id": "u-doc",
+                        "name": "User doc",
+                        "version": "v1",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "scenario_id": "s1",
+                    },
+                )
+            ]
+        )
+        names = {d.name for d in wired.documents.list_documents().documents}
+        assert names == {"ТЕСТ 1"}  # the user-scoped point never leaks in
+
+
+class TestDocumentsServiceUserScope:
+    def test_scoped_listing_returns_only_matching_index(self, wired):
+        from qdrant_client.models import PointStruct
+
+        wired.qdrant.upsert(
+            [
+                PointStruct(
+                    id="p1",
+                    vector=[0.0],
+                    payload={
+                        "doc_id": "d1",
+                        "name": "Own doc",
+                        "version": "v1",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "scenario_id": "s1",
+                    },
+                ),
+                PointStruct(
+                    id="p2",
+                    vector=[0.0],
+                    payload={
+                        "doc_id": "d2",
+                        "name": "Other user doc",
+                        "version": "v1",
+                        "user_id": "OTHER",
+                        "project_id": "p1",
+                        "scenario_id": "s1",
+                    },
+                ),
+            ]
+        )
+        resp = wired.documents.list_documents(user_id="u1", scenario_ids=["s1"])
+        assert {d.name for d in resp.documents} == {"Own doc"}
+        assert resp.documents[0].scenario_id == "s1"
+
+    def test_scoped_listing_includes_ancestor_chain(self, wired):
+        from qdrant_client.models import PointStruct
+
+        wired.qdrant.upsert(
+            [
+                PointStruct(
+                    id="parent-pt",
+                    vector=[0.0],
+                    payload={
+                        "doc_id": "d1",
+                        "name": "Parent doc",
+                        "version": "v1",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "scenario_id": "s1",
+                    },
+                ),
+                PointStruct(
+                    id="child-pt",
+                    vector=[0.0],
+                    payload={
+                        "doc_id": "d2",
+                        "name": "Child doc",
+                        "version": "v1",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "scenario_id": "s2",
+                    },
+                ),
+            ]
+        )
+        resp = wired.documents.list_documents(user_id="u1", scenario_ids=["s2", "s1"])
+        assert {d.name for d in resp.documents} == {"Parent doc", "Child doc"}
 
 
 class TestGeneralPurposeFields:

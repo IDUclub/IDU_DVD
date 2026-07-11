@@ -10,8 +10,15 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from src.common.db.qdrant_client import _PAYLOAD_INDEXES, QdrantRepository
+from src.common.db.qdrant_client import (
+    _PAYLOAD_INDEXES,
+    QdrantRepository,
+    ScopedQdrantRepository,
+    shared_only_condition,
+    user_scope_conditions,
+)
 
 
 @pytest.fixture
@@ -176,3 +183,136 @@ class TestRepr:
         repo, _ = repo_and_client
         r = repr(repo)
         assert "collection=documents" in r and "vector_size=2048" in r
+
+
+class TestCountAndDeleteByFilter:
+    def test_count_passes_filter_and_exact(self, repo_and_client):
+        repo, client = repo_and_client
+        client.count.return_value = SimpleNamespace(count=3)
+        flt = Filter(must=[FieldCondition(key="user_id", match=MatchValue(value="u1"))])
+        assert repo.count(flt) == 3
+        kwargs = client.count.call_args.kwargs
+        assert kwargs["count_filter"] is flt and kwargs["exact"] is True
+
+    def test_delete_by_filter_passes_filter_through(self, repo_and_client):
+        repo, client = repo_and_client
+        flt = Filter(must=[FieldCondition(key="scenario_id", match=MatchValue(value="s1"))])
+        repo.delete_by_filter(flt)
+        client.delete.assert_called_once()
+        assert client.delete.call_args.kwargs["points_selector"] is flt
+
+
+class TestExtraMustScoping:
+    """``extra_must`` narrows the internally-built filter without disturbing default callers."""
+
+    def test_points_by_name_appends_extra_must(self, repo_and_client):
+        repo, client = repo_and_client
+        client.scroll.return_value = ([], None)
+        extra = [FieldCondition(key="user_id", match=MatchValue(value="u1"))]
+        repo.points_by_name("СП 1", extra_must=extra)
+        flt = client.scroll.call_args.kwargs["scroll_filter"]
+        assert len(flt.must) == 2 and extra[0] in flt.must
+
+    def test_points_by_name_without_extra_must_unchanged(self, repo_and_client):
+        repo, client = repo_and_client
+        client.scroll.return_value = ([], None)
+        repo.points_by_name("СП 1")
+        flt = client.scroll.call_args.kwargs["scroll_filter"]
+        assert len(flt.must) == 1
+
+    def test_list_by_doc_appends_extra_must(self, repo_and_client):
+        repo, client = repo_and_client
+        client.scroll.return_value = ([], None)
+        extra = [FieldCondition(key="scenario_id", match=MatchValue(value="s1"))]
+        repo.list_by_doc("doc-1", extra_must=extra)
+        flt = client.scroll.call_args.kwargs["scroll_filter"]
+        assert len(flt.must) == 2
+
+    def test_delete_by_name_appends_extra_must(self, repo_and_client):
+        repo, client = repo_and_client
+        extra = [FieldCondition(key="user_id", match=MatchValue(value="u1"))]
+        repo.delete_by_name("СП 1", extra_must=extra)
+        flt = client.delete.call_args.kwargs["points_selector"]
+        assert len(flt.must) == 2
+
+    def test_set_other_versions_appends_extra_must(self, repo_and_client):
+        repo, client = repo_and_client
+        extra = [FieldCondition(key="user_id", match=MatchValue(value="u1"))]
+        repo.set_other_versions("СП 1", "v1", ["v2"], extra_must=extra)
+        flt = client.set_payload.call_args.kwargs["points"]
+        assert len(flt.must) == 3  # name + version + extra
+
+    def test_find_node_appends_extra_must(self, repo_and_client):
+        repo, client = repo_and_client
+        client.scroll.return_value = ([], None)
+        extra = [FieldCondition(key="user_id", match=MatchValue(value="u1"))]
+        repo.find_node("СП 1", extra_must=extra)
+        flt = client.scroll.call_args.kwargs["scroll_filter"]
+        assert extra[0] in flt.must
+
+
+class TestScopeHelpers:
+    def test_shared_only_condition_targets_user_id_field(self):
+        assert shared_only_condition().is_empty.key == "user_id"
+
+    def test_user_scope_conditions_shape(self):
+        conds = user_scope_conditions("u1", ["s1", "s2"])
+        assert conds[0].key == "user_id" and conds[0].match.value == "u1"
+        assert conds[1].key == "scenario_id" and set(conds[1].match.any) == {"s1", "s2"}
+
+
+class TestScopedQdrantRepository:
+    @pytest.fixture
+    def scoped(self, repo_and_client):
+        repo, client = repo_and_client
+        scoped = ScopedQdrantRepository(
+            repo, user_id="u1", project_id="p1", scenario_id="s1"
+        )
+        return scoped, client
+
+    def test_upsert_stamps_every_point(self, scoped):
+        scoped_repo, client = scoped
+        points = [MagicMock(payload={"text": "a"}), MagicMock(payload={})]
+        scoped_repo.upsert(points)
+        for p in points:
+            assert p.payload["user_id"] == "u1"
+            assert p.payload["project_id"] == "p1"
+            assert p.payload["scenario_id"] == "s1"
+        client.upsert.assert_called_once()
+
+    def test_points_by_name_passes_scope(self, scoped):
+        scoped_repo, client = scoped
+        client.scroll.return_value = ([], None)
+        scoped_repo.points_by_name("СП 1")
+        flt = client.scroll.call_args.kwargs["scroll_filter"]
+        keys = {c.key for c in flt.must}
+        assert keys == {"name", "user_id", "scenario_id"}
+
+    def test_delete_by_name_scoped_to_exact_scenario(self, scoped):
+        scoped_repo, client = scoped
+        scoped_repo.delete_by_name("СП 1")
+        flt = client.delete.call_args.kwargs["points_selector"]
+        scenario_cond = next(c for c in flt.must if c.key == "scenario_id")
+        assert scenario_cond.match.any == ["s1"]  # exact scenario, never the chain
+
+    def test_find_node_passes_scope(self, scoped):
+        scoped_repo, client = scoped
+        client.scroll.return_value = ([], None)
+        scoped_repo.find_node("СП 1")
+        flt = client.scroll.call_args.kwargs["scroll_filter"]
+        assert any(c.key == "user_id" for c in flt.must)
+
+    def test_set_versions_and_delete_points_pass_through_unscoped(self, scoped):
+        scoped_repo, client = scoped
+        scoped_repo.set_versions(["p1"], ["v1"])
+        client.set_payload.assert_called_once()
+        scoped_repo.delete_points(["p1"])
+        client.delete.assert_called_once()
+
+    def test_collection_and_settings_passthrough(self, repo_and_client, settings):
+        repo, _ = repo_and_client
+        scoped = ScopedQdrantRepository(
+            repo, user_id="u1", project_id="p1", scenario_id="s1"
+        )
+        assert scoped.collection == repo.collection
+        assert scoped.settings is settings

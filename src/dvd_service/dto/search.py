@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from src.dvd_service.dto.reference import DocumentRef
 
@@ -24,6 +24,23 @@ class SearchRequest(BaseModel):
     limit: int = 10
     context_height: int = 0  # how many neighbour fragments to attach before/after
 
+    # --- user-scoped index search (both user_id and scenario_id, or neither) ---
+    user_id: str | None = None  # owner of the user document index to search
+    project_id: str | None = None  # filter tag only, not an isolation boundary
+    scenario_id: str | None = None  # scenario whose index (+ inheritance chain) to search
+    include_shared: bool = (
+        True  # also match the shared/regular document corpus (combined search)
+    )
+    include_inherited: bool = (
+        True  # also match the scenario's ancestor chain (live inheritance)
+    )
+
+    @model_validator(mode="after")
+    def _user_scope_requires_both(self) -> "SearchRequest":
+        if bool(self.user_id) != bool(self.scenario_id):
+            raise ValueError("user_id and scenario_id must be given together")
+        return self
+
 
 class SearchHit(BaseModel):
     id: str
@@ -42,6 +59,10 @@ class SearchHit(BaseModel):
     corpus: str = "default"
     lang: str | None = None
     external_ids: dict = Field(default_factory=dict)
+
+    user_id: str | None = None
+    project_id: str | None = None
+    scenario_id: str | None = None
 
     kind: str
     type: str

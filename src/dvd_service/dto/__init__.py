@@ -29,6 +29,12 @@ from src.dvd_service.dto.upload import (  # noqa: F401
     JobStatusDTO,
     UploadResponse,
 )
+from src.dvd_service.dto.user_index import (  # noqa: F401
+    UserIndexCreateRequest,
+    UserIndexDeleteResponse,
+    UserIndexInfo,
+    UserIndexListResponse,
+)
 
 __all__ = [
     "NodePayload",
@@ -50,4 +56,8 @@ __all__ = [
     "SearchHit",
     "SearchResponse",
     "TagsResponse",
+    "UserIndexCreateRequest",
+    "UserIndexInfo",
+    "UserIndexListResponse",
+    "UserIndexDeleteResponse",
 ]

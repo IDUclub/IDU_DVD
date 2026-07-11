@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 import redis
 import structlog
@@ -206,3 +207,113 @@ class DocumentRegistry:
     def all_documents(self) -> list[dict]:
         out = [self.get_document(d) for d in self.doc_ids()]
         return [d for d in out if d]
+
+    def wipe(self) -> None:
+        """Delete every key under this registry's prefix (whole-index teardown)."""
+        for key in self.r.scan_iter(match=f"{self.prefix}:*"):
+            self.r.delete(key)
+
+
+class UserIndexRegistry:
+    """Metadata registry of per-``(user_id, scenario_id)`` user-document indices.
+
+    Separate from :class:`DocumentRegistry` (which tracks document content/versions inside one
+    index): this tracks which indices exist and their inheritance link. Nested under
+    ``Settings.registry_prefix`` — like ``DocumentRegistry`` — so it moves in lockstep with the
+    physical collection when the embedding model changes. Keys (``P`` = prefix):
+
+      P:user_index:{user_id}:{scenario_id} -> JSON {user_id, scenario_id, project_id,
+                                                      parent_scenario_id, created_at}
+      P:user_index:by_user:{user_id}       -> SET of scenario_ids belonging to that user
+    """
+
+    _MAX_CHAIN_DEPTH = 32
+
+    def __init__(self, client: RedisClient, prefix: str) -> None:
+        self.r = client.r
+        self.prefix = prefix
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(prefix={self.prefix})"
+
+    def _key(self, user_id: str, scenario_id: str) -> str:
+        return f"{self.prefix}:user_index:{user_id}:{scenario_id}"
+
+    def _by_user_key(self, user_id: str) -> str:
+        return f"{self.prefix}:user_index:by_user:{user_id}"
+
+    def get(self, user_id: str, scenario_id: str) -> dict | None:
+        v = self.r.get(self._key(user_id, scenario_id))
+        return json.loads(v) if v else None
+
+    def _would_cycle(self, user_id: str, scenario_id: str, parent_scenario_id: str) -> bool:
+        """True if ``parent_scenario_id`` already (transitively) descends from ``scenario_id``."""
+        if parent_scenario_id == scenario_id:
+            return True
+        return scenario_id in self.ancestor_chain(user_id, parent_scenario_id)
+
+    def create(
+        self,
+        user_id: str,
+        scenario_id: str,
+        project_id: str,
+        parent_scenario_id: str | None = None,
+    ) -> dict:
+        if self.get(user_id, scenario_id) is not None:
+            raise ValueError(f"index already exists: {user_id}/{scenario_id}")
+        if parent_scenario_id and self._would_cycle(
+            user_id, scenario_id, parent_scenario_id
+        ):
+            raise ValueError(
+                f"parent_scenario_id would create an inheritance cycle: {parent_scenario_id}"
+            )
+        record = {
+            "user_id": user_id,
+            "scenario_id": scenario_id,
+            "project_id": project_id,
+            "parent_scenario_id": parent_scenario_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.r.set(self._key(user_id, scenario_id), json.dumps(record, ensure_ascii=False))
+        self.r.sadd(self._by_user_key(user_id), scenario_id)
+        return record
+
+    def get_or_create(
+        self,
+        user_id: str,
+        scenario_id: str,
+        project_id: str,
+        parent_scenario_id: str | None = None,
+    ) -> dict:
+        existing = self.get(user_id, scenario_id)
+        if existing is not None:
+            return existing
+        return self.create(user_id, scenario_id, project_id, parent_scenario_id)
+
+    def delete(self, user_id: str, scenario_id: str) -> None:
+        self.r.delete(self._key(user_id, scenario_id))
+        self.r.srem(self._by_user_key(user_id), scenario_id)
+
+    def list_for_user(self, user_id: str) -> list[dict]:
+        scenario_ids = self.r.smembers(self._by_user_key(user_id))
+        out = [self.get(user_id, sid) for sid in scenario_ids]
+        return sorted((rec for rec in out if rec), key=lambda r: r["scenario_id"])
+
+    def ancestor_chain(self, user_id: str, scenario_id: str) -> list[str]:
+        """``[scenario_id, parent, grandparent, ...]``.
+
+        Cycle-safe (stops on a repeated id) and depth-capped, so a missing/deleted parent or an
+        accidental cycle degrades to "just this scenario" instead of erroring.
+        """
+        chain = [scenario_id]
+        seen = {scenario_id}
+        current = scenario_id
+        for _ in range(self._MAX_CHAIN_DEPTH):
+            record = self.get(user_id, current)
+            parent = record.get("parent_scenario_id") if record else None
+            if not parent or parent in seen:
+                break
+            chain.append(parent)
+            seen.add(parent)
+            current = parent
+        return chain
