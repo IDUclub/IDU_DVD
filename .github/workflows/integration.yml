@@ -92,13 +92,14 @@ jobs:
         ports:
           - 11434:11434
       minio:
-        image: bitnami/minio:latest
+        # quay.io mirror, not Docker Hub: sidesteps Docker Hub's anonymous pull rate limit.
+        image: quay.io/minio/minio:latest
         env:
           MINIO_ROOT_USER: minioadmin
           MINIO_ROOT_PASSWORD: minioadmin
-          MINIO_DEFAULT_BUCKETS: dvd-documents,dvd-user-documents
         ports:
           - 9000:9000
+        command: server /data
 
     steps:
       - uses: actions/checkout@v4
