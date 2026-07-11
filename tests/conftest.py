@@ -255,6 +255,39 @@ class FakeQdrantRepo:
         return seen
 
 
+class FakeDocumentStorage:
+    """In-memory double of ``DocumentStorage`` — no real MinIO/network involved."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, tuple[bytes, str]] = {}  # key -> (data, content_type)
+        self.upload_calls: list[str] = []
+        self.delete_calls: list[str] = []
+        self.fail_upload = False
+
+    def ensure_bucket(self) -> None:
+        pass
+
+    def upload(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> None:
+        if self.fail_upload:
+            raise RuntimeError("simulated MinIO failure")
+        self.upload_calls.append(key)
+        self.objects[key] = (data, content_type)
+
+    def download(self, key: str) -> tuple[bytes, str | None]:
+        if key not in self.objects:
+            from minio.error import S3Error
+
+            raise S3Error(None, "NoSuchKey", "not found", key, "req", "host")
+        return self.objects[key]
+
+    def exists(self, key: str) -> bool:
+        return key in self.objects
+
+    def delete(self, key: str) -> None:
+        self.delete_calls.append(key)
+        self.objects.pop(key, None)
+
+
 # --------------------------------------------------------------------------------------
 # Fixtures
 # --------------------------------------------------------------------------------------
@@ -272,6 +305,11 @@ def fake_ollama() -> FakeOllama:
 @pytest.fixture
 def fake_qdrant() -> FakeQdrantRepo:
     return FakeQdrantRepo()
+
+
+@pytest.fixture
+def fake_document_storage() -> FakeDocumentStorage:
+    return FakeDocumentStorage()
 
 
 @pytest.fixture

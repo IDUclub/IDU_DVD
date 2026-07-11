@@ -122,6 +122,14 @@ class Settings(BaseSettings):
     default_corpus: str = "default"  # logical corpus/namespace a document belongs to
     default_lang: str | None = None  # ISO-639 code; None = unknown / not detected
 
+    # --- MinIO (original source files, closed contour — proxied via this service) ---
+    minio_endpoint: str = "localhost:9000"
+    minio_access_key: str = "minioadmin"
+    minio_secret_key: str = "minioadmin"
+    minio_secure: bool = False
+    minio_bucket_documents: str = "dvd-documents"  # shared/regular document corpus
+    minio_bucket_user_documents: str = "dvd-user-documents"  # all user document indices
+
     # --- Kafka (document-processed events via otteroad) ---
     # Publishing is optional: it stays off until a broker is configured
     # (empty/None bootstrap servers = disabled).

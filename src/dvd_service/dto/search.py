@@ -56,6 +56,8 @@ class SearchHit(BaseModel):
 
     # source grounding — lets the caller cite the exact source location
     source_uri: str | None = None
+    # proxied download link (this service, not a raw MinIO URL) — None if no source was stored
+    source_file_url: str | None = None
     char_start: int | None = None
     char_end: int | None = None
     page_start: int | None = None

@@ -27,6 +27,24 @@ services:
       retries: 5
       start_period: 5s
 
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   app:
     build: .
     depends_on:
@@ -34,15 +52,18 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      minio:
+        condition: service_healthy
     env_file:
       - .env.example
     # Внутри контейнера localhost — это сам контейнер, поэтому адреса из .env.example
-    # (localhost) переопределяем: Qdrant/Redis — по именам сервисов compose-сети,
+    # (localhost) переопределяем: Qdrant/Redis/MinIO — по именам сервисов compose-сети,
     # Ollama и giga-vectorizer — через host.docker.internal (запущены на хосте;
     # giga-vectorizer — отдельный GPU-compose из репозитория giga-vectorizer, порт 8001).
     environment:
       DVD_QDRANT_URL: http://qdrant:6333
       DVD_REDIS_URL: redis://redis:6379/0
+      DVD_MINIO_ENDPOINT: minio:9000
       DVD_OLLAMA_BASE: http://host.docker.internal:11434
       DVD_EMBEDDINGS_URL: http://host.docker.internal:8001
     extra_hosts:
@@ -57,3 +78,4 @@ services:
 volumes:
   qdrant_data:
   redis_data:
+  minio_data:

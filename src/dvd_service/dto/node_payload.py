@@ -64,6 +64,9 @@ class NodePayload(BaseModel):
     # --- source / provenance ---
     source: str | None = None  # original filename (compat)
     source_uri: str | None = None  # file path / URL of the source
+    source_object_key: str | None = (
+        None  # MinIO object key of the original file (closed-contour storage)
+    )
 
     # --- source grounding (path back to the source span) ---
     src_block_ids: list[int] = Field(

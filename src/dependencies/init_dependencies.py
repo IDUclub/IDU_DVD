@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import structlog
 
+from minio import Minio
+
 from src.api_clients import probe_embedding_dim
 from src.broker.outbox import EventOutbox
 from src.broker.publisher import KafkaPublisher
 from src.common.config import Settings, settings
+from src.common.db.minio_client import DocumentStorage
 from src.common.db.qdrant_client import QdrantRepository
 from src.common.db.redis_client import DocumentRegistry, JobStore, RedisClient
 from src.common.logger import configure_logging
@@ -67,6 +70,17 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     jobs = JobStore(redis)
     registry = DocumentRegistry(redis, prefix=s.registry_prefix)
 
+    minio_client = Minio(
+        s.minio_endpoint,
+        access_key=s.minio_access_key,
+        secret_key=s.minio_secret_key,
+        secure=s.minio_secure,
+    )
+    document_storage = DocumentStorage(minio_client, s.minio_bucket_documents)
+    document_storage.ensure_bucket()
+    user_document_storage = DocumentStorage(minio_client, s.minio_bucket_user_documents)
+    user_document_storage.ensure_bucket()
+
     parser = DocumentParser(s)
     structure = StructureTagger(s)
     hierarchy = HierarchyBuilder()
@@ -89,6 +103,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         reference_resolver,
         qdrant,
         registry,
+        document_storage,
         jobs,
         s,
         outbox=outbox if publisher.enabled else None,
@@ -108,6 +123,8 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         redis=redis,
         jobs=jobs,
         registry=registry,
+        document_storage=document_storage,
+        user_document_storage=user_document_storage,
         parser=parser,
         structure=structure,
         hierarchy=hierarchy,

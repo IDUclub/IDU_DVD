@@ -12,6 +12,7 @@ from typing import Any
 from src.broker.outbox import EventOutbox
 from src.broker.publisher import KafkaPublisher
 from src.common.config import Settings
+from src.common.db.minio_client import DocumentStorage
 from src.common.db.qdrant_client import QdrantRepository
 from src.common.db.redis_client import DocumentRegistry, JobStore, RedisClient
 from src.dvd_service.modules.doc_parsers import DocumentParser
@@ -47,6 +48,8 @@ class Dependencies:
         "redis",
         "jobs",
         "registry",
+        "document_storage",
+        "user_document_storage",
         "parser",
         "structure",
         "hierarchy",
@@ -72,6 +75,8 @@ class Dependencies:
     redis: RedisClient
     jobs: JobStore
     registry: DocumentRegistry
+    document_storage: DocumentStorage
+    user_document_storage: DocumentStorage
     parser: DocumentParser
     structure: StructureTagger
     hierarchy: HierarchyBuilder
@@ -103,6 +108,8 @@ class Dependencies:
         redis: RedisClient,
         jobs: JobStore,
         registry: DocumentRegistry,
+        document_storage: DocumentStorage,
+        user_document_storage: DocumentStorage,
         parser: DocumentParser,
         structure: StructureTagger,
         hierarchy: HierarchyBuilder,
@@ -126,6 +133,8 @@ class Dependencies:
         self.redis = redis
         self.jobs = jobs
         self.registry = registry
+        self.document_storage = document_storage
+        self.user_document_storage = user_document_storage
         self.parser = parser
         self.structure = structure
         self.hierarchy = hierarchy
@@ -186,6 +195,14 @@ class Dependencies:
     @classmethod
     def get_registry(cls) -> DocumentRegistry:
         return cls.instance().registry
+
+    @classmethod
+    def get_document_storage(cls) -> DocumentStorage:
+        return cls.instance().document_storage
+
+    @classmethod
+    def get_user_document_storage(cls) -> DocumentStorage:
+        return cls.instance().user_document_storage
 
     @classmethod
     def get_parser(cls) -> DocumentParser:

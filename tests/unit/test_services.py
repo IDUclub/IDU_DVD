@@ -32,7 +32,7 @@ from src.dvd_service.services.dvd_service import (
 
 
 @pytest.fixture
-def wired(settings, fake_ollama, fake_qdrant, fake_redis, monkeypatch):
+def wired(settings, fake_ollama, fake_qdrant, fake_redis, fake_document_storage, monkeypatch):
     """Build IngestionService + SearchService with real modules and faked boundaries."""
     monkeypatch.setattr(svc, "OllamaClient", lambda *a, **k: fake_ollama)
     monkeypatch.setattr(svc, "create_embedder", lambda *a, **k: fake_ollama)
@@ -49,6 +49,7 @@ def wired(settings, fake_ollama, fake_qdrant, fake_redis, monkeypatch):
         ReferenceResolver(fake_qdrant, registry, settings),
         fake_qdrant,
         registry,
+        fake_document_storage,
         jobs,
         settings,
         outbox=outbox,
@@ -69,6 +70,7 @@ def wired(settings, fake_ollama, fake_qdrant, fake_redis, monkeypatch):
         registry=registry,
         outbox=outbox,
         qdrant=fake_qdrant,
+        storage=fake_document_storage,
         ollama=fake_ollama,
     )
 
@@ -250,7 +252,14 @@ class TestIngest:
         assert wired.registry.peek_pending(normalize_designation("ГОСТ 9999"))
 
     def test_reference_linking_disabled_skips_stage(
-        self, settings, sample_raw, fake_ollama, fake_qdrant, fake_redis, monkeypatch
+        self,
+        settings,
+        sample_raw,
+        fake_ollama,
+        fake_qdrant,
+        fake_redis,
+        fake_document_storage,
+        monkeypatch,
     ):
         monkeypatch.setattr(svc, "OllamaClient", lambda *a, **k: fake_ollama)
         monkeypatch.setattr(svc, "create_embedder", lambda *a, **k: fake_ollama)
@@ -265,6 +274,7 @@ class TestIngest:
             ReferenceResolver(fake_qdrant, DocumentRegistry(redis_client), s),
             fake_qdrant,
             DocumentRegistry(redis_client),
+            fake_document_storage,
             JobStore(redis_client),
             s,
         )
@@ -571,6 +581,105 @@ class TestDeleteDocument:
         }
 
 
+class TestSourceFileStorage:
+    def test_ingest_stamps_source_object_key_on_payload_and_registry(
+        self, wired, sample_raw
+    ):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest("doc.docx", sample_raw, h, source_object_key="key-v1")
+        assert all(
+            pl.get("source_object_key") == "key-v1"
+            for _v, pl in wired.qdrant.points.values()
+        )
+        rec = wired.registry.get_document(res["doc_id"])
+        assert rec["source_object_key"] == "key-v1"
+
+    def test_delete_whole_document_removes_its_source_object(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest("doc.docx", sample_raw, h, source_object_key="key-v1")
+        wired.ingestion.delete_document(res["name"])
+        assert wired.storage.delete_calls == ["key-v1"]
+
+    def test_delete_single_version_removes_only_that_versions_object(
+        self, wired, sample_raw
+    ):
+        h1 = DocumentParser.content_hash(sample_raw)
+        res1 = wired.ingestion.ingest(
+            "doc.docx", sample_raw, h1, source_object_key="key-v1"
+        )
+        updated = sample_raw + [
+            {
+                "text": "Новый пункт документа.",
+                "category": "NarrativeText",
+                "html": None,
+            }
+        ]
+        h2 = DocumentParser.content_hash(updated)
+        wired.ingestion.update(
+            res1["name"],
+            "doc.docx",
+            updated,
+            h2,
+            version_override="ред. 2",
+            source_object_key="key-v2",
+        )
+
+        wired.ingestion.delete_document(res1["name"], version="ред. 2")
+
+        assert wired.storage.delete_calls == ["key-v2"]
+
+    def test_delete_all_versions_removes_every_distinct_object(self, wired, sample_raw):
+        h1 = DocumentParser.content_hash(sample_raw)
+        res1 = wired.ingestion.ingest(
+            "doc.docx", sample_raw, h1, source_object_key="key-v1"
+        )
+        updated = sample_raw + [
+            {
+                "text": "Новый пункт документа.",
+                "category": "NarrativeText",
+                "html": None,
+            }
+        ]
+        h2 = DocumentParser.content_hash(updated)
+        wired.ingestion.update(
+            res1["name"],
+            "doc.docx",
+            updated,
+            h2,
+            version_override="ред. 2",
+            source_object_key="key-v2",
+        )
+
+        wired.ingestion.delete_document(res1["name"])
+
+        assert set(wired.storage.delete_calls) == {"key-v1", "key-v2"}
+
+    def test_delete_without_source_object_key_deletes_nothing(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest("doc.docx", sample_raw, h)  # no source_object_key
+        wired.ingestion.delete_document(res["name"])
+        assert wired.storage.delete_calls == []
+
+
+class TestBuildSourceUrl:
+    def test_none_when_no_object_key(self):
+        assert svc.build_source_url({}, "СП 1", "v1") is None
+
+    def test_shared_document_link(self):
+        url = svc.build_source_url({"source_object_key": "k"}, "СП 1", "v1")
+        assert url == "/documents/%D0%A1%D0%9F%201/source?version=v1"
+
+    def test_user_document_link(self):
+        url = svc.build_source_url(
+            {"source_object_key": "k", "user_id": "u1", "scenario_id": "s1"},
+            "СП 1",
+            "v1",
+        )
+        assert url == (
+            "/user-documents/%D0%A1%D0%9F%201/source?user_id=u1&scenario_id=s1&version=v1"
+        )
+
+
 class TestReloadDocument:
     def test_reload_replaces_all_versions(self, wired, sample_raw):
         h1 = DocumentParser.content_hash(sample_raw)
@@ -640,6 +749,15 @@ class TestSearch:
         assert resp.count >= 1
         assert resp.hits[0].text
 
+    def test_search_hit_source_file_url_reflects_stored_object(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest(
+            "doc.docx", sample_raw, h, source_object_key="key-v1"
+        )
+        resp = wired.search.search(SearchRequest(query="требования", limit=5), None)
+        assert resp.hits[0].source_file_url is not None
+        assert resp.hits[0].source_file_url.startswith("/documents/")
+
     def test_context_height_expands_neighbours(self, wired, sample_raw):
         h = DocumentParser.content_hash(sample_raw)
         wired.ingestion.ingest("doc.docx", sample_raw, h)
@@ -703,6 +821,23 @@ class TestDocumentsService:
 
     def test_repr(self, wired):
         assert repr(wired.documents).startswith("DocumentsService(")
+
+    def test_source_file_url_populated_when_object_key_present(self, wired, sample_raw):
+        from urllib.parse import quote
+
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest("doc.docx", sample_raw, h, source_object_key="key-v1")
+        doc = wired.documents.list_documents().documents[0]
+        assert doc.source_file_url == (
+            f"/documents/%D0%A2%D0%95%D0%A1%D0%A2%201/source"
+            f"?version={quote(doc.version, safe='')}"
+        )
+
+    def test_source_file_url_none_without_object_key(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest("doc.docx", sample_raw, h)
+        doc = wired.documents.list_documents().documents[0]
+        assert doc.source_file_url is None
 
 
 class TestGeneralPurposeFields:
@@ -792,6 +927,17 @@ class TestLibrary:
 
     def test_repr(self, wired):
         assert repr(wired.library).startswith("LibraryService(")
+
+    def test_source_file_url_populated_from_registry_record(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest(
+            "doc.docx", sample_raw, h, source_object_key="key-v1"
+        )
+        summary = wired.library.list_documents().documents[0]
+        assert summary.doc_id == res["doc_id"]
+        assert summary.source_file_url is not None
+        assert summary.source_file_url.startswith("/documents/")
+        assert wired.library.get_document(res["doc_id"]).source_file_url is not None
 
 
 class TestDocumentEditor:

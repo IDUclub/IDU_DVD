@@ -8,6 +8,7 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 import structlog
 from qdrant_client.models import (
@@ -22,6 +23,7 @@ from src.api_clients import OllamaClient, create_embedder
 from src.broker.events import DocumentDeleted, DocumentProcessed, DocumentUpdated
 from src.broker.outbox import EventOutbox
 from src.common.config import Settings
+from src.common.db.minio_client import DocumentStorage
 from src.common.db.qdrant_client import QdrantRepository
 from src.common.db.redis_client import DocumentRegistry, JobStore
 from src.dvd_service.dto import (
@@ -70,6 +72,28 @@ def _version_condition(version: str) -> Filter:
     )
 
 
+def build_source_url(payload: dict, name: str, version: str) -> str | None:
+    """The proxied download link for a document's original file — never a raw MinIO URL.
+
+    ``None`` when no source was stored (e.g. ingested before this feature existed). Branches on
+    the payload's own ``user_id``/``scenario_id`` (not the caller's request scope), so a single
+    combined-search response can correctly link both shared and user-index hits.
+    """
+    if not payload.get("source_object_key"):
+        return None
+    q_name = quote(name, safe="")
+    q_version = quote(version, safe="")
+    user_id = payload.get("user_id")
+    scenario_id = payload.get("scenario_id")
+    if user_id and scenario_id:
+        return (
+            f"/user-documents/{q_name}/source"
+            f"?user_id={quote(user_id, safe='')}&scenario_id={quote(scenario_id, safe='')}"
+            f"&version={q_version}"
+        )
+    return f"/documents/{q_name}/source?version={q_version}"
+
+
 class IngestionService:
     def __init__(
         self,
@@ -81,6 +105,7 @@ class IngestionService:
         reference_resolver: ReferenceResolver,
         qdrant: QdrantRepository,
         registry: DocumentRegistry,
+        storage: DocumentStorage,
         jobs: JobStore,
         settings: Settings,
         outbox: EventOutbox | None = None,
@@ -93,6 +118,7 @@ class IngestionService:
         self.reference_resolver = reference_resolver
         self.qdrant = qdrant
         self.registry = registry
+        self.storage = storage
         self.jobs = jobs
         self.settings = settings
         self.outbox = outbox
@@ -114,6 +140,7 @@ class IngestionService:
             f"reference_resolver={type(self.reference_resolver).__name__}, "
             f"qdrant={type(self.qdrant).__name__}, "
             f"registry={type(self.registry).__name__}, "
+            f"storage={type(self.storage).__name__}, "
             f"jobs={type(self.jobs).__name__}, "
             f"outbox={type(self.outbox).__name__ if self.outbox else None})"
         )
@@ -357,6 +384,7 @@ class IngestionService:
         lang: str | None = None,
         title: str | None = None,
         source_uri: str | None = None,
+        source_object_key: str | None = None,
         external_ids: dict | None = None,
         metadata: dict | None = None,
         effective_date: str | None = None,
@@ -454,6 +482,7 @@ class IngestionService:
                 "effective_date": effective_date,
                 "source": os.path.basename(file_path),
                 "source_uri": source_uri or os.path.basename(file_path),
+                "source_object_key": source_object_key,
                 "metadata": metadata or {},
                 "uploaded_at": uploaded_at,
             }
@@ -486,6 +515,7 @@ class IngestionService:
                     "status": "active",
                     "external_ids": external_ids,
                     "source_uri": source_uri or os.path.basename(file_path),
+                    "source_object_key": source_object_key,
                     "content_hash": content_hash,
                     "node_count": count,
                     "uploaded_at": uploaded_at,
@@ -541,6 +571,7 @@ class IngestionService:
         lang: str | None = None,
         title: str | None = None,
         source_uri: str | None = None,
+        source_object_key: str | None = None,
         external_ids: dict | None = None,
         metadata: dict | None = None,
         effective_date: str | None = None,
@@ -682,6 +713,7 @@ class IngestionService:
                 "effective_date": effective_date,
                 "source": os.path.basename(file_path),
                 "source_uri": source_uri or os.path.basename(file_path),
+                "source_object_key": source_object_key,
                 "metadata": metadata or {},
                 "uploaded_at": uploaded_at,
             }
@@ -710,6 +742,7 @@ class IngestionService:
                     "status": "active",
                     "external_ids": external_ids,
                     "source_uri": identity["source_uri"],
+                    "source_object_key": source_object_key,
                     "content_hash": content_hash,
                     "node_count": len(reused_ids) + count,
                     "uploaded_at": uploaded_at,
@@ -816,11 +849,14 @@ class IngestionService:
                 | {t for p in existing for t in self._version_tags(p)}
             )
             doc_ids = {p["doc_id"] for p in existing if p.get("doc_id")}
+            source_keys = {p["source_object_key"] for p in existing if p.get("source_object_key")}
             self.qdrant.delete_by_name(name)
             self.registry.remove_hashes(name)
             for did in doc_ids:
                 self.registry.unregister_document(did)
             self.registry.unregister_name(name)
+            for key in source_keys:
+                self.storage.delete(key)
             result = {
                 "name": name,
                 "versions_removed": versions_removed,
@@ -841,6 +877,17 @@ class IngestionService:
         tagged = [p for p in existing if version in self._version_tags(p)]
         if not tagged and version not in known_versions:
             raise KeyError(f"версия не найдена: {name} / {version}")
+        # The fragments this version's ingest/update call actually stamped its source_object_key
+        # onto — ``version`` records "the version a fragment first appeared in", so this is the
+        # correct (and only) place that key lives, regardless of which fragments are later shared.
+        origin_key = next(
+            (
+                p["source_object_key"]
+                for p in existing
+                if p.get("version") == version and p.get("source_object_key")
+            ),
+            None,
+        )
         to_delete = [p["id"] for p in tagged if set(self._version_tags(p)) == {version}]
         tag_groups: dict[tuple, list[str]] = {}
         for p in tagged:
@@ -865,6 +912,8 @@ class IngestionService:
         document_removed = not remaining_versions and len(to_delete) == len(existing)
         if document_removed:
             self.registry.unregister_name(name)
+        if origin_key:
+            self.storage.delete(origin_key)
 
         result = {
             "name": name,
@@ -996,6 +1045,9 @@ class SearchService:
                     prev_id=pl.get("prev_id"),
                     next_id=pl.get("next_id"),
                     source_uri=pl.get("source_uri"),
+                    source_file_url=build_source_url(
+                        pl, pl.get("name", ""), pl.get("version", "")
+                    ),
                     char_start=pl.get("char_start"),
                     char_end=pl.get("char_end"),
                     page_start=pl.get("page_start"),
@@ -1079,6 +1131,9 @@ class DocumentsService:
                     "other_versions": pl.get("other_versions", []) or [],
                     "source": pl.get("source"),
                     "uploaded_at": pl.get("uploaded_at") or None,
+                    "scenario_id": pl.get("scenario_id"),
+                    "user_id": pl.get("user_id"),
+                    "source_object_key": None,
                     "blocks": set(),
                     "tags": set(),
                     "node_count": 0,
@@ -1089,6 +1144,13 @@ class DocumentsService:
             g["node_count"] += 1
             if not g["uploaded_at"] and pl.get("uploaded_at"):
                 g["uploaded_at"] = pl["uploaded_at"]
+            # Prefer the fragment that actually originated this version (its ``version`` field,
+            # not just ``versions`` membership) — a fragment shared from an older version still
+            # carries that older version's key, which would otherwise link the wrong file.
+            if pl.get("source_object_key") and (
+                pl.get("version") == doc_version or not g["source_object_key"]
+            ):
+                g["source_object_key"] = pl["source_object_key"]
 
         documents = []
         for (doc_name, doc_version), g in groups.items():
@@ -1108,6 +1170,16 @@ class DocumentsService:
                     node_count=g["node_count"],
                     uploaded_at=uploaded_at,
                     source=g["source"],
+                    scenario_id=g["scenario_id"],
+                    source_file_url=build_source_url(
+                        {
+                            "source_object_key": g["source_object_key"],
+                            "user_id": g["user_id"],
+                            "scenario_id": g["scenario_id"],
+                        },
+                        doc_name,
+                        doc_version,
+                    ),
                 )
             )
         documents.sort(key=lambda d: (d.name, d.version))
@@ -1134,7 +1206,10 @@ class LibraryService:
     @staticmethod
     def _summary_from_record(rec: dict) -> DocumentSummary:
         return DocumentSummary(
-            **{k: rec[k] for k in DocumentSummary.model_fields if k in rec}
+            **{k: rec[k] for k in DocumentSummary.model_fields if k in rec},
+            source_file_url=build_source_url(
+                rec, rec.get("name", ""), rec.get("version", "")
+            ),
         )
 
     @staticmethod
@@ -1153,6 +1228,9 @@ class LibraryService:
             status=pl.get("status", "active"),
             external_ids=pl.get("external_ids", {}) or {},
             source_uri=pl.get("source_uri"),
+            source_file_url=build_source_url(
+                pl, pl.get("name", ""), pl.get("version", "")
+            ),
             content_hash=pl.get("content_hash"),
             node_count=node_count,
             uploaded_at=pl.get("uploaded_at"),
