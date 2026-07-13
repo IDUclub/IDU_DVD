@@ -33,6 +33,15 @@ def queued_job(
         "operation": operation,
         "name": name,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        # The browser owns 0..10% while it transfers the multipart body. By the time
+        # this server-side job exists, that part is complete and the pipeline owns 10..100%.
+        "stage": "queued",
+        "stage_index": 0,
+        "stage_total": 7,
+        "progress": 0,
+        "progress_total": 1,
+        "task_progress": 0,
+        "overall_progress": 10,
     }
 
 

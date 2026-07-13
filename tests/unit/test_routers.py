@@ -62,6 +62,9 @@ class FakeJobs:
             if job.get("status") in {"queued", "processing"}
         ]
 
+    def recent(self, limit=20):
+        return list(self.store.values())[:limit]
+
 
 class FakeIngestion:
     def __init__(self):
@@ -410,6 +413,23 @@ class TestJobStatus:
         resp = c.get("/documents/jobs/active")
         assert resp.status_code == 200
         assert resp.json()["count"] == 1 and resp.json()["jobs"][0]["job_id"] == "j1"
+
+    def test_lists_recent_jobs_including_errors(self, client):
+        c, fakes = client
+        fakes["jobs"].set(
+            "j1",
+            {
+                "job_id": "j1",
+                "status": "error",
+                "error": "vectorizer unavailable",
+                "overall_progress": 72,
+                "task_progress": 40,
+            },
+        )
+        resp = c.get("/documents/jobs/recent")
+        assert resp.status_code == 200
+        assert resp.json()["jobs"][0]["error"] == "vectorizer unavailable"
+        assert resp.json()["jobs"][0]["overall_progress"] == 72
 
     def test_found(self, client):
         c, fakes = client

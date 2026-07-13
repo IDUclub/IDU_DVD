@@ -64,6 +64,15 @@ log = structlog.get_logger(__name__)
 # ``stage_index``/``stage_total`` on the job status. Type-tagging now also emits fragment tags,
 # so there is no separate tagging stage.
 PIPELINE_STAGES = 7
+PIPELINE_STAGE_WEIGHTS = {
+    "structure-markup": 25,
+    "type-tagging": 20,
+    "hierarchy": 6,
+    "identity": 6,
+    "references": 12,
+    "embeddings": 23,
+    "indexing": 8,
+}
 
 
 def _version_condition(version: str) -> Filter:
@@ -403,16 +412,23 @@ class IngestionService:
         try:
             if job_id:
                 self.jobs.update(job_id, status="processing")
-            progress = Progress(self.jobs, job_id, total_stages=PIPELINE_STAGES)
+            progress = Progress(
+                self.jobs,
+                job_id,
+                total_stages=PIPELINE_STAGES,
+                stage_weights=PIPELINE_STAGE_WEIGHTS,
+            )
             progress.stage("structure-markup")
             parts = self.parser.to_logical_parts(
                 raw, client, on_progress=progress.advance
             )  # Stage 1 + 1.5
+            progress.complete_stage()
 
             progress.stage("type-tagging")
             self.structure.tag(
                 parts, client, on_progress=progress.advance
             )  # Stage 2 + 3 (structural fields + fragment tags in one pass)
+            progress.complete_stage()
 
             progress.stage("hierarchy")
             ranks = self.structure.numbering_ranks(parts)  # Stage 3.5
@@ -420,12 +436,14 @@ class IngestionService:
             self.hierarchy.cap_unnumbered_nesting(tree)
             self.hierarchy.group_amendment(tree)
             nodes = self.hierarchy.flatten(tree)  # prev/next, kind, html
+            progress.complete_stage()
 
             progress.stage("identity")
             name, version = self._resolve_identity(
                 parts, client, name_override, version_override
             )
             version, other_versions = self._resolve_version(name, version, content_hash)
+            progress.complete_stage()
 
             # Fragment tags were produced together with the structural fields (see
             # ``StructureTagger.tag``) and ride the hierarchy onto each node — no extra LLM pass.
@@ -443,11 +461,13 @@ class IngestionService:
                 node_refs = self.reference_resolver.resolve(
                     doc_id, name, raw_refs, numbering_index
                 )
+            progress.complete_stage()
 
             progress.stage("embeddings")
             vectors = self._embed_all(
                 [n["text"] for n in nodes], on_progress=progress.advance
             )
+            progress.complete_stage()
 
             # --- general-purpose identity + provenance (shared by all consumers) ---
             _, spans = self.parser.source_index(raw)
@@ -549,6 +569,7 @@ class IngestionService:
                 "nodes": count,
             }
             if job_id:
+                progress.finish()
                 self.jobs.update(job_id, status="done", **result)
             log.info("ingest_done", **result)
             return result
@@ -594,6 +615,12 @@ class IngestionService:
         try:
             if job_id:
                 self.jobs.update(job_id, status="processing")
+            progress = Progress(
+                self.jobs,
+                job_id,
+                total_stages=PIPELINE_STAGES,
+                stage_weights=PIPELINE_STAGE_WEIGHTS,
+            )
             existing = self.qdrant.points_by_name(name)
             if not existing:
                 raise KeyError(f"документ не найден: {name}")
@@ -611,16 +638,28 @@ class IngestionService:
                 existing[0].get("doc_id") or str(uuid.uuid4()),
             )
 
-            parts = self.parser.to_logical_parts(raw, client)  # Stage 1 + 1.5
-            self.structure.tag(parts, client)  # Stage 2 + 3
+            progress.stage("structure-markup")
+            parts = self.parser.to_logical_parts(
+                raw, client, on_progress=progress.advance
+            )  # Stage 1 + 1.5
+            progress.complete_stage()
+            progress.stage("type-tagging")
+            self.structure.tag(
+                parts, client, on_progress=progress.advance
+            )  # Stage 2 + 3
+            progress.complete_stage()
+            progress.stage("hierarchy")
             ranks = self.structure.numbering_ranks(parts)  # Stage 3.5
             tree = self.hierarchy.build(parts, ranks, title=Path(file_path).stem)
             self.hierarchy.cap_unnumbered_nesting(tree)
             self.hierarchy.group_amendment(tree)
             nodes = self.hierarchy.flatten(tree)
+            progress.complete_stage()
 
+            progress.stage("identity")
             _, version = self._resolve_identity(parts, client, name, version_override)
             version, other_versions = self._resolve_version(name, version, content_hash)
+            progress.complete_stage()
 
             for order, n in enumerate(nodes):
                 n["_order"] = order
@@ -677,19 +716,29 @@ class IngestionService:
 
             node_tags = {n["id"]: n.get("tags", []) for n in new_nodes}
             node_refs: dict[str, list] = {}
+            progress.stage("references")
             if self.settings.enable_reference_linking and new_nodes:
                 numbering_index = {
                     num: _mapped(nid)
                     for num, nid in self._numbering_index(nodes).items()
                 }
-                raw_refs = self.reference_extractor.extract(new_nodes, client)
+                raw_refs = self.reference_extractor.extract(
+                    new_nodes, client, on_progress=progress.advance
+                )
                 node_refs = self.reference_resolver.resolve(
                     doc_id, name, raw_refs, numbering_index
                 )
+            progress.complete_stage()
 
+            progress.stage("embeddings")
             vectors = (
-                self._embed_all([n["text"] for n in new_nodes]) if new_nodes else []
+                self._embed_all(
+                    [n["text"] for n in new_nodes], on_progress=progress.advance
+                )
+                if new_nodes
+                else []
             )
+            progress.complete_stage()
             _, spans = self.parser.source_index(raw)
             external_ids = external_ids or {}
             uploaded_at = datetime.now(timezone.utc).isoformat()
@@ -721,6 +770,7 @@ class IngestionService:
                 "metadata": metadata or {},
                 "uploaded_at": uploaded_at,
             }
+            progress.stage("indexing")
             points = self._build_points(
                 new_nodes, vectors, spans, doc_id, node_tags, node_refs, identity
             )
@@ -774,6 +824,7 @@ class IngestionService:
                 "reused_nodes": len(reused_ids),
             }
             if job_id:
+                progress.finish()
                 self.jobs.update(job_id, status="done", **result)
             log.info("update_done", **result)
             return result
@@ -804,7 +855,14 @@ class IngestionService:
         when the reload effectively created the document.
         """
         if job_id:
-            self.jobs.update(job_id, status="processing")
+            self.jobs.update(
+                job_id,
+                status="processing",
+                stage="preparing",
+                stage_index=0,
+                task_progress=0,
+                overall_progress=10,
+            )
         replaced = True
         try:
             self.delete_document(name, emit_event=False)
@@ -814,6 +872,8 @@ class IngestionService:
             if job_id:
                 self.jobs.update(job_id, status="error", error=str(exc))
             raise
+        if job_id:
+            self.jobs.update(job_id, task_progress=100, progress=1, progress_total=1)
         result = self.ingest(
             file_path,
             raw,

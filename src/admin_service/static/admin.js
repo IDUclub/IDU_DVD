@@ -78,29 +78,64 @@ function formatDate(value) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" });
 }
 
-function jobProgress(job) {
-  if (job.progress_total) return Math.min(100, Math.round((job.progress || 0) / job.progress_total * 100));
-  if (job.stage_total) return Math.min(96, Math.round(((job.stage_index || 1) - 1) / job.stage_total * 100));
-  return job.status === "processing" ? 8 : 2;
+const stageLabels = {
+  queued: "Ожидание в очереди",
+  preparing: "Подготовка документа",
+  "structure-markup": "Разбор документа",
+  "type-tagging": "Построение структуры и тегирование",
+  hierarchy: "Построение иерархии",
+  identity: "Определение документа и версии",
+  references: "Обработка ссылок",
+  embeddings: "Векторизация",
+  indexing: "Сохранение в векторной базе"
+};
+
+function percent(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, Math.min(100, Math.round(number))) : fallback;
+}
+
+function taskProgress(job) {
+  if (job.task_progress != null) return percent(job.task_progress);
+  if (job.progress_total) return percent((job.progress || 0) / job.progress_total * 100);
+  return job.status === "done" ? 100 : 0;
+}
+
+function overallProgress(job) {
+  if (job.status === "done") return 100;
+  if (job.overall_progress != null) return percent(job.overall_progress);
+  if (job.stage_total) return percent(10 + ((job.stage_index || 0) / job.stage_total) * 90);
+  return job.status === "processing" ? 10 : 0;
+}
+
+function progressBar(value, className) {
+  const bar = node("progress", className); bar.max = 100; bar.value = value; return bar;
 }
 
 function renderJob(job) {
   const item = node("div", "job");
   const head = node("div", "job-head");
-  const left = node("div"); left.append(node("strong", "", job.name || job.filename || job.job_id), node("small", "", `${job.operation || "upload"} · ${job.stage || job.status}${job.phase ? ` · ${job.phase}` : ""}`));
-  head.append(left, node("strong", "", `${jobProgress(job)}%`));
-  const progress = node("progress", "native-progress"); progress.max = 100; progress.value = jobProgress(job);
-  item.append(head, progress); return item;
+  const overall = overallProgress(job); const task = taskProgress(job);
+  const stage = stageLabels[job.stage] || job.stage || job.status;
+  const left = node("div"); left.append(node("strong", "", job.name || job.filename || job.job_id), node("small", "", `${job.operation || "upload"} · ${job.status}`));
+  head.append(left, node("strong", "job-percent", `${overall}%`));
+  const overallLabel = node("div", "progress-label"); overallLabel.append(node("span", "", "Общий прогресс"), node("span", "", `${overall}%`));
+  const taskLabel = node("div", "progress-label task-label"); taskLabel.append(node("span", "", `${stage}${job.phase ? ` · ${job.phase}` : ""}`), node("span", "", `${task}%`));
+  item.classList.add(`job-${job.status}`);
+  item.append(head, overallLabel, progressBar(overall, "native-progress overall-progress"), taskLabel, progressBar(task, "native-progress task-progress"));
+  if (job.error) item.append(node("div", "job-error-message", job.error));
+  return item;
 }
 
 function renderJobs() {
   const list = $("#jobs-list"); list.replaceChildren(); state.jobs.forEach((job) => list.append(renderJob(job)));
   $("#jobs-empty").classList.toggle("hidden", state.jobs.length > 0);
+  const activeJobs = state.jobs.filter((job) => ["queued", "processing"].includes(job.status));
   const overview = $("#overview-jobs"); overview.replaceChildren();
-  if (state.jobs.length) state.jobs.slice(0, 3).forEach((job) => overview.append(renderJob(job)));
+  if (activeJobs.length) activeJobs.slice(0, 3).forEach((job) => overview.append(renderJob(job)));
   else overview.append(node("div", "empty", "Активных задач нет"));
-  $("#jobs-badge").textContent = String(state.jobs.length);
-  $("#stat-jobs").textContent = String(state.jobs.length);
+  $("#jobs-badge").textContent = String(activeJobs.length);
+  $("#stat-jobs").textContent = String(activeJobs.length);
 }
 
 async function loadDocuments() {
@@ -114,14 +149,36 @@ async function loadDocuments() {
 }
 
 async function loadJobs() {
-  try { const data = await request("/documents/jobs/active"); state.jobs = data.jobs || []; renderJobs(); }
+  try { const data = await request("/documents/jobs/recent?limit=20"); state.jobs = data.jobs || []; renderJobs(); }
   catch (error) { console.error(error); }
 }
 
 function openUpload(operation = "upload", name = "") {
   $("#upload-form").reset(); $("#upload-operation").value = operation; $("#upload-name").value = name;
+  $("#upload-live-progress").classList.add("hidden"); $("#upload-submit").disabled = false;
   $("#upload-title").textContent = { upload: "Новый документ", update: "Новая версия", reload: "Полная замена" }[operation];
   $("#upload-dialog").showModal();
+}
+
+function setUploadProgress(overall, task, label) {
+  $("#upload-live-progress").classList.remove("hidden");
+  $("#upload-overall-value").textContent = `${percent(overall)}%`; $("#upload-overall-bar").value = percent(overall);
+  $("#upload-task-label").textContent = label; $("#upload-task-value").textContent = `${percent(task)}%`; $("#upload-task-bar").value = percent(task);
+}
+
+function uploadRequest(url, method, form, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest(); xhr.open(method, url); xhr.responseType = "json";
+    xhr.upload.addEventListener("progress", (event) => { if (event.lengthComputable) onProgress(event.loaded / event.total * 100); });
+    xhr.upload.addEventListener("load", () => onProgress(100));
+    xhr.addEventListener("load", () => {
+      const data = xhr.response || {};
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+      else reject(new Error((data && data.detail) || `HTTP ${xhr.status}`));
+    });
+    xhr.addEventListener("error", () => reject(new Error("Не удалось передать файл на сервер")));
+    xhr.send(form);
+  });
 }
 
 async function submitUpload(event) {
@@ -132,8 +189,13 @@ async function submitUpload(event) {
   const fields = { name, version: $("#upload-version").value.trim(), title: $("#upload-doc-title").value.trim(), doc_type: $("#upload-doc-type").value.trim(), corpus: $("#upload-corpus").value.trim(), lang: $("#upload-lang").value.trim() };
   Object.entries(fields).forEach(([key, value]) => { if (value && !(key === "name" && operation !== "upload")) form.append(key, value); });
   const pathName = encodeURIComponent(name); const url = operation === "upload" ? "/documents" : `/documents/${pathName}`; const method = { upload: "POST", update: "PATCH", reload: "PUT" }[operation];
-  try { await request(url, { method, body: form }); $("#upload-dialog").close(); toast("Документ поставлен в очередь"); await loadJobs(); showView("jobs"); }
-  catch (error) { toast(error.message, true); }
+  $("#upload-submit").disabled = true; setUploadProgress(0, 0, "Передача файла");
+  try {
+    await uploadRequest(url, method, form, (value) => setUploadProgress(value * 0.1, value, value < 100 ? "Передача файла" : "Файл передан · подготовка на сервере"));
+    $("#upload-dialog").close(); toast("Документ поставлен в очередь"); await loadJobs(); showView("jobs");
+  }
+  catch (error) { setUploadProgress($("#upload-overall-bar").value, $("#upload-task-bar").value, `Ошибка: ${error.message}`); toast(error.message, true); }
+  finally { $("#upload-submit").disabled = false; }
 }
 
 function field(label, id, value = "", type = "text") {

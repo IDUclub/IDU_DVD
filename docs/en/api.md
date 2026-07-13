@@ -13,6 +13,8 @@ request and response models are pydantic-based and defined under `src/dvd_servic
 | `DELETE /documents/{name}` | delete a document entirely, or a single version (`?version=`) |
 | `GET /documents` | list ingested documents, aggregated by (name, version), with filters |
 | `GET /documents/{job_id}` | processing job status |
+| `GET /documents/jobs/active` | queued and currently processing jobs |
+| `GET /documents/jobs/recent` | recent jobs of every status (`?limit=20`, max 100) |
 | `POST /search/texts` | search relevant text fragments |
 | `POST /search/tables` | search relevant tables |
 | `POST /search` | search across all entities (texts and tables) |
@@ -205,6 +207,11 @@ Response:
   "job_id": "1f0c...",
   "status": "done",
   "filename": "СП_19.13330.2019_с_И1.docx",
+  "stage": "indexing",
+  "stage_index": 7,
+  "stage_total": 7,
+  "task_progress": 100,
+  "overall_progress": 100,
   "doc_id": "9f63...",
   "name": "СП 19.13330.2019",
   "version": "СП 19.13330.2019 (с Изменением N 1)",
@@ -215,6 +222,10 @@ Response:
 ```
 
 Possible `status` values: `queued`, `processing`, `done`, `error`. If the job is not found — `404`.
+`task_progress` is the normalized progress of the current stage; `overall_progress` is the
+weighted end-to-end value. The server-side job starts at 10%, because the admin UI uses the first
+10% for multipart file transfer. The same progress contract is used for upload, delta update and
+full reload.
 
 ## Search
 
