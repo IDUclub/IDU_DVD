@@ -1,3 +1,13 @@
+## v0.10.0 (2026-07-13)
+
+### Feat
+
+- add weighted document upload progress (#32)
+
+### Fix
+
+- **user-index**: emit DocumentDeleted events on user index deletion (#31)
+
 ## v0.9.0 (2026-07-10)
 
 ### Feat
