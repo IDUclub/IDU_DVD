@@ -25,6 +25,8 @@ class JobStatusDTO(BaseModel):
     progress_total: int | None = (
         None  # total requests in the current stage/phase (None if not chunked)
     )
+    task_progress: int | None = None  # current stage/phase, normalized to 0..100
+    overall_progress: int | None = None  # file transfer + weighted pipeline, 0..100
     doc_id: str | None = None
     name: str | None = None
     version: str | None = None
@@ -35,6 +37,13 @@ class JobStatusDTO(BaseModel):
         None  # delta update: fragments shared with the base version
     )
     error: str | None = None
+    operation: str | None = None  # upload | update | reload
+    created_at: str | None = None
+
+
+class ActiveJobsResponse(BaseModel):
+    count: int
+    jobs: list[JobStatusDTO]
 
 
 class DeleteResponse(BaseModel):

@@ -53,3 +53,39 @@ class TestProgress:
         p = Progress(None, None, total_stages=8)
         p.stage("x")
         p.advance(1, 2, phase="boundaries")  # must not raise
+
+    def test_weighted_overall_and_task_percentages(self, settings, fake_redis):
+        jobs = JobStore(RedisClient(settings))
+        jobs.set("j", {"job_id": "j", "status": "processing"})
+        p = Progress(
+            jobs,
+            "j",
+            total_stages=2,
+            stage_weights={"small": 1, "large": 3},
+        )
+
+        p.stage("small")
+        p.advance(1, 2)
+        assert jobs.get("j")["task_progress"] == 50
+        assert jobs.get("j")["overall_progress"] == 21
+
+        p.complete_stage()
+        p.stage("large")
+        assert jobs.get("j")["overall_progress"] == 32
+        p.finish()
+        assert jobs.get("j")["task_progress"] == 100
+        assert jobs.get("j")["overall_progress"] == 100
+
+    def test_overall_does_not_regress_when_phase_counter_resets(
+        self, settings, fake_redis
+    ):
+        jobs = JobStore(RedisClient(settings))
+        jobs.set("j", {"job_id": "j", "status": "processing"})
+        p = Progress(jobs, "j", total_stages=1, stage_weights={"structure": 1})
+        p.stage("structure")
+        p.advance(1, 1, phase="boundaries")
+        before_reset = jobs.get("j")["overall_progress"]
+        p.advance(1, 4, phase="semantic-merge")
+
+        assert jobs.get("j")["task_progress"] == 25
+        assert jobs.get("j")["overall_progress"] == before_reset

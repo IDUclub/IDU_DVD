@@ -11,6 +11,9 @@ from src.dvd_service.dto.document import (  # noqa: F401
     DocumentList,
     DocumentListResponse,
     DocumentSummary,
+    DocumentUpdateRequest,
+    DocumentUpdateResponse,
+    FragmentUpdateRequest,
 )
 from src.dvd_service.dto.node_payload import NodePayload  # noqa: F401
 from src.dvd_service.dto.reference import DocumentRef  # noqa: F401
@@ -21,9 +24,16 @@ from src.dvd_service.dto.search import (  # noqa: F401
     TagsResponse,
 )
 from src.dvd_service.dto.upload import (  # noqa: F401
+    ActiveJobsResponse,
     DeleteResponse,
     JobStatusDTO,
     UploadResponse,
+)
+from src.dvd_service.dto.user_index import (  # noqa: F401
+    UserIndexCreateRequest,
+    UserIndexDeleteResponse,
+    UserIndexInfo,
+    UserIndexListResponse,
 )
 
 __all__ = [
@@ -35,11 +45,19 @@ __all__ = [
     "DocumentFragment",
     "DocumentDetail",
     "DocumentList",
+    "DocumentUpdateRequest",
+    "DocumentUpdateResponse",
+    "FragmentUpdateRequest",
     "UploadResponse",
+    "ActiveJobsResponse",
     "JobStatusDTO",
     "DeleteResponse",
     "SearchRequest",
     "SearchHit",
     "SearchResponse",
     "TagsResponse",
+    "UserIndexCreateRequest",
+    "UserIndexInfo",
+    "UserIndexListResponse",
+    "UserIndexDeleteResponse",
 ]

@@ -11,14 +11,20 @@ from fastmcp.exceptions import ToolError
 
 from src.dependencies import Dependencies
 from src.dvd_service.dto import (
+    DeleteResponse,
     DocumentDetail,
     DocumentList,
     DocumentListResponse,
     SearchRequest,
     SearchResponse,
     TagsResponse,
+    UserIndexDeleteResponse,
+    UserIndexInfo,
+    UserIndexListResponse,
 )
 from src.dvd_service.modules.reference_patterns import normalize_designation
+from src.dvd_service.services.dvd_service import DocumentsService
+from src.dvd_service.services.user_index_service import build_user_ingestion_from_deps
 
 mcp = FastMCP("dvd-idu")
 
@@ -34,6 +40,11 @@ def _search(
     block: str | None = None,
     types: list[str] | None = None,
     document_names: list[str] | None = None,
+    user_id: str | None = None,
+    project_id: str | None = None,
+    scenario_id: str | None = None,
+    include_shared: bool = True,
+    include_inherited: bool = True,
 ) -> SearchResponse:
     req = SearchRequest(
         query=query,
@@ -45,6 +56,11 @@ def _search(
         document_names=document_names,
         limit=limit,
         context_height=context_height,
+        user_id=user_id,
+        project_id=project_id,
+        scenario_id=scenario_id,
+        include_shared=include_shared,
+        include_inherited=include_inherited,
     )
     return Dependencies.get_search().search(req, kind)
 
@@ -60,11 +76,19 @@ def search_texts(
     tags: list[str] | None = None,
     limit: int = 10,
     context_height: int = 0,
+    user_id: str | None = None,
+    project_id: str | None = None,
+    scenario_id: str | None = None,
+    include_shared: bool = True,
+    include_inherited: bool = True,
 ) -> SearchResponse:
     """Vector search over text fragments (kind=text) with filters and context height.
 
     ``block`` filters by main/amendment, ``types`` by structural level (chapter/clause/
     subclause/...). ``document_names`` restricts results to any of the given document names.
+    Set ``user_id``+``scenario_id`` to also search a user document index (combined search);
+    add ``include_shared=False`` to search only that index, or ``include_inherited=False`` to
+    skip its inheritance chain.
     """
     return _search(
         query,
@@ -77,6 +101,11 @@ def search_texts(
         block,
         types,
         document_names,
+        user_id,
+        project_id,
+        scenario_id,
+        include_shared,
+        include_inherited,
     )
 
 
@@ -91,10 +120,18 @@ def search_tables(
     tags: list[str] | None = None,
     limit: int = 10,
     context_height: int = 0,
+    user_id: str | None = None,
+    project_id: str | None = None,
+    scenario_id: str | None = None,
+    include_shared: bool = True,
+    include_inherited: bool = True,
 ) -> SearchResponse:
     """Vector search over tables (kind=table) with filters and context height.
 
-    ``document_names`` restricts results to any of the given document names.
+    ``document_names`` restricts results to any of the given document names. Set
+    ``user_id``+``scenario_id`` to also search a user document index (combined search); add
+    ``include_shared=False`` to search only that index, or ``include_inherited=False`` to skip
+    its inheritance chain.
     """
     return _search(
         query,
@@ -107,6 +144,11 @@ def search_tables(
         block,
         types,
         document_names,
+        user_id,
+        project_id,
+        scenario_id,
+        include_shared,
+        include_inherited,
     )
 
 
@@ -121,10 +163,18 @@ def search_all(
     tags: list[str] | None = None,
     limit: int = 10,
     context_height: int = 0,
+    user_id: str | None = None,
+    project_id: str | None = None,
+    scenario_id: str | None = None,
+    include_shared: bool = True,
+    include_inherited: bool = True,
 ) -> SearchResponse:
     """Vector search across all entities (texts and tables) with filters and context height.
 
-    ``document_names`` restricts results to any of the given document names.
+    ``document_names`` restricts results to any of the given document names. Set
+    ``user_id``+``scenario_id`` to also search a user document index (combined search); add
+    ``include_shared=False`` to search only that index, or ``include_inherited=False`` to skip
+    its inheritance chain.
     """
     return _search(
         query,
@@ -137,6 +187,119 @@ def search_all(
         block,
         types,
         document_names,
+        user_id,
+        project_id,
+        scenario_id,
+        include_shared,
+        include_inherited,
+    )
+
+
+@mcp.tool()
+def search_user_index_texts(
+    user_id: str,
+    scenario_id: str,
+    query: str,
+    project_id: str | None = None,
+    include_inherited: bool = True,
+    name: str | None = None,
+    document_names: list[str] | None = None,
+    version: str | None = None,
+    block: str | None = None,
+    types: list[str] | None = None,
+    tags: list[str] | None = None,
+    limit: int = 10,
+    context_height: int = 0,
+) -> SearchResponse:
+    """Vector search restricted to a user document index (text fragments) — never the shared corpus."""
+    return _search(
+        query,
+        name,
+        version,
+        tags,
+        limit,
+        context_height,
+        "text",
+        block,
+        types,
+        document_names,
+        user_id,
+        project_id,
+        scenario_id,
+        False,
+        include_inherited,
+    )
+
+
+@mcp.tool()
+def search_user_index_tables(
+    user_id: str,
+    scenario_id: str,
+    query: str,
+    project_id: str | None = None,
+    include_inherited: bool = True,
+    name: str | None = None,
+    document_names: list[str] | None = None,
+    version: str | None = None,
+    block: str | None = None,
+    types: list[str] | None = None,
+    tags: list[str] | None = None,
+    limit: int = 10,
+    context_height: int = 0,
+) -> SearchResponse:
+    """Vector search restricted to a user document index (tables) — never the shared corpus."""
+    return _search(
+        query,
+        name,
+        version,
+        tags,
+        limit,
+        context_height,
+        "table",
+        block,
+        types,
+        document_names,
+        user_id,
+        project_id,
+        scenario_id,
+        False,
+        include_inherited,
+    )
+
+
+@mcp.tool()
+def search_user_index_all(
+    user_id: str,
+    scenario_id: str,
+    query: str,
+    project_id: str | None = None,
+    include_inherited: bool = True,
+    name: str | None = None,
+    document_names: list[str] | None = None,
+    version: str | None = None,
+    block: str | None = None,
+    types: list[str] | None = None,
+    tags: list[str] | None = None,
+    limit: int = 10,
+    context_height: int = 0,
+) -> SearchResponse:
+    """Vector search restricted to a user document index (all entities) — never the shared corpus."""
+    return _search(
+        query,
+        name,
+        version,
+        tags,
+        limit,
+        context_height,
+        None,
+        block,
+        types,
+        document_names,
+        user_id,
+        project_id,
+        scenario_id,
+        False,
+        include_inherited,
     )
 
 
@@ -149,10 +312,94 @@ def list_documents(
     uploaded_from: str | None = None,
     uploaded_to: str | None = None,
 ) -> DocumentListResponse:
-    """Documents already in the store, aggregated by (name, version), with optional filters."""
+    """Documents already in the shared store, aggregated by (name, version), with optional filters."""
     return Dependencies.get_documents().list_documents(
         name, version, block, tags, uploaded_from, uploaded_to
     )
+
+
+@mcp.tool()
+def create_user_index(
+    user_id: str,
+    scenario_id: str,
+    project_id: str,
+    parent_scenario_id: str | None = None,
+) -> UserIndexInfo:
+    """Create a user document index — a (user_id, scenario_id) bucket, optionally inheriting
+    (live, recursively) from another scenario's index."""
+    try:
+        return Dependencies.get_user_index_service().create_index(
+            user_id, scenario_id, project_id, parent_scenario_id
+        )
+    except ValueError as exc:
+        raise ToolError(str(exc))
+
+
+@mcp.tool()
+def list_user_indices(user_id: str) -> UserIndexListResponse:
+    """All document indices belonging to a user."""
+    return Dependencies.get_user_index_service().list_indices(user_id)
+
+
+@mcp.tool()
+def delete_user_index(user_id: str, scenario_id: str) -> UserIndexDeleteResponse:
+    """Wipe a user document index entirely (inherited documents are untouched)."""
+    try:
+        return Dependencies.get_user_index_service().delete_index(user_id, scenario_id)
+    except KeyError as exc:
+        raise ToolError(str(exc.args[0]) if exc.args else "index not found")
+
+
+@mcp.tool()
+def list_user_documents(
+    user_id: str,
+    scenario_id: str,
+    include_inherited: bool = True,
+    name: str | None = None,
+    version: str | None = None,
+    block: str | None = None,
+    tags: list[str] | None = None,
+    uploaded_from: str | None = None,
+    uploaded_to: str | None = None,
+) -> DocumentListResponse:
+    """Documents in a user index, aggregated by (name, version) — includes the scenario's
+    inheritance chain by default."""
+    index_registry = Dependencies.get_user_index_registry()
+    scenario_ids = (
+        index_registry.ancestor_chain(user_id, scenario_id)
+        if include_inherited
+        else [scenario_id]
+    )
+    documents = DocumentsService(Dependencies.get_qdrant())
+    return documents.list_documents(
+        name,
+        version,
+        block,
+        tags,
+        uploaded_from,
+        uploaded_to,
+        user_id=user_id,
+        scenario_ids=scenario_ids,
+    )
+
+
+@mcp.tool()
+def delete_user_document(
+    user_id: str, scenario_id: str, name: str, version: str | None = None
+) -> DeleteResponse:
+    """Delete a document (or one of its versions) from a user index."""
+    deps = Dependencies.instance()
+    record = deps.user_index_registry.get(user_id, scenario_id)
+    if record is None:
+        raise ToolError(f"index not found: {user_id}/{scenario_id}")
+    ingestion = build_user_ingestion_from_deps(
+        deps, user_id=user_id, project_id=record["project_id"], scenario_id=scenario_id
+    )
+    try:
+        result = ingestion.delete_document(name, version)
+    except KeyError as exc:
+        raise ToolError(str(exc.args[0]) if exc.args else "document not found")
+    return DeleteResponse(**result)
 
 
 @mcp.tool()

@@ -55,6 +55,16 @@ class FakeJobs:
     def get(self, jid):
         return self.store.get(jid)
 
+    def active(self):
+        return [
+            job
+            for job in self.store.values()
+            if job.get("status") in {"queued", "processing"}
+        ]
+
+    def recent(self, limit=20):
+        return list(self.store.values())[:limit]
+
 
 class FakeIngestion:
     def __init__(self):
@@ -129,7 +139,7 @@ class FakeTags:
 
 
 @pytest.fixture
-def client(tmp_path):
+def client(tmp_path, fake_qdrant, fake_document_storage):
     fakes = {
         "settings": Settings(upload_dir=str(tmp_path)),
         "parser": FakeParser(),
@@ -139,6 +149,8 @@ def client(tmp_path):
         "search": FakeSearch(),
         "documents": FakeDocuments(),
         "tags": FakeTags(),
+        "qdrant": fake_qdrant,
+        "document_storage": fake_document_storage,
     }
     app = FastAPI()
     app.include_router(documents_router)
@@ -151,6 +163,10 @@ def client(tmp_path):
     app.dependency_overrides[Dependencies.get_search] = lambda: fakes["search"]
     app.dependency_overrides[Dependencies.get_documents] = lambda: fakes["documents"]
     app.dependency_overrides[Dependencies.get_tags] = lambda: fakes["tags"]
+    app.dependency_overrides[Dependencies.get_qdrant] = lambda: fakes["qdrant"]
+    app.dependency_overrides[Dependencies.get_document_storage] = lambda: fakes[
+        "document_storage"
+    ]
     with TestClient(app) as c:
         yield c, fakes
 
@@ -187,6 +203,21 @@ class TestUpload:
         _, kwargs = fakes["ingestion"].calls[-1]
         assert kwargs["name_override"] == "СП 5.2025"
         assert kwargs["version_override"] == "2025"
+
+    def test_saves_source_to_minio_and_forwards_object_key(self, client):
+        c, fakes = client
+        resp = c.post("/documents", files={"file": ("doc.docx", b"data")})
+        assert resp.status_code == 202
+        assert fakes["document_storage"].upload_calls  # saved before the job was queued
+        _, kwargs = fakes["ingestion"].calls[-1]
+        assert kwargs["source_object_key"] == fakes["document_storage"].upload_calls[-1]
+
+    def test_storage_failure_rejects_upload_and_never_queues_a_job(self, client):
+        c, fakes = client
+        fakes["document_storage"].fail_upload = True
+        resp = c.post("/documents", files={"file": ("doc.docx", b"data")})
+        assert resp.status_code == 502
+        assert not fakes["ingestion"].calls
 
 
 class TestUpdateDocument:
@@ -265,6 +296,86 @@ class TestDeleteDocument:
         assert c.delete("/documents/нет такого").status_code == 404
 
 
+class TestDownloadSource:
+    def _seed(
+        self, fakes, *, name="СП 1", version="v1", key="obj-key.docx", data=b"hi"
+    ):
+        from qdrant_client.models import PointStruct
+
+        fakes["qdrant"].upsert(
+            [
+                PointStruct(
+                    id="pt1",
+                    vector=[0.0],
+                    payload={
+                        "name": name,
+                        "version": version,
+                        "source_object_key": key,
+                    },
+                )
+            ]
+        )
+        fakes["document_storage"].upload(key, data, "application/octet-stream")
+
+    def test_downloads_the_original_file(self, client):
+        c, fakes = client
+        self._seed(fakes)
+        resp = c.get("/documents/СП 1/source")
+        assert resp.status_code == 200
+        assert resp.content == b"hi"
+        assert "attachment" in resp.headers["content-disposition"]
+
+    def test_unknown_document_returns_404(self, client):
+        c, _ = client
+        assert c.get("/documents/нет такого/source").status_code == 404
+
+    def test_unknown_version_returns_404(self, client):
+        c, fakes = client
+        self._seed(fakes)
+        resp = c.get("/documents/СП 1/source", params={"version": "nope"})
+        assert resp.status_code == 404
+
+    def test_document_without_stored_source_returns_404(self, client):
+        c, fakes = client
+        from qdrant_client.models import PointStruct
+
+        fakes["qdrant"].upsert(
+            [
+                PointStruct(
+                    id="pt1", vector=[0.0], payload={"name": "СП 1", "version": "v1"}
+                )
+            ]
+        )
+        assert c.get("/documents/СП 1/source").status_code == 404
+
+    def test_missing_object_in_storage_returns_404(self, client):
+        c, fakes = client
+        from qdrant_client.models import PointStruct
+
+        fakes["qdrant"].upsert(
+            [
+                PointStruct(
+                    id="pt1",
+                    vector=[0.0],
+                    payload={
+                        "name": "СП 1",
+                        "version": "v1",
+                        "source_object_key": "ghost",
+                    },
+                )
+            ]
+        )
+        assert c.get("/documents/СП 1/source").status_code == 404
+
+    def test_defaults_to_latest_version(self, client):
+        c, fakes = client
+        self._seed(fakes, version="v1", key="key-v1.docx", data=b"old")
+        self._seed(fakes, version="v2", key="key-v2.docx", data=b"new")
+        resp = c.get("/documents/СП 1/source")
+        assert resp.status_code == 200
+        assert resp.content == b"new"
+
+
 class TestListDocuments:
     def test_forwards_filters_to_service(self, client):
         c, fakes = client
@@ -293,6 +404,33 @@ class TestListDocuments:
 
 
 class TestJobStatus:
+    def test_lists_active_jobs(self, client):
+        c, fakes = client
+        fakes["jobs"].set(
+            "j1", {"job_id": "j1", "status": "processing", "filename": "a.docx"}
+        )
+        fakes["jobs"].set("j2", {"job_id": "j2", "status": "done"})
+        resp = c.get("/documents/jobs/active")
+        assert resp.status_code == 200
+        assert resp.json()["count"] == 1 and resp.json()["jobs"][0]["job_id"] == "j1"
+
+    def test_lists_recent_jobs_including_errors(self, client):
+        c, fakes = client
+        fakes["jobs"].set(
+            "j1",
+            {
+                "job_id": "j1",
+                "status": "error",
+                "error": "vectorizer unavailable",
+                "overall_progress": 72,
+                "task_progress": 40,
+            },
+        )
+        resp = c.get("/documents/jobs/recent")
+        assert resp.status_code == 200
+        assert resp.json()["jobs"][0]["error"] == "vectorizer unavailable"
+        assert resp.json()["jobs"][0]["overall_progress"] == 72
+
     def test_found(self, client):
         c, fakes = client
         fakes["jobs"].set("j1", {"job_id": "j1", "status": "done"})
@@ -332,3 +470,30 @@ class TestSearchEndpoints:
         resp = c.post(path, json={"query": "требования"})
         assert resp.status_code == 200 and resp.json()["count"] == 1
         assert fakes["search"].calls[-1][1] == expected_kind
+
+
+class TestUserIndexSearchEndpoints:
+    @pytest.mark.parametrize(
+        "path,expected_kind",
+        [
+            ("/search/user-index/texts", "text"),
+            ("/search/user-index/tables", "table"),
+            ("/search/user-index", None),
+        ],
+    )
+    def test_requires_user_id_and_scenario_id(self, client, path, expected_kind):
+        c, _ = client
+        resp = c.post(path, json={"query": "требования"})
+        assert resp.status_code == 400
+
+    def test_forces_include_shared_false(self, client):
+        c, fakes = client
+        resp = c.post(
+            "/search/user-index/texts",
+            json={"query": "требования", "user_id": "u1", "scenario_id": "s1"},
+        )
+        assert resp.status_code == 200
+        req, kind = fakes["search"].calls[-1]
+        assert kind == "text"
+        assert req.user_id == "u1" and req.scenario_id == "s1"
+        assert req.include_shared is False

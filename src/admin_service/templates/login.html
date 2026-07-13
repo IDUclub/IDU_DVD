@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Вход · DVD Admin</title>
+  <link rel="stylesheet" href="/admin/ui/assets/admin.css">
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <div class="brand-mark">D</div>
+    <p class="eyebrow">IDU · DOCUMENT VECTOR DB</p>
+    <h1>Панель управления</h1>
+    <p class="muted">Введите пароль администратора, чтобы продолжить.</p>
+    <form method="post" action="/admin/ui/login" class="stack">
+      <label>Пароль<input name="password" type="password" required autofocus autocomplete="current-password"></label>
+      <button class="button primary" type="submit">Войти</button>
+    </form>
+    <p class="form-error">{{ error }}</p>
+    <p class="form-error">{{ configured }}</p>
+  </main>
+</body>
+</html>

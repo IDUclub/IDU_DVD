@@ -22,6 +22,7 @@ from src.dvd_service.modules.references import ReferenceExtractor, ReferenceReso
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import VersionDetector
 from src.dvd_service.services.dvd_service import (
+    DocumentEditorService,
     DocumentsService,
     IngestionService,
     LibraryService,
@@ -31,7 +32,15 @@ from src.dvd_service.services.dvd_service import (
 
 
 @pytest.fixture
-def wired(settings, fake_ollama, fake_qdrant, fake_redis, monkeypatch):
+def wired(
+    settings,
+    fake_ollama,
+    fake_qdrant,
+    fake_redis,
+    fake_document_storage,
+    user_index_registry,
+    monkeypatch,
+):
     """Build IngestionService + SearchService with real modules and faked boundaries."""
     monkeypatch.setattr(svc, "OllamaClient", lambda *a, **k: fake_ollama)
     monkeypatch.setattr(svc, "create_embedder", lambda *a, **k: fake_ollama)
@@ -48,25 +57,30 @@ def wired(settings, fake_ollama, fake_qdrant, fake_redis, monkeypatch):
         ReferenceResolver(fake_qdrant, registry, settings),
         fake_qdrant,
         registry,
+        fake_document_storage,
         jobs,
         settings,
         outbox=outbox,
     )
-    search = SearchService(fake_qdrant, settings)
+    search = SearchService(fake_qdrant, settings, user_index_registry)
     documents = DocumentsService(fake_qdrant)
     library = LibraryService(fake_qdrant, registry)
+    editor = DocumentEditorService(fake_qdrant, registry, settings)
     tags = TagsService(fake_qdrant)
     return SimpleNS(
         ingestion=ingestion,
         search=search,
         documents=documents,
         library=library,
+        editor=editor,
         tags=tags,
         jobs=jobs,
         registry=registry,
         outbox=outbox,
         qdrant=fake_qdrant,
+        storage=fake_document_storage,
         ollama=fake_ollama,
+        user_index_registry=user_index_registry,
     )
 
 
@@ -113,6 +127,7 @@ class TestIngest:
         final = wired.jobs.get("jp")
         assert final["status"] == "done"
         assert final["stage_index"] == final["stage_total"] == 7
+        assert final["overall_progress"] == final["task_progress"] == 100
 
     def test_gpu_gate_serializes_concurrent_ingests(self, wired, sample_raw):
         # With ingest_concurrency=1 (default) the GPU-bound pipeline is serialized: two ingests
@@ -158,7 +173,11 @@ class TestIngest:
 
         entry = wired.outbox.peek()
         assert entry["model"] == "DocumentProcessed"
-        assert entry["payload"] == {"document_name": res["name"]}
+        assert entry["payload"] == {
+            "document_name": res["name"],
+            "user_id": None,
+            "scenario_id": None,
+        }
         assert wired.outbox.size() == 1
 
     def test_no_event_without_outbox(self, wired, sample_raw):
@@ -247,7 +266,14 @@ class TestIngest:
         assert wired.registry.peek_pending(normalize_designation("ГОСТ 9999"))
 
     def test_reference_linking_disabled_skips_stage(
-        self, settings, sample_raw, fake_ollama, fake_qdrant, fake_redis, monkeypatch
+        self,
+        settings,
+        sample_raw,
+        fake_ollama,
+        fake_qdrant,
+        fake_redis,
+        fake_document_storage,
+        monkeypatch,
     ):
         monkeypatch.setattr(svc, "OllamaClient", lambda *a, **k: fake_ollama)
         monkeypatch.setattr(svc, "create_embedder", lambda *a, **k: fake_ollama)
@@ -262,6 +288,7 @@ class TestIngest:
             ReferenceResolver(fake_qdrant, DocumentRegistry(redis_client), s),
             fake_qdrant,
             DocumentRegistry(redis_client),
+            fake_document_storage,
             JobStore(redis_client),
             s,
         )
@@ -444,6 +471,8 @@ class TestUpdateDocument:
         assert wired.registry.has_hash(h2)
         assert wired.jobs.get("j2")["status"] == "done"
         assert wired.jobs.get("j2")["new_nodes"] == res2["new_nodes"]
+        assert wired.jobs.get("j2")["overall_progress"] == 100
+        assert wired.jobs.get("j2")["stage_index"] == 7
 
     def test_update_emits_document_updated_event(self, wired, sample_raw):
         res1 = self._base(wired, sample_raw)
@@ -457,6 +486,8 @@ class TestUpdateDocument:
         assert events[1]["payload"] == {
             "document_name": res1["name"],
             "version": res2["version"],
+            "user_id": None,
+            "scenario_id": None,
         }
 
     def test_update_unknown_name_raises(self, wired):
@@ -542,6 +573,8 @@ class TestDeleteDocument:
             "document_name": res["name"],
             "versions_removed": [res["version"]],
             "document_removed": True,
+            "user_id": None,
+            "scenario_id": None,
         }
 
     def test_version_delete_emits_event_with_document_kept(self, wired, sample_raw):
@@ -565,7 +598,112 @@ class TestDeleteDocument:
             "document_name": res1["name"],
             "versions_removed": ["ред. 2"],
             "document_removed": False,  # the 2020 edition is still stored
+            "user_id": None,
+            "scenario_id": None,
         }
+
+
+class TestSourceFileStorage:
+    def test_ingest_stamps_source_object_key_on_payload_and_registry(
+        self, wired, sample_raw
+    ):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest(
+            "doc.docx", sample_raw, h, source_object_key="key-v1"
+        )
+        assert all(
+            pl.get("source_object_key") == "key-v1"
+            for _v, pl in wired.qdrant.points.values()
+        )
+        rec = wired.registry.get_document(res["doc_id"])
+        assert rec["source_object_key"] == "key-v1"
+
+    def test_delete_whole_document_removes_its_source_object(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest(
+            "doc.docx", sample_raw, h, source_object_key="key-v1"
+        )
+        wired.ingestion.delete_document(res["name"])
+        assert wired.storage.delete_calls == ["key-v1"]
+
+    def test_delete_single_version_removes_only_that_versions_object(
+        self, wired, sample_raw
+    ):
+        h1 = DocumentParser.content_hash(sample_raw)
+        res1 = wired.ingestion.ingest(
+            "doc.docx", sample_raw, h1, source_object_key="key-v1"
+        )
+        updated = sample_raw + [
+            {
+                "text": "Новый пункт документа.",
+                "category": "NarrativeText",
+                "html": None,
+            }
+        ]
+        h2 = DocumentParser.content_hash(updated)
+        wired.ingestion.update(
+            res1["name"],
+            "doc.docx",
+            updated,
+            h2,
+            version_override="ред. 2",
+            source_object_key="key-v2",
+        )
+
+        wired.ingestion.delete_document(res1["name"], version="ред. 2")
+
+        assert wired.storage.delete_calls == ["key-v2"]
+
+    def test_delete_all_versions_removes_every_distinct_object(self, wired, sample_raw):
+        h1 = DocumentParser.content_hash(sample_raw)
+        res1 = wired.ingestion.ingest(
+            "doc.docx", sample_raw, h1, source_object_key="key-v1"
+        )
+        updated = sample_raw + [
+            {
+                "text": "Новый пункт документа.",
+                "category": "NarrativeText",
+                "html": None,
+            }
+        ]
+        h2 = DocumentParser.content_hash(updated)
+        wired.ingestion.update(
+            res1["name"],
+            "doc.docx",
+            updated,
+            h2,
+            version_override="ред. 2",
+            source_object_key="key-v2",
+        )
+
+        wired.ingestion.delete_document(res1["name"])
+
+        assert set(wired.storage.delete_calls) == {"key-v1", "key-v2"}
+
+    def test_delete_without_source_object_key_deletes_nothing(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest("doc.docx", sample_raw, h)  # no source_object_key
+        wired.ingestion.delete_document(res["name"])
+        assert wired.storage.delete_calls == []
+
+
+class TestBuildSourceUrl:
+    def test_none_when_no_object_key(self):
+        assert svc.build_source_url({}, "СП 1", "v1") is None
+
+    def test_shared_document_link(self):
+        url = svc.build_source_url({"source_object_key": "k"}, "СП 1", "v1")
+        assert url == "/documents/%D0%A1%D0%9F%201/source?version=v1"
+
+    def test_user_document_link(self):
+        url = svc.build_source_url(
+            {"source_object_key": "k", "user_id": "u1", "scenario_id": "s1"},
+            "СП 1",
+            "v1",
+        )
+        assert url == (
+            "/user-documents/%D0%A1%D0%9F%201/source?user_id=u1&scenario_id=s1&version=v1"
+        )
 
 
 class TestReloadDocument:
@@ -596,6 +734,7 @@ class TestReloadDocument:
             pl["versions"] == ["ред. 9"] for _v, pl in wired.qdrant.points.values()
         )
         assert wired.jobs.get("jr")["status"] == "done"
+        assert wired.jobs.get("jr")["overall_progress"] == 100
 
     def test_reload_of_absent_document_acts_as_ingest(self, wired, sample_raw):
         h = DocumentParser.content_hash(sample_raw)
@@ -619,6 +758,8 @@ class TestReloadDocument:
         assert events[1]["payload"] == {
             "document_name": res1["name"],
             "version": res2["version"],
+            "user_id": None,
+            "scenario_id": None,
         }
 
     def test_reload_of_absent_document_emits_processed(self, wired, sample_raw):
@@ -626,7 +767,11 @@ class TestReloadDocument:
         wired.ingestion.reload("Новый документ", "doc.docx", sample_raw, h)
         events = outbox_entries(wired.outbox)
         assert [e["model"] for e in events] == ["DocumentProcessed"]
-        assert events[0]["payload"] == {"document_name": "Новый документ"}
+        assert events[0]["payload"] == {
+            "document_name": "Новый документ",
+            "user_id": None,
+            "scenario_id": None,
+        }
 
 
 class TestSearch:
@@ -637,6 +782,13 @@ class TestSearch:
         assert resp.count >= 1
         assert resp.hits[0].text
 
+    def test_search_hit_source_file_url_reflects_stored_object(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest("doc.docx", sample_raw, h, source_object_key="key-v1")
+        resp = wired.search.search(SearchRequest(query="требования", limit=5), None)
+        assert resp.hits[0].source_file_url is not None
+        assert resp.hits[0].source_file_url.startswith("/documents/")
+
     def test_context_height_expands_neighbours(self, wired, sample_raw):
         h = DocumentParser.content_hash(sample_raw)
         wired.ingestion.ingest("doc.docx", sample_raw, h)
@@ -645,25 +797,193 @@ class TestSearch:
         )
         assert resp.hits[0].context is not None
 
+    def test_search_excludes_user_scoped_documents_by_default(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest("doc.docx", sample_raw, h)
+        from qdrant_client.models import PointStruct
+
+        wired.qdrant.upsert(
+            [
+                PointStruct(
+                    id="user-pt",
+                    vector=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    payload={
+                        "doc_id": "u-doc",
+                        "name": "User doc",
+                        "version": "v1",
+                        "kind": "text",
+                        "type": "clause",
+                        "text": "требования пользователя",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "scenario_id": "s1",
+                    },
+                )
+            ]
+        )
+        resp = wired.search.search(SearchRequest(query="требования", limit=50), None)
+        assert all(h.name != "User doc" for h in resp.hits)
+
+    def test_search_combined_includes_shared_and_user_index(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest("doc.docx", sample_raw, h)
+        from qdrant_client.models import PointStruct
+
+        wired.qdrant.upsert(
+            [
+                PointStruct(
+                    id="user-pt",
+                    vector=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    payload={
+                        "doc_id": "u-doc",
+                        "name": "User doc",
+                        "version": "v1",
+                        "kind": "text",
+                        "type": "clause",
+                        "text": "требования пользователя",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "scenario_id": "s1",
+                    },
+                )
+            ]
+        )
+        resp = wired.search.search(
+            SearchRequest(query="требования", limit=50, user_id="u1", scenario_id="s1"),
+            None,
+        )
+        names = {h.name for h in resp.hits}
+        assert "User doc" in names and "ТЕСТ 1" in names
+
+    def test_search_index_only_excludes_shared(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest("doc.docx", sample_raw, h)
+        from qdrant_client.models import PointStruct
+
+        wired.qdrant.upsert(
+            [
+                PointStruct(
+                    id="user-pt",
+                    vector=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    payload={
+                        "doc_id": "u-doc",
+                        "name": "User doc",
+                        "version": "v1",
+                        "kind": "text",
+                        "type": "clause",
+                        "text": "требования пользователя",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "scenario_id": "s1",
+                    },
+                )
+            ]
+        )
+        resp = wired.search.search(
+            SearchRequest(
+                query="требования",
+                limit=50,
+                user_id="u1",
+                scenario_id="s1",
+                include_shared=False,
+            ),
+            None,
+        )
+        names = {h.name for h in resp.hits}
+        assert names == {"User doc"}
+
+    def test_search_inherits_from_parent_scenario(self, wired):
+        from qdrant_client.models import PointStruct
+
+        wired.qdrant.upsert(
+            [
+                PointStruct(
+                    id="parent-pt",
+                    vector=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    payload={
+                        "doc_id": "d1",
+                        "name": "Parent doc",
+                        "version": "v1",
+                        "kind": "text",
+                        "type": "clause",
+                        "text": "наследование сценария",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "scenario_id": "s1",
+                    },
+                )
+            ]
+        )
+        wired.user_index_registry.create("u1", "s1", "p1")
+        wired.user_index_registry.create("u1", "s2", "p1", parent_scenario_id="s1")
+
+        resp = wired.search.search(
+            SearchRequest(
+                query="наследование",
+                limit=50,
+                user_id="u1",
+                scenario_id="s2",
+                include_shared=False,
+            ),
+            None,
+        )
+        assert {h.name for h in resp.hits} == {"Parent doc"}
+
+        resp_no_inherit = wired.search.search(
+            SearchRequest(
+                query="наследование",
+                limit=50,
+                user_id="u1",
+                scenario_id="s2",
+                include_shared=False,
+                include_inherited=False,
+            ),
+            None,
+        )
+        assert resp_no_inherit.hits == []
+
     def test_build_filter_combines_conditions(self, wired):
         req = SearchRequest(query="q", name="СП 1", version="v1", tags=["a", "b"])
         flt = wired.search._build_filter(req, kind="text")
-        assert flt is not None and len(flt.must) == 4  # kind + name + version + tags
+        # kind + name + version + tags + default shared-only exclusion
+        assert flt is not None and len(flt.must) == 5
 
     def test_build_filter_with_block_and_types(self, wired):
         req = SearchRequest(query="q", block="amendment", types=["clause", "subclause"])
         flt = wired.search._build_filter(req, kind=None)
-        assert flt is not None and len(flt.must) == 2  # block + types
+        assert flt is not None and len(flt.must) == 3  # block + types + shared-only
 
     def test_build_filter_document_names(self, wired):
         req = SearchRequest(query="q", document_names=["СП 1", "СП 2"])
         flt = wired.search._build_filter(req, kind=None)
-        assert flt is not None and len(flt.must) == 1
+        assert flt is not None and len(flt.must) == 2  # document_names + shared-only
         cond = flt.must[0]
         assert cond.key == "name" and set(cond.match.any) == {"СП 1", "СП 2"}
 
     def test_build_filter_none_when_no_constraints(self, wired):
-        assert wired.search._build_filter(SearchRequest(query="q"), kind=None) is None
+        # No longer None: a default filter always excludes user-scoped documents so
+        # unscoped callers keep seeing only the shared/regular document corpus.
+        flt = wired.search._build_filter(SearchRequest(query="q"), kind=None)
+        assert flt is not None and len(flt.must) == 1
+        assert flt.must[0].is_empty.key == "user_id"
+
+    def test_build_filter_user_scope_combined(self, wired):
+        req = SearchRequest(query="q", user_id="u1", scenario_id="s1")
+        flt = wired.search._build_filter(req, kind=None)
+        assert flt.should is not None and len(flt.should) == 2
+
+    def test_build_filter_user_scope_index_only(self, wired):
+        req = SearchRequest(
+            query="q", user_id="u1", scenario_id="s1", include_shared=False
+        )
+        flt = wired.search._build_filter(req, kind=None)
+        assert flt.should is None
+        keys = {c.key for c in flt.must}
+        assert keys == {"user_id", "scenario_id"}
+
+    def test_build_filter_requires_user_id_and_scenario_id_together(self):
+        with pytest.raises(ValueError):
+            SearchRequest(query="q", user_id="u1")
 
     def test_repr(self, wired):
         assert repr(wired.search).startswith("SearchService(")
@@ -700,6 +1020,118 @@ class TestDocumentsService:
 
     def test_repr(self, wired):
         assert repr(wired.documents).startswith("DocumentsService(")
+
+    def test_source_file_url_populated_when_object_key_present(self, wired, sample_raw):
+        from urllib.parse import quote
+
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest("doc.docx", sample_raw, h, source_object_key="key-v1")
+        doc = wired.documents.list_documents().documents[0]
+        assert doc.source_file_url == (
+            f"/documents/%D0%A2%D0%95%D0%A1%D0%A2%201/source"
+            f"?version={quote(doc.version, safe='')}"
+        )
+
+    def test_source_file_url_none_without_object_key(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest("doc.docx", sample_raw, h)
+        doc = wired.documents.list_documents().documents[0]
+        assert doc.source_file_url is None
+
+    def test_default_listing_excludes_user_scoped_documents(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        wired.ingestion.ingest("doc.docx", sample_raw, h)
+        from qdrant_client.models import PointStruct
+
+        wired.qdrant.upsert(
+            [
+                PointStruct(
+                    id="user-pt",
+                    vector=[0.0],
+                    payload={
+                        "doc_id": "u-doc",
+                        "name": "User doc",
+                        "version": "v1",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "scenario_id": "s1",
+                    },
+                )
+            ]
+        )
+        names = {d.name for d in wired.documents.list_documents().documents}
+        assert names == {"ТЕСТ 1"}  # the user-scoped point never leaks in
+
+
+class TestDocumentsServiceUserScope:
+    def test_scoped_listing_returns_only_matching_index(self, wired):
+        from qdrant_client.models import PointStruct
+
+        wired.qdrant.upsert(
+            [
+                PointStruct(
+                    id="p1",
+                    vector=[0.0],
+                    payload={
+                        "doc_id": "d1",
+                        "name": "Own doc",
+                        "version": "v1",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "scenario_id": "s1",
+                    },
+                ),
+                PointStruct(
+                    id="p2",
+                    vector=[0.0],
+                    payload={
+                        "doc_id": "d2",
+                        "name": "Other user doc",
+                        "version": "v1",
+                        "user_id": "OTHER",
+                        "project_id": "p1",
+                        "scenario_id": "s1",
+                    },
+                ),
+            ]
+        )
+        resp = wired.documents.list_documents(user_id="u1", scenario_ids=["s1"])
+        assert {d.name for d in resp.documents} == {"Own doc"}
+        assert resp.documents[0].scenario_id == "s1"
+
+    def test_scoped_listing_includes_ancestor_chain(self, wired):
+        from qdrant_client.models import PointStruct
+
+        wired.qdrant.upsert(
+            [
+                PointStruct(
+                    id="parent-pt",
+                    vector=[0.0],
+                    payload={
+                        "doc_id": "d1",
+                        "name": "Parent doc",
+                        "version": "v1",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "scenario_id": "s1",
+                    },
+                ),
+                PointStruct(
+                    id="child-pt",
+                    vector=[0.0],
+                    payload={
+                        "doc_id": "d2",
+                        "name": "Child doc",
+                        "version": "v1",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "scenario_id": "s2",
+                    },
+                ),
+            ]
+        )
+        resp = wired.documents.list_documents(user_id="u1", scenario_ids=["s2", "s1"])
+        assert {d.name for d in resp.documents} == {"Parent doc", "Child doc"}
 
 
 class TestGeneralPurposeFields:
@@ -789,6 +1221,68 @@ class TestLibrary:
 
     def test_repr(self, wired):
         assert repr(wired.library).startswith("LibraryService(")
+
+    def test_source_file_url_populated_from_registry_record(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest(
+            "doc.docx", sample_raw, h, source_object_key="key-v1"
+        )
+        summary = wired.library.list_documents().documents[0]
+        assert summary.doc_id == res["doc_id"]
+        assert summary.source_file_url is not None
+        assert summary.source_file_url.startswith("/documents/")
+        assert wired.library.get_document(res["doc_id"]).source_file_url is not None
+
+
+class TestDocumentEditor:
+    def test_updates_document_metadata_and_all_fragment_tags(self, wired, sample_raw):
+        result = wired.ingestion.ingest(
+            "doc.docx", sample_raw, DocumentParser.content_hash(sample_raw)
+        )
+        response = wired.editor.update_document(
+            result["doc_id"],
+            {
+                "title": "Ручной заголовок",
+                "tags": ["проверено"],
+                "metadata": {"owner": "admin"},
+                "external_ids": {"code": "MANUAL-1"},
+            },
+        )
+        assert response.points_updated == result["nodes"]
+        payloads = wired.qdrant.list_by_doc(result["doc_id"])
+        assert all(p["title"] == "Ручной заголовок" for p in payloads)
+        assert all(p["tags"] == ["проверено"] for p in payloads)
+        assert "MANUAL-1" in payloads[0]["lookup_keys"]
+        assert wired.registry.get_document(result["doc_id"])["metadata"] == {
+            "owner": "admin"
+        }
+
+    def test_text_edit_reembeds_fragment(self, wired, sample_raw):
+        result = wired.ingestion.ingest(
+            "doc.docx", sample_raw, DocumentParser.content_hash(sample_raw)
+        )
+        fragment_id = next(iter(wired.qdrant.points))
+        old_vector = wired.qdrant.points[fragment_id][0]
+        # The hermetic fake intentionally uses tiny vectors; align the configured dimension
+        # with that fake while retaining the production mismatch guard in the service.
+        wired.editor.settings.vector_size = len(old_vector)
+        updated = wired.editor.update_fragment(
+            result["doc_id"], fragment_id, {"text": "Новый ручной текст"}
+        )
+        new_vector, payload = wired.qdrant.points[fragment_id]
+        assert updated["text"] == payload["text"] == "Новый ручной текст"
+        assert (
+            new_vector is not old_vector
+            and len(new_vector) == wired.editor.settings.vector_size
+        )
+
+    def test_rejects_fragment_from_another_document(self, wired, sample_raw):
+        wired.ingestion.ingest(
+            "doc.docx", sample_raw, DocumentParser.content_hash(sample_raw)
+        )
+        fragment_id = next(iter(wired.qdrant.points))
+        with pytest.raises(KeyError):
+            wired.editor.update_fragment("other-doc", fragment_id, {"tags": ["x"]})
 
 
 class TestTagsService:

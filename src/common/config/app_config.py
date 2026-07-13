@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     redis_job_ttl: int = 86400  # seconds, job status TTL
 
+    # --- Admin UI ---
+    # No insecure default: /admin/ui stays unavailable until a password is configured.
+    # The password also derives the HMAC key for the short-lived login cookie.
+    admin_password: str | None = None
+    admin_session_hours: int = 12
+
     # --- Search ---
     search_limit: int = 10
     max_context_height: int = 6  # cap on context height (neighbours before/after)
@@ -115,6 +121,14 @@ class Settings(BaseSettings):
     )
     default_corpus: str = "default"  # logical corpus/namespace a document belongs to
     default_lang: str | None = None  # ISO-639 code; None = unknown / not detected
+
+    # --- MinIO (original source files, closed contour — proxied via this service) ---
+    minio_endpoint: str = "localhost:9000"
+    minio_access_key: str = "minioadmin"
+    minio_secret_key: str = "minioadmin"
+    minio_secure: bool = False
+    minio_bucket_documents: str = "dvd-documents"  # shared/regular document corpus
+    minio_bucket_user_documents: str = "dvd-user-documents"  # all user document indices
 
     # --- Kafka (document-processed events via otteroad) ---
     # Publishing is optional: it stays off until a broker is configured

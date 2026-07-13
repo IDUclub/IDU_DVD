@@ -3,7 +3,7 @@
 help:
 	@echo "Available targets:"
 	@echo "  install           Install dependencies (incl. dev group) via uv"
-	@echo "  up                Start Qdrant + Redis (docker compose)"
+	@echo "  up                Start Qdrant + Redis + MinIO (docker compose)"
 	@echo "  down              Stop the local stack"
 	@echo "  run               Run the API locally (uvicorn, reload)"
 	@echo "  test              Run unit tests only (fast, no external services)"
@@ -14,7 +14,7 @@ install:
 	uv sync
 
 up:
-	docker compose up -d qdrant redis
+	docker compose up -d qdrant redis minio
 
 down:
 	docker compose down

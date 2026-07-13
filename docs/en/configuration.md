@@ -94,6 +94,27 @@ namespaced.
 | `DVD_REDIS_URL` | `redis://localhost:6379/0` | Redis address |
 | `DVD_REDIS_JOB_TTL` | `86400` | job status TTL, seconds |
 
+### MinIO (original source files)
+
+Every upload/PATCH/PUT on `/documents` and `/user-documents` persists the original file to MinIO,
+which runs on a closed network contour the outside world can't reach — API responses only ever
+carry a link back to this service (`GET /documents/{name}/source`, `GET
+/user-documents/{name}/source`), which proxies the download server-side. Saving is **fail-closed**:
+if MinIO is unreachable, the request fails before anything is queued for indexing. Objects are keyed
+by content hash (`{content_hash}{extension}`), so re-uploading identical content reuses the same
+object. Two buckets separate the shared corpus from user-scoped indices; deleting a
+version/document/whole user index removes the matching object(s) too (best-effort — a MinIO
+failure here only logs, it doesn't block the Qdrant/Redis deletion).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DVD_MINIO_ENDPOINT` | `localhost:9000` | MinIO/S3 endpoint (`host:port`) |
+| `DVD_MINIO_ACCESS_KEY` | `minioadmin` | access key |
+| `DVD_MINIO_SECRET_KEY` | `minioadmin` | secret key |
+| `DVD_MINIO_SECURE` | `false` | use HTTPS for the MinIO connection |
+| `DVD_MINIO_BUCKET_DOCUMENTS` | `dvd-documents` | bucket for the shared/regular document corpus |
+| `DVD_MINIO_BUCKET_USER_DOCUMENTS` | `dvd-user-documents` | bucket for all user document indices |
+
 ### Kafka (document lifecycle events)
 
 Publishing is optional and stays off until `DVD_KAFKA_BOOTSTRAP_SERVERS` is set. Document

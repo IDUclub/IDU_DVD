@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DVD Admin</title>
+  <link rel="stylesheet" href="/admin/ui/assets/admin.css">
+  <script src="/admin/ui/assets/admin.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="#overview"><span class="brand-mark">D</span><span>DVD Admin<small>Document Vector DB</small></span></a>
+    <nav>
+      <button class="nav-link active" data-view="overview">Обзор</button>
+      <button class="nav-link" data-view="documents">Документы</button>
+      <button class="nav-link" data-view="jobs">Очередь <span id="jobs-badge" class="badge">0</span></button>
+      <button class="nav-link" data-view="settings">Парсинг</button>
+    </nav>
+    <div class="sidebar-footer">
+      <span>Версия {{ version }}</span>
+      <form method="post" action="/admin/ui/logout"><button class="text-button" type="submit">Выйти</button></form>
+    </div>
+  </aside>
+
+  <main class="content">
+    <header class="topbar">
+      <div><p class="eyebrow">УПРАВЛЕНИЕ БИБЛИОТЕКОЙ</p><h1 id="page-title">Обзор</h1></div>
+      <div class="top-actions"><button id="theme-toggle" class="icon-button" aria-label="Переключить тему">◐</button><button id="open-upload" class="button primary">＋ Загрузить</button></div>
+    </header>
+
+    <div id="toast" class="toast" role="status"></div>
+
+    <section id="view-overview" class="view active">
+      <div class="stat-grid">
+        <article class="stat-card"><span>Документов</span><strong id="stat-docs">—</strong><small>версий в индексе</small></article>
+        <article class="stat-card"><span>Фрагментов</span><strong id="stat-nodes">—</strong><small>текстов и таблиц</small></article>
+        <article class="stat-card"><span>Активных задач</span><strong id="stat-jobs">—</strong><small>в очереди и обработке</small></article>
+        <article class="stat-card"><span>Уникальных тегов</span><strong id="stat-tags">—</strong><small>в коллекции</small></article>
+      </div>
+      <div class="panel-grid">
+        <article class="panel"><div class="panel-head"><div><p class="eyebrow">АКТИВНОСТЬ</p><h2>Текущая обработка</h2></div><button class="text-button goto" data-target="jobs">Все задачи</button></div><div id="overview-jobs" class="empty">Активных задач нет</div></article>
+        <article class="panel"><div class="panel-head"><div><p class="eyebrow">ПОСЛЕДНИЕ</p><h2>Загруженные документы</h2></div><button class="text-button goto" data-target="documents">Открыть библиотеку</button></div><div id="recent-docs" class="compact-list"></div></article>
+      </div>
+    </section>
+
+    <section id="view-documents" class="view">
+      <article class="panel">
+        <div class="toolbar"><div class="search-box">⌕ <input id="doc-search" placeholder="Название, версия или тег"></div><select id="tag-filter"><option value="">Все теги</option></select><button id="refresh-docs" class="button">Обновить</button></div>
+        <div class="table-wrap"><table><thead><tr><th>Документ</th><th>Версия</th><th>Теги</th><th>Фрагменты</th><th>Загружен</th><th></th></tr></thead><tbody id="documents-body"></tbody></table></div>
+        <div id="documents-empty" class="empty hidden">Документы не найдены</div>
+      </article>
+    </section>
+
+    <section id="view-jobs" class="view">
+      <article class="panel"><div class="panel-head"><div><p class="eyebrow">ОЧЕРЕДЬ</p><h2>Обработка документов</h2></div><span class="live-dot">● обновляется автоматически</span></div><div id="jobs-list" class="job-list"></div><div id="jobs-empty" class="empty">Активных задач нет</div></article>
+    </section>
+
+    <section id="view-settings" class="view">
+      <article class="panel settings-panel"><div class="panel-head"><div><p class="eyebrow">КОНФИГУРАЦИЯ</p><h2>Настройки парсинга</h2></div></div><p class="muted">Изменения применяются к следующим загрузкам и сохраняются в .env.</p><form id="settings-form" class="settings-grid"></form><div class="form-actions"><button form="settings-form" class="button primary" type="submit">Сохранить настройки</button></div></article>
+    </section>
+  </main>
+
+  <dialog id="upload-dialog">
+    <form id="upload-form" class="dialog-card">
+      <div class="dialog-head"><div><p class="eyebrow">ДОКУМЕНТ</p><h2 id="upload-title">Загрузка</h2></div><button type="button" class="icon-button close-dialog">×</button></div>
+      <label>Операция<select id="upload-operation"><option value="upload">Новый документ</option><option value="update">Новая версия (PATCH)</option><option value="reload">Полная замена (PUT)</option></select></label>
+      <label>Файл<input id="upload-file" type="file" required></label>
+      <div class="two-col"><label>Название<input id="upload-name" placeholder="СП 1.13130.2020"></label><label>Версия<input id="upload-version" placeholder="2026"></label></div>
+      <details><summary>Дополнительные метаданные</summary><div class="two-col details-grid"><label>Заголовок<input id="upload-doc-title"></label><label>Тип<input id="upload-doc-type" placeholder="regulation"></label><label>Корпус<input id="upload-corpus"></label><label>Язык<input id="upload-lang" placeholder="ru"></label></div></details>
+      <section id="upload-live-progress" class="upload-live-progress hidden" aria-live="polite">
+        <div class="progress-label"><span>Общий прогресс</span><span id="upload-overall-value">0%</span></div>
+        <progress id="upload-overall-bar" class="native-progress overall-progress" max="100" value="0"></progress>
+        <div class="progress-label task-label"><span id="upload-task-label">Передача файла</span><span id="upload-task-value">0%</span></div>
+        <progress id="upload-task-bar" class="native-progress task-progress" max="100" value="0"></progress>
+      </section>
+      <div class="form-actions"><button type="button" class="button close-dialog">Отмена</button><button id="upload-submit" class="button primary" type="submit">Запустить обработку</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="document-dialog"><div class="dialog-card wide"><div class="dialog-head"><div><p class="eyebrow">ДОКУМЕНТ</p><h2 id="detail-name">—</h2><p id="detail-version" class="muted"></p></div><button type="button" class="icon-button close-dialog">×</button></div><div class="tabs"><button class="tab active" data-tab="metadata">Метаданные</button><button class="tab" data-tab="fragments">Фрагменты</button></div><section id="tab-metadata" class="tab-panel active"><form id="metadata-form" class="settings-grid"></form><div class="form-actions"><button id="delete-document" class="button danger" type="button">Удалить документ</button><button id="delete-version" class="button danger" type="button">Удалить версию</button><button id="replace-document" class="button" type="button">Заменить файл</button><button form="metadata-form" class="button primary" type="submit">Сохранить</button></div></section><section id="tab-fragments" class="tab-panel"><p class="notice">Фрагмент может быть общим для нескольких версий. Правка текста обновит его для всех связанных версий и пересчитает embedding.</p><div id="fragments-list" class="fragment-list"></div></section></div></dialog>
+
+  <dialog id="fragment-dialog"><form id="fragment-form" class="dialog-card wide"><div class="dialog-head"><div><p class="eyebrow">ФРАГМЕНТ</p><h2 id="fragment-title">Редактирование</h2></div><button type="button" class="icon-button close-dialog">×</button></div><label>Текст<textarea id="fragment-text" rows="12" required></textarea></label><label>Теги, через запятую<input id="fragment-tags"></label><label>Метаданные, JSON<textarea id="fragment-metadata" rows="5"></textarea></label><div class="form-actions"><button type="button" class="button close-dialog">Отмена</button><button class="button primary" type="submit">Сохранить и обновить embedding</button></div></form></dialog>
+</body>
+</html>

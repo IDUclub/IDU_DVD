@@ -8,6 +8,7 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 import structlog
 from qdrant_client.models import (
@@ -22,8 +23,13 @@ from src.api_clients import OllamaClient, create_embedder
 from src.broker.events import DocumentDeleted, DocumentProcessed, DocumentUpdated
 from src.broker.outbox import EventOutbox
 from src.common.config import Settings
-from src.common.db.qdrant_client import QdrantRepository
-from src.common.db.redis_client import DocumentRegistry, JobStore
+from src.common.db.minio_client import DocumentStorage
+from src.common.db.qdrant_client import (
+    QdrantRepository,
+    shared_only_condition,
+    user_scope_conditions,
+)
+from src.common.db.redis_client import DocumentRegistry, JobStore, UserIndexRegistry
 from src.dvd_service.dto import (
     DocumentDetail,
     DocumentFragment,
@@ -31,6 +37,7 @@ from src.dvd_service.dto import (
     DocumentList,
     DocumentListResponse,
     DocumentSummary,
+    DocumentUpdateResponse,
     NodePayload,
     SearchHit,
     SearchRequest,
@@ -57,6 +64,15 @@ log = structlog.get_logger(__name__)
 # ``stage_index``/``stage_total`` on the job status. Type-tagging now also emits fragment tags,
 # so there is no separate tagging stage.
 PIPELINE_STAGES = 7
+PIPELINE_STAGE_WEIGHTS = {
+    "structure-markup": 25,
+    "type-tagging": 20,
+    "hierarchy": 6,
+    "identity": 6,
+    "references": 12,
+    "embeddings": 23,
+    "indexing": 8,
+}
 
 
 def _version_condition(version: str) -> Filter:
@@ -67,6 +83,28 @@ def _version_condition(version: str) -> Filter:
             FieldCondition(key="version", match=MatchValue(value=version)),
         ]
     )
+
+
+def build_source_url(payload: dict, name: str, version: str) -> str | None:
+    """The proxied download link for a document's original file — never a raw MinIO URL.
+
+    ``None`` when no source was stored (e.g. ingested before this feature existed). Branches on
+    the payload's own ``user_id``/``scenario_id`` (not the caller's request scope), so a single
+    combined-search response can correctly link both shared and user-index hits.
+    """
+    if not payload.get("source_object_key"):
+        return None
+    q_name = quote(name, safe="")
+    q_version = quote(version, safe="")
+    user_id = payload.get("user_id")
+    scenario_id = payload.get("scenario_id")
+    if user_id and scenario_id:
+        return (
+            f"/user-documents/{q_name}/source"
+            f"?user_id={quote(user_id, safe='')}&scenario_id={quote(scenario_id, safe='')}"
+            f"&version={q_version}"
+        )
+    return f"/documents/{q_name}/source?version={q_version}"
 
 
 class IngestionService:
@@ -80,6 +118,7 @@ class IngestionService:
         reference_resolver: ReferenceResolver,
         qdrant: QdrantRepository,
         registry: DocumentRegistry,
+        storage: DocumentStorage,
         jobs: JobStore,
         settings: Settings,
         outbox: EventOutbox | None = None,
@@ -92,6 +131,7 @@ class IngestionService:
         self.reference_resolver = reference_resolver
         self.qdrant = qdrant
         self.registry = registry
+        self.storage = storage
         self.jobs = jobs
         self.settings = settings
         self.outbox = outbox
@@ -113,6 +153,7 @@ class IngestionService:
             f"reference_resolver={type(self.reference_resolver).__name__}, "
             f"qdrant={type(self.qdrant).__name__}, "
             f"registry={type(self.registry).__name__}, "
+            f"storage={type(self.storage).__name__}, "
             f"jobs={type(self.jobs).__name__}, "
             f"outbox={type(self.outbox).__name__ if self.outbox else None})"
         )
@@ -356,6 +397,7 @@ class IngestionService:
         lang: str | None = None,
         title: str | None = None,
         source_uri: str | None = None,
+        source_object_key: str | None = None,
         external_ids: dict | None = None,
         metadata: dict | None = None,
         effective_date: str | None = None,
@@ -370,16 +412,23 @@ class IngestionService:
         try:
             if job_id:
                 self.jobs.update(job_id, status="processing")
-            progress = Progress(self.jobs, job_id, total_stages=PIPELINE_STAGES)
+            progress = Progress(
+                self.jobs,
+                job_id,
+                total_stages=PIPELINE_STAGES,
+                stage_weights=PIPELINE_STAGE_WEIGHTS,
+            )
             progress.stage("structure-markup")
             parts = self.parser.to_logical_parts(
                 raw, client, on_progress=progress.advance
             )  # Stage 1 + 1.5
+            progress.complete_stage()
 
             progress.stage("type-tagging")
             self.structure.tag(
                 parts, client, on_progress=progress.advance
             )  # Stage 2 + 3 (structural fields + fragment tags in one pass)
+            progress.complete_stage()
 
             progress.stage("hierarchy")
             ranks = self.structure.numbering_ranks(parts)  # Stage 3.5
@@ -387,12 +436,14 @@ class IngestionService:
             self.hierarchy.cap_unnumbered_nesting(tree)
             self.hierarchy.group_amendment(tree)
             nodes = self.hierarchy.flatten(tree)  # prev/next, kind, html
+            progress.complete_stage()
 
             progress.stage("identity")
             name, version = self._resolve_identity(
                 parts, client, name_override, version_override
             )
             version, other_versions = self._resolve_version(name, version, content_hash)
+            progress.complete_stage()
 
             # Fragment tags were produced together with the structural fields (see
             # ``StructureTagger.tag``) and ride the hierarchy onto each node — no extra LLM pass.
@@ -410,11 +461,13 @@ class IngestionService:
                 node_refs = self.reference_resolver.resolve(
                     doc_id, name, raw_refs, numbering_index
                 )
+            progress.complete_stage()
 
             progress.stage("embeddings")
             vectors = self._embed_all(
                 [n["text"] for n in nodes], on_progress=progress.advance
             )
+            progress.complete_stage()
 
             # --- general-purpose identity + provenance (shared by all consumers) ---
             _, spans = self.parser.source_index(raw)
@@ -453,6 +506,7 @@ class IngestionService:
                 "effective_date": effective_date,
                 "source": os.path.basename(file_path),
                 "source_uri": source_uri or os.path.basename(file_path),
+                "source_object_key": source_object_key,
                 "metadata": metadata or {},
                 "uploaded_at": uploaded_at,
             }
@@ -485,9 +539,15 @@ class IngestionService:
                     "status": "active",
                     "external_ids": external_ids,
                     "source_uri": source_uri or os.path.basename(file_path),
+                    "source_object_key": source_object_key,
                     "content_hash": content_hash,
                     "node_count": count,
                     "uploaded_at": uploaded_at,
+                    "effective_date": effective_date,
+                    "metadata": metadata or {},
+                    "tags": sorted(
+                        {tag for values in node_tags.values() for tag in values}
+                    ),
                 },
             )
 
@@ -509,6 +569,7 @@ class IngestionService:
                 "nodes": count,
             }
             if job_id:
+                progress.finish()
                 self.jobs.update(job_id, status="done", **result)
             log.info("ingest_done", **result)
             return result
@@ -535,6 +596,7 @@ class IngestionService:
         lang: str | None = None,
         title: str | None = None,
         source_uri: str | None = None,
+        source_object_key: str | None = None,
         external_ids: dict | None = None,
         metadata: dict | None = None,
         effective_date: str | None = None,
@@ -553,6 +615,12 @@ class IngestionService:
         try:
             if job_id:
                 self.jobs.update(job_id, status="processing")
+            progress = Progress(
+                self.jobs,
+                job_id,
+                total_stages=PIPELINE_STAGES,
+                stage_weights=PIPELINE_STAGE_WEIGHTS,
+            )
             existing = self.qdrant.points_by_name(name)
             if not existing:
                 raise KeyError(f"документ не найден: {name}")
@@ -570,16 +638,28 @@ class IngestionService:
                 existing[0].get("doc_id") or str(uuid.uuid4()),
             )
 
-            parts = self.parser.to_logical_parts(raw, client)  # Stage 1 + 1.5
-            self.structure.tag(parts, client)  # Stage 2 + 3
+            progress.stage("structure-markup")
+            parts = self.parser.to_logical_parts(
+                raw, client, on_progress=progress.advance
+            )  # Stage 1 + 1.5
+            progress.complete_stage()
+            progress.stage("type-tagging")
+            self.structure.tag(
+                parts, client, on_progress=progress.advance
+            )  # Stage 2 + 3
+            progress.complete_stage()
+            progress.stage("hierarchy")
             ranks = self.structure.numbering_ranks(parts)  # Stage 3.5
             tree = self.hierarchy.build(parts, ranks, title=Path(file_path).stem)
             self.hierarchy.cap_unnumbered_nesting(tree)
             self.hierarchy.group_amendment(tree)
             nodes = self.hierarchy.flatten(tree)
+            progress.complete_stage()
 
+            progress.stage("identity")
             _, version = self._resolve_identity(parts, client, name, version_override)
             version, other_versions = self._resolve_version(name, version, content_hash)
+            progress.complete_stage()
 
             for order, n in enumerate(nodes):
                 n["_order"] = order
@@ -636,19 +716,29 @@ class IngestionService:
 
             node_tags = {n["id"]: n.get("tags", []) for n in new_nodes}
             node_refs: dict[str, list] = {}
+            progress.stage("references")
             if self.settings.enable_reference_linking and new_nodes:
                 numbering_index = {
                     num: _mapped(nid)
                     for num, nid in self._numbering_index(nodes).items()
                 }
-                raw_refs = self.reference_extractor.extract(new_nodes, client)
+                raw_refs = self.reference_extractor.extract(
+                    new_nodes, client, on_progress=progress.advance
+                )
                 node_refs = self.reference_resolver.resolve(
                     doc_id, name, raw_refs, numbering_index
                 )
+            progress.complete_stage()
 
+            progress.stage("embeddings")
             vectors = (
-                self._embed_all([n["text"] for n in new_nodes]) if new_nodes else []
+                self._embed_all(
+                    [n["text"] for n in new_nodes], on_progress=progress.advance
+                )
+                if new_nodes
+                else []
             )
+            progress.complete_stage()
             _, spans = self.parser.source_index(raw)
             external_ids = external_ids or {}
             uploaded_at = datetime.now(timezone.utc).isoformat()
@@ -676,9 +766,11 @@ class IngestionService:
                 "effective_date": effective_date,
                 "source": os.path.basename(file_path),
                 "source_uri": source_uri or os.path.basename(file_path),
+                "source_object_key": source_object_key,
                 "metadata": metadata or {},
                 "uploaded_at": uploaded_at,
             }
+            progress.stage("indexing")
             points = self._build_points(
                 new_nodes, vectors, spans, doc_id, node_tags, node_refs, identity
             )
@@ -704,9 +796,16 @@ class IngestionService:
                     "status": "active",
                     "external_ids": external_ids,
                     "source_uri": identity["source_uri"],
+                    "source_object_key": source_object_key,
                     "content_hash": content_hash,
                     "node_count": len(reused_ids) + count,
                     "uploaded_at": uploaded_at,
+                    "effective_date": effective_date,
+                    "metadata": metadata or {},
+                    "tags": sorted(
+                        {tag for point in base_points for tag in point.get("tags", [])}
+                        | {tag for values in node_tags.values() for tag in values}
+                    ),
                 },
             )
 
@@ -725,6 +824,7 @@ class IngestionService:
                 "reused_nodes": len(reused_ids),
             }
             if job_id:
+                progress.finish()
                 self.jobs.update(job_id, status="done", **result)
             log.info("update_done", **result)
             return result
@@ -755,7 +855,14 @@ class IngestionService:
         when the reload effectively created the document.
         """
         if job_id:
-            self.jobs.update(job_id, status="processing")
+            self.jobs.update(
+                job_id,
+                status="processing",
+                stage="preparing",
+                stage_index=0,
+                task_progress=0,
+                overall_progress=10,
+            )
         replaced = True
         try:
             self.delete_document(name, emit_event=False)
@@ -765,6 +872,8 @@ class IngestionService:
             if job_id:
                 self.jobs.update(job_id, status="error", error=str(exc))
             raise
+        if job_id:
+            self.jobs.update(job_id, task_progress=100, progress=1, progress_total=1)
         result = self.ingest(
             file_path,
             raw,
@@ -804,11 +913,16 @@ class IngestionService:
                 | {t for p in existing for t in self._version_tags(p)}
             )
             doc_ids = {p["doc_id"] for p in existing if p.get("doc_id")}
+            source_keys = {
+                p["source_object_key"] for p in existing if p.get("source_object_key")
+            }
             self.qdrant.delete_by_name(name)
             self.registry.remove_hashes(name)
             for did in doc_ids:
                 self.registry.unregister_document(did)
             self.registry.unregister_name(name)
+            for key in source_keys:
+                self.storage.delete(key)
             result = {
                 "name": name,
                 "versions_removed": versions_removed,
@@ -829,6 +943,17 @@ class IngestionService:
         tagged = [p for p in existing if version in self._version_tags(p)]
         if not tagged and version not in known_versions:
             raise KeyError(f"версия не найдена: {name} / {version}")
+        # The fragments this version's ingest/update call actually stamped its source_object_key
+        # onto — ``version`` records "the version a fragment first appeared in", so this is the
+        # correct (and only) place that key lives, regardless of which fragments are later shared.
+        origin_key = next(
+            (
+                p["source_object_key"]
+                for p in existing
+                if p.get("version") == version and p.get("source_object_key")
+            ),
+            None,
+        )
         to_delete = [p["id"] for p in tagged if set(self._version_tags(p)) == {version}]
         tag_groups: dict[tuple, list[str]] = {}
         for p in tagged:
@@ -853,6 +978,8 @@ class IngestionService:
         document_removed = not remaining_versions and len(to_delete) == len(existing)
         if document_removed:
             self.registry.unregister_name(name)
+        if origin_key:
+            self.storage.delete(origin_key)
 
         result = {
             "name": name,
@@ -873,9 +1000,15 @@ class IngestionService:
 
 
 class SearchService:
-    def __init__(self, qdrant: QdrantRepository, settings: Settings) -> None:
+    def __init__(
+        self,
+        qdrant: QdrantRepository,
+        settings: Settings,
+        user_index_registry: UserIndexRegistry,
+    ) -> None:
         self.qdrant = qdrant
         self.settings = settings
+        self.user_index_registry = user_index_registry
 
     def __repr__(self) -> str:
         return (
@@ -916,7 +1049,29 @@ class SearchService:
             must.append(
                 FieldCondition(key="name", match=MatchAny(any=req.document_names))
             )
-        return Filter(must=must) if must else None
+        if req.project_id:
+            must.append(
+                FieldCondition(key="project_id", match=MatchValue(value=req.project_id))
+            )
+
+        if req.user_id and req.scenario_id:
+            chain = (
+                self.user_index_registry.ancestor_chain(req.user_id, req.scenario_id)
+                if req.include_inherited
+                else [req.scenario_id]
+            )
+            user_scope = Filter(must=user_scope_conditions(req.user_id, chain))
+            if req.include_shared:
+                return Filter(
+                    must=must,
+                    should=[Filter(must=[shared_only_condition()]), user_scope],
+                )
+            return Filter(must=must + user_scope.must)
+
+        # Default: exclude user-scoped documents so unscoped callers see no behavior
+        # change now that user indices share this collection.
+        must.append(shared_only_condition())
+        return Filter(must=must)
 
     def _expand_context(self, payload: dict, height: int) -> str:
         """Append `height` fragments before and after along the prev_id/next_id chain."""
@@ -973,6 +1128,9 @@ class SearchService:
                     corpus=pl.get("corpus", "default"),
                     lang=pl.get("lang"),
                     external_ids=pl.get("external_ids", {}) or {},
+                    user_id=pl.get("user_id"),
+                    project_id=pl.get("project_id"),
+                    scenario_id=pl.get("scenario_id"),
                     kind=pl.get("kind", "text"),
                     type=pl.get("type", ""),
                     block=pl.get("block", "main"),
@@ -984,6 +1142,9 @@ class SearchService:
                     prev_id=pl.get("prev_id"),
                     next_id=pl.get("next_id"),
                     source_uri=pl.get("source_uri"),
+                    source_file_url=build_source_url(
+                        pl, pl.get("name", ""), pl.get("version", "")
+                    ),
                     char_start=pl.get("char_start"),
                     char_end=pl.get("char_end"),
                     page_start=pl.get("page_start"),
@@ -1016,7 +1177,12 @@ class DocumentsService:
 
     @staticmethod
     def _build_filter(
-        name: str | None, version: str | None, block: str | None, tags: list[str] | None
+        name: str | None,
+        version: str | None,
+        block: str | None,
+        tags: list[str] | None,
+        user_id: str | None = None,
+        scenario_ids: list[str] | None = None,
     ) -> Filter | None:
         must = []
         if name:
@@ -1027,7 +1193,12 @@ class DocumentsService:
             must.append(FieldCondition(key="block", match=MatchValue(value=block)))
         if tags:
             must.append(FieldCondition(key="tags", match=MatchAny(any=tags)))
-        return Filter(must=must) if must else None
+        if user_id and scenario_ids:
+            must.extend(user_scope_conditions(user_id, scenario_ids))
+        else:
+            # Default: exclude user-scoped documents — same backward-compat fix as search.
+            must.append(shared_only_condition())
+        return Filter(must=must)
 
     def list_documents(
         self,
@@ -1037,16 +1208,21 @@ class DocumentsService:
         tags: list[str] | None = None,
         uploaded_from: str | None = None,
         uploaded_to: str | None = None,
+        *,
+        user_id: str | None = None,
+        scenario_ids: list[str] | None = None,
     ) -> DocumentListResponse:
         """Aggregated, per-document view, optionally narrowed by the given filters.
 
         ``uploaded_from``/``uploaded_to`` compare against the ISO 8601 ``uploaded_at`` timestamp
         as plain strings (lexicographic order matches chronological order for ISO 8601) and are
         applied after aggregation, since upload time is a per-document fact, not an indexed
-        per-fragment field.
+        per-fragment field. ``user_id``/``scenario_ids`` scope the listing to a user document
+        index (and, when ``scenario_ids`` holds more than one id, its inheritance chain); both
+        default to the shared/regular document corpus.
         """
         payloads = self.qdrant.scroll_payloads(
-            self._build_filter(name, version, block, tags)
+            self._build_filter(name, version, block, tags, user_id, scenario_ids)
         )
 
         groups: dict[tuple[str, str], dict] = {}
@@ -1067,6 +1243,9 @@ class DocumentsService:
                     "other_versions": pl.get("other_versions", []) or [],
                     "source": pl.get("source"),
                     "uploaded_at": pl.get("uploaded_at") or None,
+                    "scenario_id": pl.get("scenario_id"),
+                    "user_id": pl.get("user_id"),
+                    "source_object_key": None,
                     "blocks": set(),
                     "tags": set(),
                     "node_count": 0,
@@ -1077,6 +1256,13 @@ class DocumentsService:
             g["node_count"] += 1
             if not g["uploaded_at"] and pl.get("uploaded_at"):
                 g["uploaded_at"] = pl["uploaded_at"]
+            # Prefer the fragment that actually originated this version (its ``version`` field,
+            # not just ``versions`` membership) — a fragment shared from an older version still
+            # carries that older version's key, which would otherwise link the wrong file.
+            if pl.get("source_object_key") and (
+                pl.get("version") == doc_version or not g["source_object_key"]
+            ):
+                g["source_object_key"] = pl["source_object_key"]
 
         documents = []
         for (doc_name, doc_version), g in groups.items():
@@ -1096,6 +1282,16 @@ class DocumentsService:
                     node_count=g["node_count"],
                     uploaded_at=uploaded_at,
                     source=g["source"],
+                    scenario_id=g["scenario_id"],
+                    source_file_url=build_source_url(
+                        {
+                            "source_object_key": g["source_object_key"],
+                            "user_id": g["user_id"],
+                            "scenario_id": g["scenario_id"],
+                        },
+                        doc_name,
+                        doc_version,
+                    ),
                 )
             )
         documents.sort(key=lambda d: (d.name, d.version))
@@ -1122,7 +1318,10 @@ class LibraryService:
     @staticmethod
     def _summary_from_record(rec: dict) -> DocumentSummary:
         return DocumentSummary(
-            **{k: rec[k] for k in DocumentSummary.model_fields if k in rec}
+            **{k: rec[k] for k in DocumentSummary.model_fields if k in rec},
+            source_file_url=build_source_url(
+                rec, rec.get("name", ""), rec.get("version", "")
+            ),
         )
 
     @staticmethod
@@ -1141,9 +1340,15 @@ class LibraryService:
             status=pl.get("status", "active"),
             external_ids=pl.get("external_ids", {}) or {},
             source_uri=pl.get("source_uri"),
+            source_file_url=build_source_url(
+                pl, pl.get("name", ""), pl.get("version", "")
+            ),
             content_hash=pl.get("content_hash"),
             node_count=node_count,
             uploaded_at=pl.get("uploaded_at"),
+            effective_date=pl.get("effective_date"),
+            metadata=pl.get("metadata", {}) or {},
+            tags=pl.get("tags", []) or [],
         )
 
     def list_documents(self) -> DocumentList:
@@ -1162,7 +1367,6 @@ class LibraryService:
             if rec
             else self._summary_from_payload(payloads[0], len(payloads))
         )
-
         fragments = [
             DocumentFragment(
                 **{k: pl.get(k) for k in DocumentFragment.model_fields if k in pl}
@@ -1183,6 +1387,107 @@ class LibraryService:
         return DocumentList(count=len(docs), documents=docs)
 
 
+class DocumentEditorService:
+    """Manual edits that keep Qdrant payloads, Redis summaries and embeddings coherent."""
+
+    DOCUMENT_FIELDS = {
+        "title",
+        "doc_type",
+        "corpus",
+        "lang",
+        "status",
+        "effective_date",
+        "external_ids",
+        "metadata",
+        "tags",
+    }
+    FRAGMENT_FIELDS = {"text", "tags", "metadata", "table_html"}
+
+    def __init__(
+        self,
+        qdrant: QdrantRepository,
+        registry: DocumentRegistry,
+        settings: Settings,
+    ) -> None:
+        self.qdrant = qdrant
+        self.registry = registry
+        self.settings = settings
+
+    def update_document(self, doc_id: str, updates: dict) -> DocumentUpdateResponse:
+        points = self.qdrant.list_by_doc(doc_id)
+        if not points:
+            raise KeyError("document not found")
+        changes = {k: v for k, v in updates.items() if k in self.DOCUMENT_FIELDS}
+        if not changes:
+            raise ValueError("no editable fields supplied")
+
+        first = points[0]
+        if "external_ids" in changes:
+            external_ids = changes["external_ids"] or {}
+            changes["aliases"] = build_aliases(first.get("name", ""), external_ids)
+            changes["lookup_keys"] = build_lookup_keys(
+                first.get("name", ""), external_ids
+            )
+        changes["manual_edited_at"] = datetime.now(timezone.utc).isoformat()
+        self.qdrant.set_document_payload(doc_id, changes)
+
+        record = self.registry.get_document(doc_id) or {
+            k: first.get(k) for k in DocumentSummary.model_fields
+        }
+        record.update(
+            {k: v for k, v in changes.items() if k in DocumentSummary.model_fields}
+        )
+        self.registry.register_document(doc_id, record)
+        return DocumentUpdateResponse(
+            doc_id=doc_id,
+            points_updated=len(points),
+            fields_updated=sorted(k for k in changes if k != "manual_edited_at"),
+        )
+
+    def update_fragment(self, doc_id: str, fragment_id: str, updates: dict) -> dict:
+        point = self.qdrant.get_point(fragment_id)
+        if point is None:
+            raise KeyError("fragment not found")
+        vector, payload = point
+        if payload.get("doc_id") != doc_id:
+            raise KeyError("fragment does not belong to this document")
+        changes = {k: v for k, v in updates.items() if k in self.FRAGMENT_FIELDS}
+        if not changes:
+            raise ValueError("no editable fields supplied")
+        if "text" in changes and not str(changes["text"] or "").strip():
+            raise ValueError("fragment text cannot be empty")
+
+        edited = {
+            **payload,
+            **changes,
+            "manual_edited_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if "text" in changes and changes["text"] != payload.get("text"):
+            with create_embedder() as embedder:
+                vectors = embedder.embed_documents([changes["text"]])
+            if not vectors or len(vectors[0]) != self.settings.vector_size:
+                raise ValueError(
+                    "embedding service returned an unexpected vector dimension"
+                )
+            self.qdrant.replace_point(fragment_id, vectors[0], edited)
+        else:
+            self.qdrant.set_point_payload(
+                fragment_id, changes | {"manual_edited_at": edited["manual_edited_at"]}
+            )
+        if "tags" in changes:
+            record = self.registry.get_document(doc_id)
+            if record:
+                record["tags"] = sorted(
+                    {
+                        tag
+                        for point in self.qdrant.list_by_doc(doc_id)
+                        for tag in point.get("tags", [])
+                    }
+                )
+                self.registry.register_document(doc_id, record)
+        return {**edited, "id": fragment_id}
+
+
 class TagsService:
     """Aggregate all unique tags from the fragment collection."""
 
@@ -1193,8 +1498,8 @@ class TagsService:
         return f"{type(self).__name__}(qdrant={type(self.qdrant).__name__})"
 
     def get_tags(self) -> TagsResponse:
-        """Return a sorted list of all distinct tag values across the collection."""
-        payloads = self.qdrant.scroll_payloads()
+        """Return a sorted list of all distinct tag values across the shared document corpus."""
+        payloads = self.qdrant.scroll_payloads(Filter(must=[shared_only_condition()]))
         tags: set[str] = set()
         for pl in payloads:
             tags.update(pl.get("tags", []) or [])

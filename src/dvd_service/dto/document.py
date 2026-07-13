@@ -27,6 +27,11 @@ class DocumentInfo(BaseModel):
     node_count: int = 0
     uploaded_at: str | None = None
     source: str | None = None
+    # populated only via the user-index listing path — the scenario a listed document actually
+    # belongs to (own vs. inherited from a parent scenario)
+    scenario_id: str | None = None
+    # proxied download link (this service, not a raw MinIO URL) — None if no source was stored
+    source_file_url: str | None = None
 
 
 class DocumentListResponse(BaseModel):
@@ -50,6 +55,11 @@ class DocumentSummary(BaseModel):
     content_hash: str | None = None
     node_count: int = 0
     uploaded_at: str | None = None
+    effective_date: str | None = None
+    metadata: dict = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list)
+    # proxied download link (this service, not a raw MinIO URL) — None if no source was stored
+    source_file_url: str | None = None
 
 
 class DocumentFragment(BaseModel):
@@ -86,3 +96,32 @@ class DocumentDetail(DocumentSummary):
 class DocumentList(BaseModel):
     count: int
     documents: list[DocumentSummary]
+
+
+class DocumentUpdateRequest(BaseModel):
+    """Editable document-wide payload fields; omitted fields stay unchanged."""
+
+    title: str | None = None
+    doc_type: str | None = None
+    corpus: str | None = None
+    lang: str | None = None
+    status: str | None = None
+    effective_date: str | None = None
+    external_ids: dict | None = None
+    metadata: dict | None = None
+    tags: list[str] | None = None
+
+
+class DocumentUpdateResponse(BaseModel):
+    doc_id: str
+    points_updated: int
+    fields_updated: list[str]
+
+
+class FragmentUpdateRequest(BaseModel):
+    """Editable fragment fields; text changes always trigger re-embedding."""
+
+    text: str | None = None
+    tags: list[str] | None = None
+    metadata: dict | None = None
+    table_html: str | None = None

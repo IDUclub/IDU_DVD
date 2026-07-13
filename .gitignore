@@ -235,3 +235,6 @@ docs_data/
 
 # Application logs
 /logs/
+
+# Cache
+/_uploads

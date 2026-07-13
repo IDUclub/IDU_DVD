@@ -12,20 +12,28 @@ from typing import Any
 from src.broker.outbox import EventOutbox
 from src.broker.publisher import KafkaPublisher
 from src.common.config import Settings
+from src.common.db.minio_client import DocumentStorage
 from src.common.db.qdrant_client import QdrantRepository
-from src.common.db.redis_client import DocumentRegistry, JobStore, RedisClient
+from src.common.db.redis_client import (
+    DocumentRegistry,
+    JobStore,
+    RedisClient,
+    UserIndexRegistry,
+)
 from src.dvd_service.modules.doc_parsers import DocumentParser
 from src.dvd_service.modules.hierarchy import HierarchyBuilder
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import VersionDetector
 from src.dvd_service.services.dvd_service import (
+    DocumentEditorService,
     DocumentsService,
     IngestionService,
     LibraryService,
     SearchService,
     TagsService,
 )
+from src.dvd_service.services.user_index_service import UserIndexService
 from src.system_service.controllers import SystemController
 
 
@@ -46,6 +54,8 @@ class Dependencies:
         "redis",
         "jobs",
         "registry",
+        "document_storage",
+        "user_document_storage",
         "parser",
         "structure",
         "hierarchy",
@@ -57,8 +67,11 @@ class Dependencies:
         "ingestion",
         "search",
         "documents",
+        "editor",
         "library",
         "tags",
+        "user_index_registry",
+        "user_index_service",
         "system",
     )
 
@@ -70,6 +83,8 @@ class Dependencies:
     redis: RedisClient
     jobs: JobStore
     registry: DocumentRegistry
+    document_storage: DocumentStorage
+    user_document_storage: DocumentStorage
     parser: DocumentParser
     structure: StructureTagger
     hierarchy: HierarchyBuilder
@@ -81,8 +96,11 @@ class Dependencies:
     ingestion: IngestionService
     search: SearchService
     documents: DocumentsService
+    editor: DocumentEditorService
     library: LibraryService
     tags: TagsService
+    user_index_registry: UserIndexRegistry
+    user_index_service: UserIndexService
     system: SystemController
 
     def __new__(cls) -> "Dependencies":
@@ -100,6 +118,8 @@ class Dependencies:
         redis: RedisClient,
         jobs: JobStore,
         registry: DocumentRegistry,
+        document_storage: DocumentStorage,
+        user_document_storage: DocumentStorage,
         parser: DocumentParser,
         structure: StructureTagger,
         hierarchy: HierarchyBuilder,
@@ -111,8 +131,11 @@ class Dependencies:
         ingestion: IngestionService,
         search: SearchService,
         documents: DocumentsService,
+        editor: DocumentEditorService,
         library: LibraryService,
         tags: TagsService,
+        user_index_registry: UserIndexRegistry,
+        user_index_service: UserIndexService,
         system: SystemController,
     ) -> "Dependencies":
         """Set all dependencies once (called from ``init_dependencies``)."""
@@ -122,6 +145,8 @@ class Dependencies:
         self.redis = redis
         self.jobs = jobs
         self.registry = registry
+        self.document_storage = document_storage
+        self.user_document_storage = user_document_storage
         self.parser = parser
         self.structure = structure
         self.hierarchy = hierarchy
@@ -133,8 +158,11 @@ class Dependencies:
         self.ingestion = ingestion
         self.search = search
         self.documents = documents
+        self.editor = editor
         self.library = library
         self.tags = tags
+        self.user_index_registry = user_index_registry
+        self.user_index_service = user_index_service
         self.system = system
         return self
 
@@ -183,6 +211,14 @@ class Dependencies:
         return cls.instance().registry
 
     @classmethod
+    def get_document_storage(cls) -> DocumentStorage:
+        return cls.instance().document_storage
+
+    @classmethod
+    def get_user_document_storage(cls) -> DocumentStorage:
+        return cls.instance().user_document_storage
+
+    @classmethod
     def get_parser(cls) -> DocumentParser:
         return cls.instance().parser
 
@@ -227,12 +263,24 @@ class Dependencies:
         return cls.instance().documents
 
     @classmethod
+    def get_editor(cls) -> DocumentEditorService:
+        return cls.instance().editor
+
+    @classmethod
     def get_library(cls) -> LibraryService:
         return cls.instance().library
 
     @classmethod
     def get_tags(cls) -> TagsService:
         return cls.instance().tags
+
+    @classmethod
+    def get_user_index_registry(cls) -> UserIndexRegistry:
+        return cls.instance().user_index_registry
+
+    @classmethod
+    def get_user_index_service(cls) -> UserIndexService:
+        return cls.instance().user_index_service
 
     # --- representations ---
     def as_dict(self) -> dict[str, Any]:
