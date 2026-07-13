@@ -247,6 +247,18 @@ async def active_jobs(jobs: JobStore = Depends(Dependencies.get_jobs)):
     )
 
 
+@router.get("/documents/jobs/recent", response_model=ActiveJobsResponse)
+async def recent_jobs(
+    limit: int = Query(20, ge=1, le=100),
+    jobs: JobStore = Depends(Dependencies.get_jobs),
+):
+    """Recent ingestion jobs of every status, used by the admin progress history."""
+    recent = jobs.recent(limit)
+    return ActiveJobsResponse(
+        count=len(recent), jobs=[JobStatusDTO(**job) for job in recent]
+    )
+
+
 @router.get("/documents/{job_id}", response_model=JobStatusDTO)
 async def job_status(job_id: str, jobs: JobStore = Depends(Dependencies.get_jobs)):
     job = jobs.get(job_id)

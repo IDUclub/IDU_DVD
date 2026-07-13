@@ -14,6 +14,8 @@
 | `DELETE /documents/{name}` | удаление документа целиком или одной версии (`?version=`) |
 | `GET /documents` | список загруженных документов, агрегированных по (name, version), с фильтрами |
 | `GET /documents/{job_id}` | статус задачи обработки |
+| `GET /documents/jobs/active` | задачи в очереди и в обработке |
+| `GET /documents/jobs/recent` | последние задачи во всех статусах (`?limit=20`, максимум 100) |
 | `POST /search/texts` | поиск релевантных текстовых фрагментов |
 | `POST /search/tables` | поиск релевантных таблиц |
 | `POST /search` | поиск по всем сущностям (тексты и таблицы) |
@@ -210,6 +212,11 @@ curl "http://localhost:8000/documents?uploaded_from=2026-06-01T00:00:00%2B00:00"
   "job_id": "1f0c...",
   "status": "done",
   "filename": "СП_19.13330.2019_с_И1.docx",
+  "stage": "indexing",
+  "stage_index": 7,
+  "stage_total": 7,
+  "task_progress": 100,
+  "overall_progress": 100,
   "doc_id": "9f63...",
   "name": "СП 19.13330.2019",
   "version": "СП 19.13330.2019 (с Изменением N 1)",
@@ -221,6 +228,10 @@ curl "http://localhost:8000/documents?uploaded_from=2026-06-01T00:00:00%2B00:00"
 
 Возможные значения `status`: `queued`, `processing`, `done`, `error`. Если задача не найдена —
 `404`.
+`task_progress` — нормализованный прогресс текущего этапа, `overall_progress` — взвешенный прогресс
+всего процесса. Серверная задача начинается с 10%, поскольку первые 10% административный интерфейс
+использует для передачи multipart-файла. Контракт одинаков для загрузки, дельта-обновления и полной
+перезагрузки.
 
 ## Поиск
 

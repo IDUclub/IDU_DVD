@@ -67,7 +67,13 @@
       <label>Файл<input id="upload-file" type="file" required></label>
       <div class="two-col"><label>Название<input id="upload-name" placeholder="СП 1.13130.2020"></label><label>Версия<input id="upload-version" placeholder="2026"></label></div>
       <details><summary>Дополнительные метаданные</summary><div class="two-col details-grid"><label>Заголовок<input id="upload-doc-title"></label><label>Тип<input id="upload-doc-type" placeholder="regulation"></label><label>Корпус<input id="upload-corpus"></label><label>Язык<input id="upload-lang" placeholder="ru"></label></div></details>
-      <div class="form-actions"><button type="button" class="button close-dialog">Отмена</button><button class="button primary" type="submit">Запустить обработку</button></div>
+      <section id="upload-live-progress" class="upload-live-progress hidden" aria-live="polite">
+        <div class="progress-label"><span>Общий прогресс</span><span id="upload-overall-value">0%</span></div>
+        <progress id="upload-overall-bar" class="native-progress overall-progress" max="100" value="0"></progress>
+        <div class="progress-label task-label"><span id="upload-task-label">Передача файла</span><span id="upload-task-value">0%</span></div>
+        <progress id="upload-task-bar" class="native-progress task-progress" max="100" value="0"></progress>
+      </section>
+      <div class="form-actions"><button type="button" class="button close-dialog">Отмена</button><button id="upload-submit" class="button primary" type="submit">Запустить обработку</button></div>
     </form>
   </dialog>
 

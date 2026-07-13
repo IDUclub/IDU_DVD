@@ -57,3 +57,5 @@ def test_static_assets_are_served_locally():
         js = client.get("/admin/ui/assets/admin.js")
         assert css.status_code == js.status_code == 200
         assert "--accent" in css.text and "loadDocuments" in js.text
+        assert "overall-progress" in css.text and "task-progress" in css.text
+        assert "uploadRequest" in js.text and "overall_progress" in js.text

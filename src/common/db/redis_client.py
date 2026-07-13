@@ -73,6 +73,20 @@ class JobStore:
                 jobs.append(job)
         return sorted(jobs, key=lambda item: item.get("created_at", ""), reverse=True)
 
+    def recent(self, limit: int = 20) -> list[dict]:
+        """Return recent jobs of every status, newest first (for the admin UI)."""
+        jobs: list[dict] = []
+        for key in self.r.scan_iter(match="dvd:job:*"):
+            value = self.r.get(key)
+            if not value:
+                continue
+            try:
+                jobs.append(json.loads(value))
+            except json.JSONDecodeError:
+                continue
+        jobs.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+        return jobs[: max(1, limit)]
+
 
 class DocumentRegistry:
     """Registry of uploaded documents: hashes (for deduplication) and versions per document name.

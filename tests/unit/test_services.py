@@ -127,6 +127,7 @@ class TestIngest:
         final = wired.jobs.get("jp")
         assert final["status"] == "done"
         assert final["stage_index"] == final["stage_total"] == 7
+        assert final["overall_progress"] == final["task_progress"] == 100
 
     def test_gpu_gate_serializes_concurrent_ingests(self, wired, sample_raw):
         # With ingest_concurrency=1 (default) the GPU-bound pipeline is serialized: two ingests
@@ -470,6 +471,8 @@ class TestUpdateDocument:
         assert wired.registry.has_hash(h2)
         assert wired.jobs.get("j2")["status"] == "done"
         assert wired.jobs.get("j2")["new_nodes"] == res2["new_nodes"]
+        assert wired.jobs.get("j2")["overall_progress"] == 100
+        assert wired.jobs.get("j2")["stage_index"] == 7
 
     def test_update_emits_document_updated_event(self, wired, sample_raw):
         res1 = self._base(wired, sample_raw)
@@ -731,6 +734,7 @@ class TestReloadDocument:
             pl["versions"] == ["ред. 9"] for _v, pl in wired.qdrant.points.values()
         )
         assert wired.jobs.get("jr")["status"] == "done"
+        assert wired.jobs.get("jr")["overall_progress"] == 100
 
     def test_reload_of_absent_document_acts_as_ingest(self, wired, sample_raw):
         h = DocumentParser.content_hash(sample_raw)
