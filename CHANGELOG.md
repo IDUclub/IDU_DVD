@@ -1,3 +1,9 @@
+## v0.10.5 (2026-07-21)
+
+### Fix
+
+- **registry**: repair stale registry entries instead of refusing uploads
+
 ## v0.10.4 (2026-07-21)
 
 ### Fix
