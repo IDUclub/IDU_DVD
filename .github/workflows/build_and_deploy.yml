@@ -86,6 +86,10 @@ jobs:
       # file: they land in .env.overrides, which compose loads after .env.production.
       # DVD_IMAGE / DVD_HOST_PORT are compose-interpolation vars, not app config.
       # Values are written verbatim, so avoid newlines and " #" inside them.
+      # The name on the left must be the app's own env var — DVD_ + the Settings field
+      # (src/common/config/app_config.py); anything not matching ^DVD_ is dropped by the
+      # filter below without a word, and the setting silently keeps its default. The
+      # GitHub secret/var on the right may be named freely.
       - name: Apply repo-settings overrides
         env:
           DVD_OLLAMA_BASE: ${{ vars.DVD_OLLAMA_BASE }}
@@ -97,7 +101,7 @@ jobs:
           DVD_MINIO_ACCESS_KEY: ${{ secrets.DVD_MINIO_ACCESS_KEY }}
           DVD_MINIO_SECRET_KEY: ${{ secrets.DVD_MINIO_SECRET_KEY }}
           DVD_MINIO_SECURE: ${{ vars.DVD_MINIO_SECURE }}
-          IDU_DVD_PASSWORD: ${{ secrets.IDU_DVD_PASSWORD }}
+          DVD_ADMIN_PASSWORD: ${{ secrets.IDU_DVD_PASSWORD }}
         run: |
           : > .env.overrides
           env | grep '^DVD_' | grep -vE '^(DVD_IMAGE|DVD_HOST_PORT)=' | grep -v '=$' >> .env.overrides || true
