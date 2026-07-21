@@ -77,7 +77,7 @@ async def upload_document(
     """
     job_id = str(uuid.uuid4())
     path, raw, content_hash = await _receive_file(file, settings, parser, job_id)
-    _reject_duplicate(registry, content_hash, path)
+    _reject_duplicate(registry, ingestion.qdrant, content_hash, path)
     try:
         source_key = await _save_source(storage, path, content_hash)
     except Exception as exc:  # noqa: BLE001
@@ -128,7 +128,7 @@ async def update_document(
         raise HTTPException(404, f"Документ не найден: {name}")
     job_id = str(uuid.uuid4())
     path, raw, content_hash = await _receive_file(file, settings, parser, job_id)
-    _reject_duplicate(registry, content_hash, path)
+    _reject_duplicate(registry, ingestion.qdrant, content_hash, path)
     try:
         source_key = await _save_source(storage, path, content_hash)
     except Exception as exc:  # noqa: BLE001

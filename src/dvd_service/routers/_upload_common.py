@@ -104,15 +104,40 @@ async def receive_file(
     return path, raw, parser.content_hash(raw)
 
 
-def reject_duplicate(registry: DocumentRegistry, content_hash: str, path: str) -> None:
-    if registry.has_hash(content_hash):
-        info = registry.hash_info(content_hash) or {}
-        os.remove(path)
-        raise HTTPException(
-            400,
-            detail="Документ уже загружен — текст полностью совпадает (имя: %s, версия: %s)"
-            % (info.get("name"), info.get("version")),
+def reject_duplicate(
+    registry: DocumentRegistry, qdrant, content_hash: str, path: str
+) -> None:
+    """Reject an exact text duplicate — unless the registry entry is a ghost.
+
+    ``register()`` runs only after a successful upsert, so a registered document whose name
+    has no points left in Qdrant means the two stores diverged (a replaced instance, a dropped
+    or re-created collection). The registry is authoritative only while Qdrant backs it, so
+    such an entry is dropped and the upload proceeds as a fresh one instead of being refused
+    for a document nobody can see.
+    """
+    if not registry.has_hash(content_hash):
+        return
+    info = registry.hash_info(content_hash) or {}
+    name = info.get("name")
+    if name and not qdrant.points_by_name(name):
+        removed = registry.remove_hashes(name)
+        if doc_id := info.get("doc_id"):
+            registry.unregister_document(doc_id)
+        registry.unregister_name(name)
+        log.warning(
+            "stale_registry_entry_dropped",
+            name=name,
+            version=info.get("version"),
+            hashes_removed=removed,
+            reason="registered document has no points in Qdrant",
         )
+        return
+    os.remove(path)
+    raise HTTPException(
+        400,
+        detail="Документ уже загружен — текст полностью совпадает (имя: %s, версия: %s)"
+        % (info.get("name"), info.get("version")),
+    )
 
 
 def object_key(content_hash: str, suffix: str) -> str:

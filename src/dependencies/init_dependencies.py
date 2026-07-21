@@ -42,6 +42,38 @@ from src.system_service.controllers import SystemController
 log = structlog.get_logger(__name__)
 
 
+def _warn_on_registry_divergence(
+    qdrant: QdrantRepository, registry: DocumentRegistry, app_logger
+) -> None:
+    """Compare the Redis registry against the collection it describes and warn on drift.
+
+    The two stores are written together (``register()`` runs after the upsert) and cleaned
+    together, so registered names without points mean the pair drifted apart — a replaced
+    Qdrant instance, a dropped collection, a changed ``DVD_QDRANT_COLLECTION``. Nothing is
+    deleted here on purpose: a boot against a wrong/empty Qdrant would otherwise wipe a
+    registry that is still perfectly valid for the right one. Ghost entries are repaired
+    individually, on the upload that trips over them (``reject_duplicate``).
+    """
+    try:
+        names = registry.names()
+        if not names:
+            return
+        points = qdrant.count()
+        if points == 0:
+            app_logger.warning(
+                "registry_diverged_from_collection",
+                collection=qdrant.collection,
+                registered_names=len(names),
+                points=0,
+                hint=(
+                    "the registry describes documents the collection does not hold — check "
+                    "DVD_QDRANT_URL / DVD_QDRANT_COLLECTION, or let uploads repair entries"
+                ),
+            )
+    except Exception as exc:  # noqa: BLE001 — a diagnostic must never block startup
+        app_logger.warning("registry_divergence_check_failed", error=str(exc))
+
+
 def init_dependencies(s: Settings = settings) -> Dependencies:
     """Initialize and wire all modules, then store them in the ``Dependencies`` singleton.
 
@@ -75,6 +107,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     jobs = JobStore(redis)
     registry = DocumentRegistry(redis, prefix=s.registry_prefix)
     user_index_registry = UserIndexRegistry(redis, prefix=s.registry_prefix)
+    _warn_on_registry_divergence(qdrant, registry, app_logger)
 
     minio_client = Minio(
         s.minio_endpoint,

@@ -161,7 +161,7 @@ async def upload_user_document(
 
     job_id = str(uuid.uuid4())
     path, raw, content_hash = await receive_file(file, settings, parser, job_id)
-    reject_duplicate(registry, content_hash, path)
+    reject_duplicate(registry, ingestion.qdrant, content_hash, path)
     try:
         source_key = await save_source(storage, path, content_hash)
     except Exception as exc:  # noqa: BLE001
@@ -217,7 +217,7 @@ async def update_user_document(
 
     job_id = str(uuid.uuid4())
     path, raw, content_hash = await receive_file(file, settings, parser, job_id)
-    reject_duplicate(registry, content_hash, path)
+    reject_duplicate(registry, ingestion.qdrant, content_hash, path)
     try:
         source_key = await save_source(storage, path, content_hash)
     except Exception as exc:  # noqa: BLE001

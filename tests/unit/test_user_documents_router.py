@@ -39,8 +39,20 @@ class FakeJobs:
         return self.store.get(jid)
 
 
+class FakeScopedQdrant:
+    """Minimal stand-in for the user-scoped repository: only dedup touches it here."""
+
+    def __init__(self, names: set[str] | None = None) -> None:
+        self.names = names or set()
+
+    def points_by_name(self, name):
+        return [{"name": name, "id": "p1"}] if name in self.names else []
+
+
 class FakeIngestion:
-    def __init__(self):
+    def __init__(self, qdrant=None):
+        # Dedup consults it to tell a real duplicate from a stale registry entry.
+        self.qdrant = qdrant if qdrant is not None else FakeScopedQdrant()
         self.ingest_calls = []
         self.update_calls = []
         self.reload_calls = []

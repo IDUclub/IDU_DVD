@@ -56,7 +56,10 @@ Behaviour:
 
 - Accepted formats are governed by `DVD_ALLOWED_EXTENSIONS` (default `.docx`, `.txt`, `.md`, `.html`,
   `.htm` — OCR-free formats handled by `unstructured`). Any other format — `415`.
-- A file whose text fully matches an already-loaded one is rejected — `400`.
+- A file whose text fully matches an already-loaded one is rejected — `400`. The match comes from
+  the Redis registry, which is trusted only while Qdrant still backs it: when a registered name has
+  no points left (the collection was re-created, the Qdrant instance replaced), the entry is treated
+  as stale, dropped with a `stale_registry_entry_dropped` warning, and the upload proceeds normally.
 - A file that could not be parsed — `422`.
 - On success — `202` and a job identifier; processing runs in the background.
 
