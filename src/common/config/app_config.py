@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -123,6 +124,10 @@ class Settings(BaseSettings):
     default_lang: str | None = None  # ISO-639 code; None = unknown / not detected
 
     # --- MinIO (original source files, closed contour — proxied via this service) ---
+    # ``host:port`` — the minio SDK prepends the scheme itself (from ``minio_secure``) and
+    # rejects an endpoint that carries one. A scheme may still be written here for symmetry
+    # with the other service URLs: ``_normalize_minio_endpoint`` strips it and derives
+    # ``minio_secure`` from it.
     minio_endpoint: str = "localhost:9000"
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadmin"
@@ -152,6 +157,46 @@ class Settings(BaseSettings):
     log_dir: str = "./logs"
     log_file: str = "app.log"
     log_level: str = "INFO"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_minio_endpoint(cls, data):
+        """Accept ``minio_endpoint`` with or without a scheme.
+
+        Unlike ``qdrant_url`` / ``redis_url``, the minio SDK wants a bare ``host:port`` and
+        raises ``ValueError: path in endpoint is not allowed`` for anything else — writing the
+        familiar ``http://host:9000`` there used to crash the app at startup. So a scheme is
+        accepted and stripped here, and, when ``minio_secure`` was not configured explicitly,
+        it decides the transport (``https`` -> secure).
+        """
+        if not isinstance(data, dict):
+            return data
+        raw = data.get("minio_endpoint")
+        if not isinstance(raw, str):
+            return data
+
+        endpoint = raw.strip()
+        scheme = ""
+        if "://" in endpoint:
+            scheme, _, endpoint = endpoint.partition("://")
+            scheme = scheme.lower()
+            if scheme not in ("http", "https"):
+                raise ValueError(
+                    f"DVD_MINIO_ENDPOINT: unsupported scheme {scheme!r} — "
+                    "expected http:// or https:// (or a bare host:port)"
+                )
+        endpoint = endpoint.rstrip("/")
+        if "/" in endpoint:
+            raise ValueError(
+                f"DVD_MINIO_ENDPOINT: a path in the endpoint is not allowed ({raw!r}) — "
+                "expected host:port"
+            )
+
+        data["minio_endpoint"] = endpoint
+        # An explicit DVD_MINIO_SECURE always wins; the scheme only fills the gap.
+        if scheme and "minio_secure" not in data:
+            data["minio_secure"] = scheme == "https"
+        return data
 
     @property
     def embedding_model_name(self) -> str:

@@ -1,16 +1,16 @@
 # Manual production deploy (the gMART build_and_deploy_all pipeline adapted for IDU_DVD):
 # build the image on the self-hosted runner, push it to the private registry, then restart
-# the app via docker-compose.actions.yaml (app + Qdrant + Redis; the data services keep
-# running across deploys and persist in named volumes).
+# the app via docker-compose.actions.yaml (the app container only — Qdrant, Redis and MinIO
+# are external services of the contour, addressed through the env files below).
 #
 # Config precedence for the app container (weakest to strongest):
 #   1. code defaults (src/common/config/app_config.py — already IDU-contour values);
 #   2. host env file  $ENV_PATH/.env.dvd.production  -> copied to ./.env.production;
-#   3. repo settings: DVD_* vars of the "production" GitHub environment -> written to
-#      ./.env.overrides (only non-empty ones, so an unset var never wipes a file value);
-#   4. compose `environment:` — pins Qdrant/Redis to the in-compose services (not overridable).
+#   3. repo settings: non-empty DVD_* vars *and secrets* of the "production" GitHub
+#      environment -> written to ./.env.overrides (an unset one never wipes a file value).
 # To make another variable overridable from repo settings, add it to the env block of the
-# "Apply repo-settings overrides" step.
+# "Apply repo-settings overrides" step — use `secrets.` for anything sensitive, `vars.` is
+# not masked in the logs.
 #
 # Also expects: secret REGISTRY (registry host/namespace), secret ENV_PATH (directory on
 # the runner holding .env.dvd.production), a runner already logged in to the registry, and
@@ -82,9 +82,10 @@ jobs:
         run: |
           cp "$ENV_PATH/.env.dvd.production" ./.env.production
 
-      # Non-empty DVD_* vars from the "production" environment win over the host env
+      # Non-empty DVD_* vars/secrets from the "production" environment win over the host env
       # file: they land in .env.overrides, which compose loads after .env.production.
       # DVD_IMAGE / DVD_HOST_PORT are compose-interpolation vars, not app config.
+      # Values are written verbatim, so avoid newlines and " #" inside them.
       - name: Apply repo-settings overrides
         env:
           DVD_OLLAMA_BASE: ${{ vars.DVD_OLLAMA_BASE }}

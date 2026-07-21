@@ -108,12 +108,26 @@ failure here only logs, it doesn't block the Qdrant/Redis deletion).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DVD_MINIO_ENDPOINT` | `localhost:9000` | MinIO/S3 endpoint (`host:port`) |
+| `DVD_MINIO_ENDPOINT` | `localhost:9000` | MinIO/S3 endpoint — `host:port`; a scheme is accepted (see below) |
 | `DVD_MINIO_ACCESS_KEY` | `minioadmin` | access key |
 | `DVD_MINIO_SECRET_KEY` | `minioadmin` | secret key |
 | `DVD_MINIO_SECURE` | `false` | use HTTPS for the MinIO connection |
 | `DVD_MINIO_BUCKET_DOCUMENTS` | `dvd-documents` | bucket for the shared/regular document corpus |
 | `DVD_MINIO_BUCKET_USER_DOCUMENTS` | `dvd-user-documents` | bucket for all user document indices |
+
+Both buckets are created automatically at startup — no need to provision them beforehand.
+
+Unlike `DVD_QDRANT_URL` / `DVD_REDIS_URL`, the canonical form here is a bare `host:port`: the
+transport is picked by `DVD_MINIO_SECURE` and the minio SDK rejects an endpoint carrying a scheme.
+A scheme may still be written for symmetry — it is stripped, and when `DVD_MINIO_SECURE` is not set
+explicitly it decides the transport (`https://` → `true`). A path is never allowed and fails
+validation.
+
+```
+DVD_MINIO_ENDPOINT=10.32.1.42:9000          # canonical
+DVD_MINIO_ENDPOINT=https://minio.idu:9000   # also fine: → minio.idu:9000, SECURE=true
+DVD_MINIO_ENDPOINT=http://minio:9000/store  # error: a path in the endpoint is not allowed
+```
 
 ### Kafka (document lifecycle events)
 

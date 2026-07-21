@@ -2,11 +2,11 @@
 # the gMART docker-compose.actions.yaml pattern adapted for IDU_DVD. The app image is
 # pre-built and passed via DVD_IMAGE. App config is layered (weakest to strongest):
 # code defaults -> .env.production (copied from the runner's ENV_PATH) -> .env.overrides
-# (non-empty DVD_* vars of the GitHub "production" environment; later env_file wins) ->
-# the `environment:` section, which pins Qdrant/Redis to the in-compose services.
-# Qdrant and Redis publish no host ports (compose-network only), so they can't clash with
-# other services on the runner host; the app's host port defaults to 8100 because gMART's
-# idu_mcp already binds 8000 there.
+# (non-empty DVD_* vars/secrets of the GitHub "production" environment; later env_file wins).
+# Only the app runs here: Qdrant, Redis and MinIO are external services of the contour, so
+# their addresses (DVD_QDRANT_URL / DVD_REDIS_URL / DVD_MINIO_*) must be present in one of the
+# env files — Qdrant and MinIO are contacted at startup and their absence aborts the boot.
+# The app's host port defaults to 8100 because gMART's idu_mcp already binds 8000 there.
 
 services:
   idu_dvd:
