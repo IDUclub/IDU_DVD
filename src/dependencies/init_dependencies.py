@@ -6,6 +6,8 @@ objects and stores them in the ``Dependencies`` singleton.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import structlog
 from minio import Minio
 
@@ -74,6 +76,43 @@ def _warn_on_registry_divergence(
         app_logger.warning("registry_divergence_check_failed", error=str(exc))
 
 
+def _abort_orphaned_jobs(jobs: JobStore, s: Settings, app_logger) -> None:
+    """Fail every job left mid-flight by the previous process and drop its scratch file.
+
+    Ingestion runs as an in-process background task, so nothing survives a restart and nothing
+    resumes: a job still marked ``queued``/``processing`` at startup belongs to a process that
+    is already gone. Left alone it would sit in the admin panel as "in progress" until its
+    Redis TTL expires (a day), which reads as "still working" rather than "lost — re-upload".
+
+    Assumes a single app instance per ``upload_dir`` (as deployed): the sweep would otherwise
+    delete scratch files of a sibling container's live uploads.
+    """
+    try:
+        orphaned = jobs.active()
+        for job in orphaned:
+            jobs.update(
+                job["job_id"],
+                status="error",
+                error="Задача прервана перезапуском сервиса — загрузите документ заново",
+            )
+        removed = 0
+        upload_dir = Path(s.upload_dir)
+        if upload_dir.is_dir():
+            for leftover in upload_dir.iterdir():
+                if leftover.is_file():
+                    leftover.unlink(missing_ok=True)
+                    removed += 1
+        if orphaned or removed:
+            app_logger.warning(
+                "orphaned_jobs_aborted",
+                jobs=len(orphaned),
+                names=[job.get("filename") for job in orphaned],
+                scratch_files_removed=removed,
+            )
+    except Exception as exc:  # noqa: BLE001 — cleanup must never block startup
+        app_logger.warning("orphaned_jobs_cleanup_failed", error=str(exc))
+
+
 def init_dependencies(s: Settings = settings) -> Dependencies:
     """Initialize and wire all modules, then store them in the ``Dependencies`` singleton.
 
@@ -105,6 +144,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         qdrant.ensure_pattern_collection()
     redis = RedisClient(s)
     jobs = JobStore(redis)
+    _abort_orphaned_jobs(jobs, s, app_logger)
     registry = DocumentRegistry(redis, prefix=s.registry_prefix)
     user_index_registry = UserIndexRegistry(redis, prefix=s.registry_prefix)
     _warn_on_registry_divergence(qdrant, registry, app_logger)
