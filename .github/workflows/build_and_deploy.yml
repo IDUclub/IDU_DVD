@@ -92,6 +92,10 @@ jobs:
           DVD_EMBEDDINGS_URL: ${{ vars.DVD_EMBEDDINGS_URL }}
           DVD_KAFKA_BOOTSTRAP_SERVERS: ${{ vars.DVD_KAFKA_BOOTSTRAP_SERVERS }}
           DVD_KAFKA_SCHEMA_REGISTRY_URL: ${{ vars.DVD_KAFKA_SCHEMA_REGISTRY_URL }}
+          DVD_MINIO_ENDPOINT: ${{ vars.DVD_MINIO_ENDPOINT }}
+          DVD_MINIO_ACCESS_KEY: ${{ secrets.DVD_MINIO_ACCESS_KEY }}
+          DVD_MINIO_SECRET_KEY: ${{ secrets.DVD_MINIO_SECRET_KEY }}
+          DVD_MINIO_SECURE: ${{ vars.DVD_MINIO_SECURE }}
         run: |
           : > .env.overrides
           env | grep '^DVD_' | grep -vE '^(DVD_IMAGE|DVD_HOST_PORT)=' | grep -v '=$' >> .env.overrides || true
