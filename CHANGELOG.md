@@ -1,3 +1,9 @@
+## v0.10.3 (2026-07-21)
+
+### Fix
+
+- added IDU_DVD_PASSWORD for admin panel in build_and_deploy.yml
+
 ## v0.10.2 (2026-07-21)
 
 ### Fix
