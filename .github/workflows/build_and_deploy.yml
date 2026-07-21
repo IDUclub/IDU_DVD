@@ -101,7 +101,7 @@ jobs:
           DVD_MINIO_ACCESS_KEY: ${{ secrets.DVD_MINIO_ACCESS_KEY }}
           DVD_MINIO_SECRET_KEY: ${{ secrets.DVD_MINIO_SECRET_KEY }}
           DVD_MINIO_SECURE: ${{ vars.DVD_MINIO_SECURE }}
-          DVD_ADMIN_PASSWORD: ${{ secrets.IDU_DVD_PASSWORD }}
+          DVD_ADMIN_PASSWORD: ${{ secrets.DVD_ADMIN_PASSWORD }}
         run: |
           : > .env.overrides
           env | grep '^DVD_' | grep -vE '^(DVD_IMAGE|DVD_HOST_PORT)=' | grep -v '=$' >> .env.overrides || true
