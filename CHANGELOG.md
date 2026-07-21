@@ -1,3 +1,10 @@
+## v0.10.4 (2026-07-21)
+
+### Fix
+
+- changed secret forDVD_ADMIN_PASSWORD
+- **deploy**: pass the admin password as DVD_ADMIN_PASSWORD
+
 ## v0.10.3 (2026-07-21)
 
 ### Fix

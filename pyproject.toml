@@ -1,6 +1,6 @@
 [project]
 name = "IDU_DVD"
-version = "0.10.3"
+version = "0.10.4"
 requires-python = "<3.14,>=3.11"
 dependencies = [
     "fastapi>=0.139.0",
