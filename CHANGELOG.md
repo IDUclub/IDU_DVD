@@ -1,3 +1,9 @@
+## v0.10.1 (2026-07-21)
+
+### Fix
+
+- added vars and secrets to build_and_deploy.yml
+
 ## v0.10.0 (2026-07-13)
 
 ### Feat
