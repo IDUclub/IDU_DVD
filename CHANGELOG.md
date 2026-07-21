@@ -1,3 +1,9 @@
+## v0.10.6 (2026-07-21)
+
+### Fix
+
+- **jobs**: abort jobs left mid-flight by a restart instead of leaving them "in progress"
+
 ## v0.10.5 (2026-07-21)
 
 ### Fix
