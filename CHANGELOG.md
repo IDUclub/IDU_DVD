@@ -1,3 +1,9 @@
+## v0.10.2 (2026-07-21)
+
+### Fix
+
+- **config**: accept a scheme in DVD_MINIO_ENDPOINT
+
 ## v0.10.1 (2026-07-21)
 
 ### Fix
