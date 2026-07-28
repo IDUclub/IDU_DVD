@@ -128,6 +128,65 @@ class TestProviderSelection:
         client.close()
 
 
+class TestRetryOn5xx:
+    """Transient 5xx (e.g. a CUDA OOM on the shared a.dgx GPU) is retried with backoff."""
+
+    @staticmethod
+    def _capture_sleeps(monkeypatch) -> list[float]:
+        sleeps: list[float] = []
+        monkeypatch.setattr(
+            "src.api_clients.embeddings_client.time.sleep",
+            lambda seconds: sleeps.append(seconds),
+        )
+        return sleeps
+
+    def test_succeeds_after_transient_500s(self, monkeypatch):
+        sleeps = self._capture_sleeps(monkeypatch)
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] < 3:
+                return httpx.Response(500, text="CUDA out of memory")
+            return _ok_handler(request)
+
+        ec = _client_with(handler)
+        assert ec.embed(["a"]) == [[0.0]]
+        assert calls["n"] == 3
+        assert sleeps == [1.0, 2.0]
+        ec.close()
+
+    def test_gives_up_after_max_retries(self, monkeypatch):
+        sleeps = self._capture_sleeps(monkeypatch)
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            return httpx.Response(500, text="CUDA out of memory")
+
+        ec = _client_with(handler)
+        with pytest.raises(httpx.HTTPStatusError):
+            ec.embed(["a"])
+        assert calls["n"] == 4  # 1 initial attempt + 3 retries
+        assert sleeps == [1.0, 2.0, 4.0]
+        ec.close()
+
+    def test_4xx_is_not_retried(self, monkeypatch):
+        sleeps = self._capture_sleeps(monkeypatch)
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            return httpx.Response(400, text="bad request")
+
+        ec = _client_with(handler)
+        with pytest.raises(httpx.HTTPStatusError):
+            ec.embed(["a"])
+        assert calls["n"] == 1
+        assert sleeps == []
+        ec.close()
+
+
 class TestLifecycleAndRepr:
     def test_context_manager_closes_client(self):
         ec = _client_with(_ok_handler)

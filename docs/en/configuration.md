@@ -55,6 +55,7 @@ into that new space (embeddings of different models are not comparable).
 | `DVD_QDRANT_COLLECTION` | `documents` | **base** collection name (see Collection namespacing) |
 | `DVD_VECTOR_SIZE` | `2048` | **advisory fallback only** — the real dimension is probed from the active vectorizer at startup and this value is overwritten to match; used verbatim only if the vectorizer is unreachable at boot (giga = 2048, bge-m3 = 1024) |
 | `DVD_EMBED_BATCH` | `32` | batch size during vectorization |
+| `DVD_QDRANT_UPSERT_BATCH_SIZE` | `128` | points per upsert request; Qdrant's HTTP API rejects a request over its configured max size (default 32 MiB), and one large document's nodes can exceed that in a single request |
 | `DVD_COLLECTION_NAMESPACING` | `true` | derive a distinct physical collection per embedding space (see below) |
 
 #### Collection namespacing
