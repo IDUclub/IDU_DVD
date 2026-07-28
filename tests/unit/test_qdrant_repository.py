@@ -93,7 +93,9 @@ class TestUpsert:
         assert client.upsert.call_count == 3  # 2 + 2 + 1
         sent = [call.kwargs["points"] for call in client.upsert.call_args_list]
         assert [len(batch) for batch in sent] == [2, 2, 1]
-        assert [p for batch in sent for p in batch] == points  # order preserved, none dropped
+        assert [
+            p for batch in sent for p in batch
+        ] == points  # order preserved, none dropped
 
     def test_upsert_below_batch_size_is_a_single_call(self, settings):
         s = settings.model_copy(update={"qdrant_upsert_batch_size": 128})
