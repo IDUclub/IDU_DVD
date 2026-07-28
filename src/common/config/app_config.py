@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     # used verbatim only when the vectorizer is unreachable at boot (giga = 2048, bge-m3 = 1024).
     vector_size: int = 2048
     embed_batch: int = 32
+    # Qdrant's HTTP API rejects a request over its configured max size (default 32 MiB).
+    # A single ingest sends every node of one document in one upsert; large documents (long
+    # SP-style regulations, big tables) can push that request past the limit on their own, so
+    # points are chunked client-side rather than sent as one call — see QdrantRepository.upsert.
+    qdrant_upsert_batch_size: int = 128
     # When True (default), the physical collection — and its Redis registry namespace —
     # is derived from the base name + embedding model + dimension, so a change to the
     # embedding space provisions a brand-new collection at startup and leaves the previous
