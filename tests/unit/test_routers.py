@@ -22,6 +22,15 @@ from src.dvd_service.dto import (
 from src.dvd_service.routers import documents_router, search_router
 
 
+def _seed_point(qdrant, name: str = "N") -> None:
+    """Put one point of ``name`` into the fake collection.
+
+    Dedup only refuses an upload when the registered document is actually present in Qdrant,
+    so a test asserting a 400 has to back the registry entry with a point.
+    """
+    qdrant.points["p1"] = ([0.0], {"name": name, "version": "V", "doc_id": "d1"})
+
+
 class FakeParser:
     def extract_raw(self, path):
         return [{"text": "x", "category": "NarrativeText", "html": None}]
@@ -34,15 +43,26 @@ class FakeRegistry:
     def __init__(self):
         self.dup = False
         self.names = {"Известный документ"}
+        self.dropped = []  # names cleaned up as ghost (registry/Qdrant divergence)
 
     def has_hash(self, h):
         return self.dup
 
     def hash_info(self, h):
-        return {"name": "N", "version": "V"}
+        return {"name": "N", "version": "V", "doc_id": "d1"}
 
     def has_name(self, name):
         return name in self.names
+
+    def remove_hashes(self, name, version=None):
+        self.dropped.append(name)
+        return 1
+
+    def unregister_document(self, doc_id):
+        self.dropped.append(doc_id)
+
+    def unregister_name(self, name):
+        self.names.discard(name)
 
 
 class FakeJobs:
@@ -67,7 +87,8 @@ class FakeJobs:
 
 
 class FakeIngestion:
-    def __init__(self):
+    def __init__(self, qdrant=None):
+        self.qdrant = qdrant  # dedup consults it to tell a real duplicate from a ghost
         self.calls = []
         self.update_calls = []
         self.reload_calls = []
@@ -145,7 +166,7 @@ def client(tmp_path, fake_qdrant, fake_document_storage):
         "parser": FakeParser(),
         "registry": FakeRegistry(),
         "jobs": FakeJobs(),
-        "ingestion": FakeIngestion(),
+        "ingestion": FakeIngestion(fake_qdrant),
         "search": FakeSearch(),
         "documents": FakeDocuments(),
         "tags": FakeTags(),
@@ -184,8 +205,22 @@ class TestUpload:
     def test_exact_duplicate_rejected(self, client):
         c, fakes = client
         fakes["registry"].dup = True
+        _seed_point(
+            fakes["qdrant"]
+        )  # the registered document is really in the collection
         resp = c.post("/documents", files={"file": ("doc.docx", b"data")})
         assert resp.status_code == 400
+
+    def test_ghost_registry_entry_is_dropped_and_upload_proceeds(self, client):
+        """Registry says "already uploaded", Qdrant holds nothing — the entry is stale
+        (a replaced instance / dropped collection), so it is cleaned instead of blocking.
+        """
+        c, fakes = client
+        fakes["registry"].dup = True  # …but no points were seeded into Qdrant
+        resp = c.post("/documents", files={"file": ("doc.docx", b"data")})
+        assert resp.status_code == 202
+        assert fakes["ingestion"].calls, "the upload must go through"
+        assert fakes["registry"].dropped == ["N", "d1"]  # hashes + document record
 
     def test_unsupported_extension_rejected(self, client):
         c, _ = client
@@ -242,10 +277,20 @@ class TestUpdateDocument:
     def test_exact_duplicate_rejected(self, client):
         c, fakes = client
         fakes["registry"].dup = True
+        _seed_point(fakes["qdrant"])
         resp = c.patch(
             "/documents/Известный документ", files={"file": ("doc.docx", b"data")}
         )
         assert resp.status_code == 400
+
+    def test_ghost_registry_entry_is_dropped_and_update_proceeds(self, client):
+        c, fakes = client
+        fakes["registry"].dup = True
+        resp = c.patch(
+            "/documents/Известный документ", files={"file": ("doc.docx", b"data")}
+        )
+        assert resp.status_code == 202
+        assert fakes["registry"].dropped == ["N", "d1"]
 
     def test_unsupported_extension_rejected(self, client):
         c, _ = client

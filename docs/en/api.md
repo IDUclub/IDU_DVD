@@ -56,7 +56,10 @@ Behaviour:
 
 - Accepted formats are governed by `DVD_ALLOWED_EXTENSIONS` (default `.docx`, `.txt`, `.md`, `.html`,
   `.htm` — OCR-free formats handled by `unstructured`). Any other format — `415`.
-- A file whose text fully matches an already-loaded one is rejected — `400`.
+- A file whose text fully matches an already-loaded one is rejected — `400`. The match comes from
+  the Redis registry, which is trusted only while Qdrant still backs it: when a registered name has
+  no points left (the collection was re-created, the Qdrant instance replaced), the entry is treated
+  as stale, dropped with a `stale_registry_entry_dropped` warning, and the upload proceeds normally.
 - A file that could not be parsed — `422`.
 - On success — `202` and a job identifier; processing runs in the background.
 
@@ -226,6 +229,12 @@ Possible `status` values: `queued`, `processing`, `done`, `error`. If the job is
 weighted end-to-end value. The server-side job starts at 10%, because the admin UI uses the first
 10% for multipart file transfer. The same progress contract is used for upload, delta update and
 full reload.
+
+Indexing runs as a background task inside the application process and is **not resumed** after a
+restart. Every job still marked `queued`/`processing` at startup is therefore flipped to `error`
+("interrupted by a service restart"; logged as `orphaned_jobs_aborted`) and the scratch files in
+`DVD_UPLOAD_DIR` are swept. An interrupted document has to be uploaded again — its MinIO original
+and any Qdrant/Redis records are left untouched.
 
 ## Search
 

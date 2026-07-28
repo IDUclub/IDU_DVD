@@ -78,6 +78,36 @@ class TestUpsert:
         assert repo.upsert([]) == 0
         client.upsert.assert_not_called()
 
+    def test_upsert_chunks_large_batches(self, settings):
+        """A document with more nodes than the batch size must go up in several requests,
+        not one -- a single oversized request is what triggers Qdrant's 400 (payload too
+        large for its max request size, default 32 MiB)."""
+        s = settings.model_copy(update={"qdrant_upsert_batch_size": 2})
+        with patch("src.common.db.qdrant_client.QdrantClient") as Client:
+            client = Client.return_value
+            repo = QdrantRepository(s)
+            points = [MagicMock() for _ in range(5)]
+
+            assert repo.upsert(points) == 5
+
+        assert client.upsert.call_count == 3  # 2 + 2 + 1
+        sent = [call.kwargs["points"] for call in client.upsert.call_args_list]
+        assert [len(batch) for batch in sent] == [2, 2, 1]
+        assert [
+            p for batch in sent for p in batch
+        ] == points  # order preserved, none dropped
+
+    def test_upsert_below_batch_size_is_a_single_call(self, settings):
+        s = settings.model_copy(update={"qdrant_upsert_batch_size": 128})
+        with patch("src.common.db.qdrant_client.QdrantClient") as Client:
+            client = Client.return_value
+            repo = QdrantRepository(s)
+            points = [MagicMock() for _ in range(3)]
+
+            assert repo.upsert(points) == 3
+
+        client.upsert.assert_called_once()
+
 
 class TestSearchAndRetrieve:
     def test_search_returns_points(self, repo_and_client):
