@@ -1,3 +1,9 @@
+## v0.10.7 (2026-07-29)
+
+### Fix
+
+- added DVD_EMBEDDINGS_PROVIDER to pipeline override (#36)
+
 ## v0.10.6 (2026-07-21)
 
 ### Fix
