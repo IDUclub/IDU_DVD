@@ -1049,20 +1049,20 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastapi", specifier = ">=0.139.0" },
-    { name = "fastmcp", specifier = ">=3.4.3" },
-    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "fastapi", specifier = ">=0.141.1" },
+    { name = "fastmcp", specifier = ">=3.4.5" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "ipykernel", specifier = ">=7.3.0" },
     { name = "minio", specifier = ">=7.2.20" },
     { name = "otteroad", specifier = ">=0.3.0" },
-    { name = "pydantic-settings", specifier = ">=2.2.0" },
+    { name = "pydantic-settings", specifier = ">=2.14.2" },
     { name = "python-multipart", specifier = ">=0.0.32" },
     { name = "qdrant-client", specifier = ">=1.18.0" },
-    { name = "redis", specifier = ">=8.0.1" },
+    { name = "redis", specifier = ">=8.1.0" },
     { name = "structlog", specifier = ">=26.1.0" },
-    { name = "tqdm", specifier = ">=4.68.4" },
-    { name = "unstructured", extras = ["docx"], specifier = ">=0.23.1,<=1.0.0" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.50.0" },
+    { name = "tqdm", specifier = ">=4.70.0" },
+    { name = "unstructured", extras = ["docx"], specifier = ">=0.25.0,<=1.0.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.52.0" },
 ]
 
 [package.metadata.requires-dev]
