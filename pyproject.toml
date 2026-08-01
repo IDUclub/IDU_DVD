@@ -28,15 +28,6 @@ dev = [
     "pytest-asyncio>=1.4.0",
 ]
 
-[tool.uv]
-# Transitive packages pinned below their next major to stay within the "minor/patch only"
-# upgrade policy (deps-update sweep); none of these are direct dependencies of this project.
-override-dependencies = [
-    "setuptools<83",
-    "smart-open<8",
-    "websockets<17",
-]
-
 [tool.commitizen]
 name = "cz_conventional_commits"
 # Read/write the canonical version from [project].version above.
