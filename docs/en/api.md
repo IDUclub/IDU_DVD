@@ -11,6 +11,8 @@ request and response models are pydantic-based and defined under `src/dvd_servic
 | `PATCH /documents/{name}` | delta update: index a new version, reusing unchanged fragments |
 | `PUT /documents/{name}` | full reload: wipe all stored versions and ingest from scratch |
 | `DELETE /documents/{name}` | delete a document entirely, or a single version (`?version=`) |
+| `POST /documents/direct` | ingest documents directly from caller-supplied fragments (no LLM pipeline) |
+| `PUT /documents/direct` | full replace of directly-ingested documents by name |
 | `GET /documents` | list ingested documents, aggregated by (name, version), with filters |
 | `GET /documents/{job_id}` | processing job status |
 | `GET /documents/jobs/active` | queued and currently processing jobs |
@@ -140,6 +142,75 @@ Response (`DeleteResponse`):
 
 ```
 curl -X DELETE "http://localhost:8000/documents/СП%2019.13330.2019?version=2026"
+```
+
+## POST /documents/direct
+
+Ingest one or more documents **directly** from caller-supplied fragments, bypassing the LLM
+structuring pipeline (`.docx` parsing → structure markup → hierarchy → tagging). The service only
+embeds each fragment and upserts one Qdrant point per fragment. The result is a first-class
+document — same collection, same payload schema, registered in the registry — so it is returned by
+`GET /documents`, vector search, and `/library`, and can be removed with `DELETE /documents/{name}`.
+
+The body is a JSON **array** of documents (a single document is an array of one). Only `name`
+(document) and `text` (fragment) are required; everything else has a default. Fragments are stored
+in array order — `order` is the array position and neighbours are linked (`prev_id`/`next_id`) so
+the search context assembler works out of the box. `version` defaults to the trailing 4-digit group
+of the name (e.g. `СП 2.13130.2020` → `2020`), else `"1"`. `embedding_provider` is reserved for
+choosing the vectorizer later; if given it must match the configured provider (otherwise the
+document's job fails).
+
+One background job is queued **per document** (`202`); poll `GET /documents/{job_id}` for progress.
+An exact-content duplicate is rejected per-document (`status="rejected"`, no `job_id`); the rest are
+queued. Emits a `DirectDocumentProcessed` Kafka event per document (when Kafka is configured).
+
+Request body:
+
+```json
+[
+  {
+    "name": "Регламент благоустройства",
+    "version": "2026",
+    "doc_type": "regulation",
+    "corpus": "msi-tsim",
+    "lang": "ru",
+    "external_ids": {"code": "РБ-2026"},
+    "metadata": {"source_system": "import"},
+    "fragments": [
+      {"text": "1 Общие положения", "type": "chapter", "numbering": "1"},
+      {"text": "1.1 Настоящий регламент устанавливает…", "type": "clause", "numbering": "1.1", "tags": ["благоустройство"]}
+    ]
+  }
+]
+```
+
+Response (`202`, one entry per document):
+
+```json
+[
+  {"name": "Регламент благоустройства", "status": "queued", "job_id": "3f2b…", "error": null}
+]
+```
+
+```
+curl -X POST http://localhost:8000/documents/direct \
+     -H "Content-Type: application/json" \
+     -d '[{"name":"Регламент благоустройства","fragments":[{"text":"1 Общие положения"}]}]'
+```
+
+## PUT /documents/direct
+
+Full replace (create-or-replace) of directly-ingested documents by name: every stored version of
+each named document is wiped, then the supplied fragments are ingested from scratch. Same body and
+response shape as `POST /documents/direct`, but **no duplicate rejection** — re-supplying the same
+fragments is a legitimate way to rebuild the index. A document not stored yet is simply ingested.
+Emits a single `DirectDocumentUpdated` when an existing document was replaced, or
+`DirectDocumentProcessed` when the replace effectively created it.
+
+```
+curl -X PUT http://localhost:8000/documents/direct \
+     -H "Content-Type: application/json" \
+     -d '[{"name":"Регламент благоустройства","fragments":[{"text":"1 Общие положения (ред. 2)"}]}]'
 ```
 
 ## GET /documents

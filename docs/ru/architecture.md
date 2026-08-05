@@ -17,7 +17,7 @@
 | Redis | статусы задач парсинга, реестр документов и версий (неймспейсится по коллекции), outbox Kafka-событий |
 | Ollama | LLM (разметка, мердж, теги, версия); резервный провайдер эмбеддингов |
 | giga-vectorizer | эмбеддинги (Giga-Embeddings-instruct, 2048-d) через OpenAI-совместимый `/v1/embeddings`; только CUDA, отдельный репозиторий |
-| Kafka (otteroad) | опциональная публикация событий жизненного цикла документов (`DocumentProcessed` / `DocumentUpdated` / `DocumentDeleted`) для смежных сервисов |
+| Kafka (otteroad) | опциональная публикация событий жизненного цикла документов (`DocumentProcessed` / `DocumentUpdated` / `DocumentDeleted`, плюс `DirectDocumentProcessed` / `DirectDocumentUpdated` для прямой загрузки) для смежных сервисов |
 | unstructured (python-docx) | извлечение текста и таблиц из `.docx` |
 | pydantic-settings | конфигурация через переменные окружения |
 | structlog | структурированное логирование |
@@ -56,7 +56,7 @@ Dependencies(
 | `src/api_clients/embeddings_client.py` | `GigaEmbeddingsClient`, `EmbeddingsError`, `create_embedder` (выбор провайдера) |
 | `src/common/db/qdrant_client.py` | `QdrantRepository` |
 | `src/common/db/redis_client.py` | `RedisClient`, `JobStore`, `DocumentRegistry` |
-| `src/broker/` | интеграция с Kafka: модели событий `DocumentProcessed` / `DocumentUpdated` / `DocumentDeleted` (`events.py`), `EventOutbox` (`outbox.py`), `KafkaPublisher` (`publisher.py`) |
+| `src/broker/` | интеграция с Kafka: модели событий `DocumentProcessed` / `DocumentUpdated` / `DocumentDeleted` (+ `DirectDocumentProcessed` / `DirectDocumentUpdated`) (`events.py`), `EventOutbox` (`outbox.py`), `KafkaPublisher` (`publisher.py`) |
 | `src/dvd_service/modules/doc_parsers.py` | `DocumentParser` (этапы 1 и 1.5) |
 | `src/dvd_service/modules/structure.py` | `StructureTagger` (этапы 2, 3, 3.5) |
 | `src/dvd_service/modules/hierarchy.py` | `HierarchyBuilder` (этап 4 и развёртка узлов) |
@@ -98,7 +98,9 @@ Dependencies(
   фреймворк [otteroad](https://github.com/IDUclub/otteroad) (AVRO + Schema Registry).
   `IngestionService` добавляет события жизненного цикла в outbox-список в Redis (топик
   `document.events`): `DocumentProcessed` при первичной загрузке, `DocumentUpdated` при
-  дельта-обновлении/полной перезагрузке, `DocumentDeleted` при удалении; асинхронный публикатор,
+  дельта-обновлении/полной перезагрузке, `DocumentDeleted` при удалении, плюс зеркальные
+  `DirectDocumentProcessed` / `DirectDocumentUpdated` для прямых эндпоинтов
+  (`POST`/`PUT /documents/direct`); асинхронный публикатор,
   запускаемый в `lifespan`, доотправляет их в Kafka с ретраями (at-least-once), перенося
   исчерпавшие попытки события в dead-letter-список. Полностью выключено, пока не задан
   `DVD_KAFKA_BOOTSTRAP_SERVERS`.

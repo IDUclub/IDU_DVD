@@ -143,9 +143,14 @@ blocking the queue. Event types:
 | `DocumentProcessed` | first upload of a document (`POST /documents`) | `document_name` |
 | `DocumentUpdated` | delta update or full reload (`PATCH`/`PUT /documents/{name}`) | `document_name`, `version` |
 | `DocumentDeleted` | deletion of a document or one version (`DELETE /documents/{name}`) | `document_name`, `versions_removed`, `document_removed` |
+| `DirectDocumentProcessed` | first direct ingest of a document (`POST /documents/direct`) | `document_name` |
+| `DirectDocumentUpdated` | full direct replace (`PUT /documents/direct`) | `document_name`, `version` |
 
 A `PUT` reload announces a single `DocumentUpdated` (no intermediate `DocumentDeleted`); a reload
-of a not-yet-stored document announces `DocumentProcessed`.
+of a not-yet-stored document announces `DocumentProcessed`. The direct endpoints
+(`POST`/`PUT /documents/direct`) mirror this with the `Direct…` event types so consumers can tell
+the ingestion path apart; deletion of a directly-ingested document still emits the base
+`DocumentDeleted`. Consumers that don't yet know the `Direct…` schemas simply ignore them.
 
 | Variable | Default | Description |
 |----------|---------|-------------|

@@ -13,7 +13,13 @@ import structlog
 from otteroad import KafkaProducerClient, KafkaProducerSettings
 from otteroad.avro import AvroEventModel
 
-from src.broker.events import DocumentDeleted, DocumentProcessed, DocumentUpdated
+from src.broker.events import (
+    DirectDocumentProcessed,
+    DirectDocumentUpdated,
+    DocumentDeleted,
+    DocumentProcessed,
+    DocumentUpdated,
+)
 from src.broker.outbox import EventOutbox
 from src.common.config import Settings
 
@@ -25,6 +31,8 @@ EVENT_MODELS: dict[str, type[AvroEventModel]] = {
     DocumentProcessed.__name__: DocumentProcessed,
     DocumentUpdated.__name__: DocumentUpdated,
     DocumentDeleted.__name__: DocumentDeleted,
+    DirectDocumentProcessed.__name__: DirectDocumentProcessed,
+    DirectDocumentUpdated.__name__: DirectDocumentUpdated,
 }
 
 

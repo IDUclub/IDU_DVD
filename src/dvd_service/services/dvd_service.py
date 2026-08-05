@@ -20,7 +20,13 @@ from qdrant_client.models import (
 )
 
 from src.api_clients import OllamaClient, create_embedder
-from src.broker.events import DocumentDeleted, DocumentProcessed, DocumentUpdated
+from src.broker.events import (
+    DirectDocumentProcessed,
+    DirectDocumentUpdated,
+    DocumentDeleted,
+    DocumentProcessed,
+    DocumentUpdated,
+)
 from src.broker.outbox import EventOutbox
 from src.common.config import Settings
 from src.common.db.minio_client import DocumentStorage
@@ -31,6 +37,7 @@ from src.common.db.qdrant_client import (
 )
 from src.common.db.redis_client import DocumentRegistry, JobStore, UserIndexRegistry
 from src.dvd_service.dto import (
+    DirectDocumentIn,
     DocumentDetail,
     DocumentFragment,
     DocumentInfo,
@@ -891,6 +898,238 @@ class IngestionService:
                 )
             else:
                 self.outbox.enqueue(DocumentProcessed(document_name=name))
+        return result
+
+    def _build_direct_points(
+        self,
+        doc: DirectDocumentIn,
+        vectors: list[list[float]],
+        doc_id: str,
+        identity: dict,
+    ) -> list[PointStruct]:
+        """Assemble Qdrant points from caller-supplied fragments.
+
+        Fragments keep their array order (``order``) and are chained by ``prev_id``/``next_id`` so
+        the search context assembler can walk neighbours. Fragment metadata is layered over the
+        document-level metadata; the source-grounding fields stay empty (no source spans exist for
+        a directly-supplied fragment).
+        """
+        doc_metadata = identity.get("metadata") or {}
+        ids = [str(uuid.uuid4()) for _ in doc.fragments]
+        points: list[PointStruct] = []
+        for order, (node_id, frag, vec) in enumerate(zip(ids, doc.fragments, vectors)):
+            payload = {
+                **identity,
+                "kind": frag.kind,
+                "type": frag.type,
+                "numbering": frag.numbering,
+                "block": frag.block,
+                "order": order,
+                "parent_id": frag.parent_id,
+                "prev_id": ids[order - 1] if order > 0 else None,
+                "next_id": ids[order + 1] if order < len(ids) - 1 else None,
+                "tags": frag.tags,
+                "metadata": {**doc_metadata, **(frag.metadata or {})},
+                "table_html": frag.table_html,
+                "text": frag.text,
+            }
+            points.append(
+                PointStruct(
+                    id=node_id, vector=vec, payload=NodePayload(**payload).model_dump()
+                )
+            )
+        return points
+
+    def ingest_direct(
+        self,
+        doc: DirectDocumentIn,
+        content_hash: str,
+        *,
+        doc_id: str | None = None,
+        job_id: str | None = None,
+        emit_event: bool = True,
+    ) -> dict:
+        """Index caller-supplied fragments directly, bypassing the LLM structuring pipeline.
+
+        Only the embedder is invoked — each fragment becomes one Qdrant point under the same
+        payload schema and registry as pipeline documents. ``emit_event`` is off when a caller
+        (reload) announces the outcome itself.
+        """
+        doc_id = doc_id or str(uuid.uuid4())
+        name = doc.name.strip()
+        provider = (doc.embedding_provider or "").strip().lower()
+        if provider and provider != self.settings.embeddings_provider:
+            raise ValueError(
+                f"векторизатор '{provider}' недоступен; активен "
+                f"'{self.settings.embeddings_provider}'"
+            )
+        if job_id:
+            self.jobs.update(job_id, status="queued")
+        self._gpu_gate.acquire()
+        try:
+            if job_id:
+                self.jobs.update(
+                    job_id,
+                    status="processing",
+                    stage="embeddings",
+                    stage_index=1,
+                    stage_total=1,
+                    task_progress=0,
+                    overall_progress=10,
+                )
+
+            version = (
+                (doc.version or "").strip() or extract_version_from_name(name) or "1"
+            )
+            version, other_versions = self._resolve_version(name, version, content_hash)
+
+            def _on_embed(done: int, total: int) -> None:
+                if job_id:
+                    pct = int(done / total * 100) if total else 100
+                    self.jobs.update(
+                        job_id,
+                        progress=done,
+                        progress_total=total,
+                        task_progress=pct,
+                        overall_progress=10 + int(pct * 0.9),
+                    )
+
+            vectors = self._embed_all(
+                [f.text for f in doc.fragments], on_progress=_on_embed
+            )
+
+            uploaded_at = datetime.now(timezone.utc).isoformat()
+            external_ids = doc.external_ids or {}
+            doc_type = doc.doc_type or self.settings.default_doc_type
+            corpus = doc.corpus or self.settings.default_corpus
+            lang = doc.lang or self.settings.default_lang
+            version_id = make_version_id(name, content_hash)
+            identity = {
+                "parser_version": None,  # no parser ran on a directly-supplied document
+                "embedding_meta": {
+                    "model": self.settings.embedding_model_name,
+                    "dim": self.settings.vector_size,
+                    "metric": "cosine",
+                    "normalized": True,
+                },
+                "doc_id": doc_id,
+                "name": name,
+                "title": doc.title,
+                "version": version,
+                "versions": [version],
+                "version_id": version_id,
+                "other_versions": other_versions,
+                "content_hash": content_hash,
+                "doc_type": doc_type,
+                "corpus": corpus,
+                "lang": lang,
+                "external_ids": external_ids,
+                "aliases": build_aliases(name, external_ids),
+                "lookup_keys": build_lookup_keys(name, external_ids),
+                "effective_date": doc.effective_date,
+                "source": None,
+                "source_uri": doc.source_uri,
+                "source_object_key": None,
+                "metadata": doc.metadata or {},
+                "uploaded_at": uploaded_at,
+            }
+            points = self._build_direct_points(doc, vectors, doc_id, identity)
+            count = self.qdrant.upsert(points)
+
+            all_versions = set(other_versions) | {version}
+            for v in other_versions:
+                self.qdrant.set_other_versions(name, v, sorted(all_versions - {v}))
+            self.registry.register(content_hash, name, version, doc_id)
+            doc_tags = sorted({t for f in doc.fragments for t in (f.tags or [])})
+            self.registry.register_document(
+                doc_id,
+                {
+                    "doc_id": doc_id,
+                    "name": name,
+                    "title": doc.title,
+                    "version": version,
+                    "version_id": version_id,
+                    "other_versions": other_versions,
+                    "doc_type": doc_type,
+                    "corpus": corpus,
+                    "lang": lang,
+                    "status": "active",
+                    "external_ids": external_ids,
+                    "source_uri": doc.source_uri,
+                    "source_object_key": None,
+                    "content_hash": content_hash,
+                    "node_count": count,
+                    "uploaded_at": uploaded_at,
+                    "effective_date": doc.effective_date,
+                    "metadata": doc.metadata or {},
+                    "tags": doc_tags,
+                },
+            )
+
+            if self.outbox is not None and emit_event:
+                self.outbox.enqueue(DirectDocumentProcessed(document_name=name))
+
+            result = {
+                "doc_id": doc_id,
+                "name": name,
+                "version": version,
+                "other_versions": other_versions,
+                "nodes": count,
+            }
+            if job_id:
+                self.jobs.update(
+                    job_id,
+                    status="done",
+                    task_progress=100,
+                    overall_progress=100,
+                    **result,
+                )
+            log.info("ingest_direct_done", **result)
+            return result
+        except Exception as exc:  # noqa: BLE001
+            log.exception("ingest_direct_failed", doc_id=doc_id, name=name)
+            if job_id:
+                self.jobs.update(job_id, status="error", error=str(exc))
+            raise
+        finally:
+            self._gpu_gate.release()
+
+    def reload_direct(
+        self, doc: DirectDocumentIn, content_hash: str, *, job_id: str | None = None
+    ) -> dict:
+        """Full replace of a directly-ingested document: wipe every stored version, then ingest.
+
+        Create-or-replace semantics — a document not stored yet is simply ingested. Announces a
+        single ``DirectDocumentUpdated`` when an existing document was replaced (no intermediate
+        ``DocumentDeleted``), ``DirectDocumentProcessed`` when the reload effectively created it.
+        """
+        name = doc.name.strip()
+        if job_id:
+            self.jobs.update(
+                job_id,
+                status="processing",
+                stage="preparing",
+                stage_index=0,
+                task_progress=0,
+                overall_progress=10,
+            )
+        replaced = True
+        try:
+            self.delete_document(name, emit_event=False)
+        except KeyError:
+            replaced = False  # nothing stored under this name yet
+        except Exception as exc:  # noqa: BLE001
+            if job_id:
+                self.jobs.update(job_id, status="error", error=str(exc))
+            raise
+        result = self.ingest_direct(doc, content_hash, job_id=job_id, emit_event=False)
+        if self.outbox is not None:
+            if replaced:
+                self.outbox.enqueue(
+                    DirectDocumentUpdated(document_name=name, version=result["version"])
+                )
+            else:
+                self.outbox.enqueue(DirectDocumentProcessed(document_name=name))
         return result
 
     def delete_document(
