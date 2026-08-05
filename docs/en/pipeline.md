@@ -5,6 +5,12 @@ the background after the upload request is answered. The input is already-extrac
 the text hash (they are computed in the upload handler before the task is queued — this allows
 rejecting a duplicate immediately, without launching the heavy parse).
 
+> **Direct ingestion bypasses this pipeline.** `POST`/`PUT /documents/direct`
+> (`IngestionService.ingest_direct` / `reload_direct`) take caller-supplied fragments and run only
+> the last two steps below — embedding and indexing — with no `.docx` parsing, structure markup,
+> hierarchy, tagging, or reference stages. `order`/`prev_id`/`next_id` follow the array order.
+> See `docs/en/api.md`.
+
 ## Stage 0. Text extraction
 
 `DocumentParser.extract_raw(path)` parses `.docx` through `partition_docx` and returns a list of
