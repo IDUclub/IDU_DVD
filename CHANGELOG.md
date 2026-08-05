@@ -1,3 +1,9 @@
+## v0.11.0 (2026-08-05)
+
+### Feat
+
+- direct document ingestion endpoints (/documents/direct) (#39)
+
 ## v0.10.7 (2026-07-29)
 
 ### Fix
