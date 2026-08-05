@@ -17,7 +17,7 @@ a fallback provider — `DVD_EMBEDDINGS_PROVIDER`).
 | Redis | parsing job statuses, document and version registry (namespaced per collection), Kafka event outbox |
 | Ollama | LLM (markup, merge, tags, version); fallback embeddings provider |
 | giga-vectorizer | embeddings (Giga-Embeddings-instruct, 2048-d) via OpenAI-compatible `/v1/embeddings`; CUDA-only, separate repository |
-| Kafka (otteroad) | optional publishing of document lifecycle events (`DocumentProcessed` / `DocumentUpdated` / `DocumentDeleted`) for downstream services |
+| Kafka (otteroad) | optional publishing of document lifecycle events (`DocumentProcessed` / `DocumentUpdated` / `DocumentDeleted`, plus `DirectDocumentProcessed` / `DirectDocumentUpdated` for direct ingestion) for downstream services |
 | unstructured (python-docx) | text and table extraction from `.docx` |
 | pydantic-settings | configuration via environment variables |
 | structlog | structured logging |
@@ -55,7 +55,7 @@ Dependencies(
 | `src/api_clients/embeddings_client.py` | `GigaEmbeddingsClient`, `EmbeddingsError`, `create_embedder` (provider selection) |
 | `src/common/db/qdrant_client.py` | `QdrantRepository` |
 | `src/common/db/redis_client.py` | `RedisClient`, `JobStore`, `DocumentRegistry` |
-| `src/broker/` | Kafka integration: event models `DocumentProcessed` / `DocumentUpdated` / `DocumentDeleted` (`events.py`), `EventOutbox` (`outbox.py`), `KafkaPublisher` (`publisher.py`) |
+| `src/broker/` | Kafka integration: event models `DocumentProcessed` / `DocumentUpdated` / `DocumentDeleted` (+ `DirectDocumentProcessed` / `DirectDocumentUpdated`) (`events.py`), `EventOutbox` (`outbox.py`), `KafkaPublisher` (`publisher.py`) |
 | `src/dvd_service/modules/doc_parsers.py` | `DocumentParser` (Stages 1 and 1.5) |
 | `src/dvd_service/modules/structure.py` | `StructureTagger` (Stages 2, 3, 3.5) |
 | `src/dvd_service/modules/hierarchy.py` | `HierarchyBuilder` (Stage 4 and node flattening) |
@@ -96,7 +96,9 @@ Dependencies(
   [otteroad](https://github.com/IDUclub/otteroad) framework (AVRO + Schema Registry).
   `IngestionService` appends lifecycle events to a Redis outbox list (topic `document.events`):
   `DocumentProcessed` on a first upload, `DocumentUpdated` on a delta update/full reload,
-  `DocumentDeleted` on deletion; an async publisher started in `lifespan` drains it into Kafka
+  `DocumentDeleted` on deletion, plus the mirror `DirectDocumentProcessed` / `DirectDocumentUpdated`
+  for the direct-ingestion endpoints (`POST`/`PUT /documents/direct`); an async publisher started
+  in `lifespan` drains it into Kafka
   with retries (at-least-once), dead-lettering events that exhaust their attempts. Disabled
   entirely unless `DVD_KAFKA_BOOTSTRAP_SERVERS` is set.
 

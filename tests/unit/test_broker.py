@@ -60,6 +60,8 @@ class TestEventModels:
             "DocumentProcessed",
             "DocumentUpdated",
             "DocumentDeleted",
+            "DirectDocumentProcessed",
+            "DirectDocumentUpdated",
         }
 
 

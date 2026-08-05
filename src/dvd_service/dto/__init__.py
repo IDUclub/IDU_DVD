@@ -4,6 +4,11 @@ The models live in dedicated modules by concern (``node_payload``, ``upload``, `
 ``document``, ``reference``); this file only marks the package and re-exports them.
 """
 
+from src.dvd_service.dto.direct import (  # noqa: F401
+    DirectDocumentIn,
+    DirectFragmentIn,
+    DirectJobResult,
+)
 from src.dvd_service.dto.document import (  # noqa: F401
     DocumentDetail,
     DocumentFragment,
@@ -38,6 +43,9 @@ from src.dvd_service.dto.user_index import (  # noqa: F401
 
 __all__ = [
     "NodePayload",
+    "DirectDocumentIn",
+    "DirectFragmentIn",
+    "DirectJobResult",
     "DocumentRef",
     "DocumentInfo",
     "DocumentListResponse",

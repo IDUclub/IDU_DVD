@@ -146,9 +146,14 @@ DVD_MINIO_ENDPOINT=http://minio:9000/store  # ошибка: путь в адре
 | `DocumentProcessed` | первичная загрузка документа (`POST /documents`) | `document_name` |
 | `DocumentUpdated` | дельта-обновление или полная перезагрузка (`PATCH`/`PUT /documents/{name}`) | `document_name`, `version` |
 | `DocumentDeleted` | удаление документа или одной версии (`DELETE /documents/{name}`) | `document_name`, `versions_removed`, `document_removed` |
+| `DirectDocumentProcessed` | первичная прямая загрузка документа (`POST /documents/direct`) | `document_name` |
+| `DirectDocumentUpdated` | полная прямая замена (`PUT /documents/direct`) | `document_name`, `version` |
 
 `PUT`-перезагрузка объявляется одним `DocumentUpdated` (без промежуточного `DocumentDeleted`);
-перезагрузка ещё не сохранённого документа объявляется как `DocumentProcessed`.
+перезагрузка ещё не сохранённого документа объявляется как `DocumentProcessed`. Прямые эндпоинты
+(`POST`/`PUT /documents/direct`) зеркалят это событиями типа `Direct…`, чтобы потребители различали
+путь загрузки; удаление прямо загруженного документа по-прежнему эмитит базовый `DocumentDeleted`.
+Потребители, которые ещё не знают схемы `Direct…`, просто их игнорируют.
 
 | Переменная | По умолчанию | Описание |
 |------------|--------------|----------|
