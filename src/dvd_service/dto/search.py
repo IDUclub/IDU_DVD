@@ -17,6 +17,10 @@ class SearchRequest(BaseModel):
         None  # filter by structural level (chapter/clause/subclause/...)
     )
     doc_id: str | None = None  # filter by a specific document
+    parent_id: str | None = (
+        None  # search only among the direct children of this node (drill into a
+        # table or a clause instead of the whole document)
+    )
     doc_type: str | None = None  # filter by document type (regulation/article/…)
     corpus: str | None = None  # filter by logical corpus/namespace
     lang: str | None = None  # filter by language

@@ -1307,3 +1307,142 @@ class TestTagsService:
 
     def test_repr(self, wired):
         assert repr(wired.tags).startswith("TagsService(")
+
+
+class TestGetNode:
+    """Node-level reads: the step between a search hit and get_document that was missing.
+
+    A hit already carries parent_id/child_ids/prev_id/next_id, but acting on them used to
+    mean fetching every fragment of the document.
+    """
+
+    @staticmethod
+    def _library(payloads: dict[str, dict]):
+        from src.dvd_service.services.dvd_service import LibraryService
+
+        class _Qdrant:
+            def retrieve(self, ids):
+                return {i: payloads[i] for i in ids if i in payloads}
+
+        return LibraryService(_Qdrant(), registry=None)
+
+    def test_returns_none_for_an_unknown_node(self):
+        assert self._library({}).get_node("nope") is None
+
+    def test_resolves_parent_children_and_neighbours(self):
+        payloads = {
+            "row2": {
+                "doc_id": "d1",
+                "name": "СП 42",
+                "version": "2016",
+                "type": "row",
+                "text": "row two",
+                "parent_id": "tbl",
+                "child_ids": [],
+                "prev_id": "row1",
+                "next_id": "row3",
+                "order": 2,
+            },
+            "tbl": {
+                "type": "table",
+                "kind": "table",
+                "text": "Таблица 11.2",
+                "table_html": "<table>full</table>",
+                "order": 0,
+            },
+            "row1": {"type": "row", "text": "row one", "order": 1},
+            "row3": {"type": "row", "text": "row three", "order": 3},
+        }
+
+        node = self._library(payloads).get_node("row2")
+
+        assert node.id == "row2"
+        assert node.doc_id == "d1"
+        assert node.parent.id == "tbl"
+        # the whole table comes back with the parent, however its rows were chunked
+        assert node.parent.table_html == "<table>full</table>"
+        assert node.prev.text == "row one"
+        assert node.next.text == "row three"
+
+    def test_children_come_back_in_reading_order(self):
+        payloads = {
+            "tbl": {"type": "table", "text": "t", "child_ids": ["c3", "c1", "c2"]},
+            "c1": {"type": "row", "text": "one", "order": 1},
+            "c2": {"type": "row", "text": "two", "order": 2},
+            "c3": {"type": "row", "text": "three", "order": 3},
+        }
+
+        node = self._library(payloads).get_node("tbl")
+
+        assert [c.text for c in node.children] == ["one", "two", "three"]
+
+    def test_relatives_can_be_skipped(self):
+        payloads = {
+            "n": {
+                "type": "clause",
+                "text": "t",
+                "child_ids": ["c1"],
+                "prev_id": "p",
+                "next_id": "x",
+            },
+            "c1": {"type": "row", "text": "child", "order": 1},
+            "p": {"type": "clause", "text": "prev"},
+            "x": {"type": "clause", "text": "next"},
+        }
+
+        node = self._library(payloads).get_node(
+            "n", with_children=False, with_neighbours=False
+        )
+
+        assert node.children == []
+        assert node.prev is None and node.next is None
+
+    def test_survives_a_dangling_relative_id(self):
+        """Deleted or user-scoped siblings shouldn't 500 the whole read."""
+        payloads = {
+            "n": {
+                "type": "clause",
+                "text": "t",
+                "child_ids": ["gone"],
+                "parent_id": "also-gone",
+            }
+        }
+
+        node = self._library(payloads).get_node("n")
+
+        assert node.children == []
+        assert node.parent is None
+
+
+class TestSearchWithinNode:
+    """parent_id scopes a search to one node's children — drill into a table or clause
+    instead of searching the whole corpus and hoping the right rows rank."""
+
+    @staticmethod
+    def _filter_for(**kwargs):
+        from src.dvd_service.dto import SearchRequest
+        from src.dvd_service.services.dvd_service import SearchService
+
+        req = SearchRequest(query="q", **kwargs)
+        return SearchService._build_filter(SearchService, req, None)
+
+    @staticmethod
+    def _keys(flt):
+        return [c.key for c in flt.must if hasattr(c, "key")]
+
+    def test_parent_id_becomes_a_filter_condition(self):
+        flt = self._filter_for(parent_id="tbl-1")
+
+        assert "parent_id" in self._keys(flt)
+
+    def test_absent_parent_id_adds_no_condition(self):
+        flt = self._filter_for()
+
+        assert "parent_id" not in self._keys(flt)
+
+    def test_combines_with_tags_and_doc_id(self):
+        """Scoping to a table and filtering by tag are independent, and compose."""
+        flt = self._filter_for(parent_id="tbl-1", tags=["нормативы"], doc_id="d1")
+
+        keys = self._keys(flt)
+        assert {"parent_id", "tags", "doc_id"} <= set(keys)

@@ -238,3 +238,29 @@ docs_data/
 
 # Cache
 /_uploads
+
+# ============================================================
+# AI coding agents: Claude Code
+# ============================================================
+
+CLAUDE.md
+**/.claude/
+**/.claude.json
+**/CLAUDE.md
+**/CLAUDE.local.md
+**/.mcp.json
+**/.worktreeinclude
+
+# ============================================================
+# AI coding agents: OpenAI Codex
+# ============================================================
+
+AGENTS.md
+**/.codex/
+**/.agents/
+**/.codex-plugin/
+**/AGENTS.md
+**/AGENTS.override.md
+
+# Skills
+/graphify-out

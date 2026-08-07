@@ -86,7 +86,22 @@ class GigaEmbeddingsClient:
         body: dict = {"input": texts, "model": self.model}
         if prompt is not None:
             body["prompt"] = prompt
-        resp = self._post_with_retry(body)
+        try:
+            resp = self._post_with_retry(body)
+        except httpx.HTTPStatusError as exc:
+            # Backoff already gave the GPU time to clear, and a 503 means the vectorizer
+            # hunted for memory and queued this batch for as long as it was allowed to.
+            # So the batch is not too early, it is too big — and halving is the one lever
+            # we have that the server does not: it must answer for the batch it was sent,
+            # we get to send a smaller one. Below two texts there is nothing left to split,
+            # and the vectorizer splits an oversized single text on its own side.
+            if exc.response.status_code != 503 or len(texts) < 2:
+                raise
+            middle = len(texts) // 2
+            log.warning("embeddings_batch_too_large_splitting", batch=len(texts))
+            return self.embed(texts[:middle], prompt) + self.embed(
+                texts[middle:], prompt
+            )
         data = resp.json().get("data")
         if not data:
             raise EmbeddingsError(
