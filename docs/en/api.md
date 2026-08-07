@@ -21,6 +21,7 @@ request and response models are pydantic-based and defined under `src/dvd_servic
 | `GET /tags` | all unique tags present in the document collection |
 | `GET /library/documents` | list documents from the registry (identity/corpus metadata) |
 | `GET /library/documents/{doc_id}` | one document: assembled text + metadata + ordered fragments |
+| `GET /library/nodes/{node_id}` | one fragment with its parent, children and reading-order neighbours |
 | `GET /library/lookup` | resolve documents by an exact lookup key / external id |
 | `GET /system/logs` | download the application log file (optionally filtered) |
 | `GET /system/settings` | read the current effective `DVD_` configuration (secrets masked) |
@@ -514,6 +515,9 @@ All tools are synchronous and share the same `Dependencies` singleton as the HTT
 | `document_versions` | list of versions already loaded for a document `name` |
 | `pending_references` | dangling references awaiting a not-yet-loaded document `name` |
 | `get_document` | a document by `doc_id`: assembled text + metadata + ordered fragments |
+| `get_node` | one fragment plus its parent, children and neighbours — widen a hit without reading the whole document |
+
+`search_*` also accept `parent_id` — search only inside one node (e.g. within a table you already found) instead of across the corpus.
 | `find_document` | resolve documents by lookup key / external id (`key`) |
 | `get_tags` | all unique tags in the collection, sorted alphabetically — no parameters |
 

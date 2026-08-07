@@ -88,6 +88,25 @@ class DocumentFragment(BaseModel):
     table_html: str | None = None
 
 
+class NodeDetail(DocumentFragment):
+    """One node plus the relatives needed to widen context without reading a whole document.
+
+    Search already hands back ``parent_id``/``child_ids``/``prev_id``/``next_id``, but until now
+    the only way to act on them was ``get_document`` — a 1700-fragment read to answer a
+    two-fragment question. For tables this is the path back to the whole thing: however the rows
+    were chunked for retrieval, the table node still carries the complete ``table_html``.
+    """
+
+    doc_id: str = ""
+    name: str = ""
+    version: str = ""
+
+    parent: DocumentFragment | None = None
+    children: list[DocumentFragment] = Field(default_factory=list)  # in reading order
+    prev: DocumentFragment | None = None
+    next: DocumentFragment | None = None
+
+
 class DocumentDetail(DocumentSummary):
     text: str = ""  # full document text assembled in reading order
     fragments: list[DocumentFragment] = Field(default_factory=list)

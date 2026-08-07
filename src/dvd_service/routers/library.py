@@ -17,6 +17,7 @@ from src.dvd_service.dto import (
     DocumentUpdateRequest,
     DocumentUpdateResponse,
     FragmentUpdateRequest,
+    NodeDetail,
 )
 from src.dvd_service.services.dvd_service import DocumentEditorService, LibraryService
 
@@ -50,6 +51,27 @@ async def get_document(
     if detail is None:
         raise HTTPException(404, "document not found")
     return detail
+
+
+@router.get("/nodes/{node_id}", response_model=NodeDetail)
+async def get_node(
+    node_id: str,
+    with_children: bool = Query(True, description="resolve child fragments"),
+    with_neighbours: bool = Query(True, description="resolve reading-order neighbours"),
+    library: LibraryService = Depends(Dependencies.get_library),
+):
+    """One fragment with its parent, children and neighbours — widen a search hit's context.
+
+    Lets a caller follow the ids a search hit already carries without fetching the whole
+    document; for a table row it is how you get back to the table (the table node keeps the
+    complete ``table_html``).
+    """
+    node = await run_in_threadpool(
+        library.get_node, node_id, with_children, with_neighbours
+    )
+    if node is None:
+        raise HTTPException(404, "node not found")
+    return node
 
 
 @router.patch("/documents/{doc_id}", response_model=DocumentUpdateResponse)

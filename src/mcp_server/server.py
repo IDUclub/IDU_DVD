@@ -15,6 +15,7 @@ from src.dvd_service.dto import (
     DocumentDetail,
     DocumentList,
     DocumentListResponse,
+    NodeDetail,
     SearchRequest,
     SearchResponse,
     TagsResponse,
@@ -45,6 +46,7 @@ def _search(
     scenario_id: str | None = None,
     include_shared: bool = True,
     include_inherited: bool = True,
+    parent_id: str | None = None,
 ) -> SearchResponse:
     req = SearchRequest(
         query=query,
@@ -61,6 +63,7 @@ def _search(
         scenario_id=scenario_id,
         include_shared=include_shared,
         include_inherited=include_inherited,
+        parent_id=parent_id,
     )
     return Dependencies.get_search().search(req, kind)
 
@@ -81,11 +84,14 @@ def search_texts(
     scenario_id: str | None = None,
     include_shared: bool = True,
     include_inherited: bool = True,
+    parent_id: str | None = None,
 ) -> SearchResponse:
     """Vector search over text fragments (kind=text) with filters and context height.
 
     ``block`` filters by main/amendment, ``types`` by structural level (chapter/clause/
     subclause/...). ``document_names`` restricts results to any of the given document names.
+    ``parent_id`` searches only among one node's direct children — drill into a clause or a
+    table you already found (get its id from a previous hit or from get_node).
     Set ``user_id``+``scenario_id`` to also search a user document index (combined search);
     add ``include_shared=False`` to search only that index, or ``include_inherited=False`` to
     skip its inheritance chain.
@@ -106,6 +112,7 @@ def search_texts(
         scenario_id,
         include_shared,
         include_inherited,
+        parent_id=parent_id,
     )
 
 
@@ -125,11 +132,14 @@ def search_tables(
     scenario_id: str | None = None,
     include_shared: bool = True,
     include_inherited: bool = True,
+    parent_id: str | None = None,
 ) -> SearchResponse:
     """Vector search over tables (kind=table) with filters and context height.
 
-    ``document_names`` restricts results to any of the given document names. Set
-    ``user_id``+``scenario_id`` to also search a user document index (combined search); add
+    ``document_names`` restricts results to any of the given document names.
+    ``parent_id`` searches only inside one node — pass a table's id to search within that
+    table rather than across all of them; ``get_node`` on the same id returns it whole.
+    Set ``user_id``+``scenario_id`` to also search a user document index (combined search); add
     ``include_shared=False`` to search only that index, or ``include_inherited=False`` to skip
     its inheritance chain.
     """
@@ -149,6 +159,7 @@ def search_tables(
         scenario_id,
         include_shared,
         include_inherited,
+        parent_id=parent_id,
     )
 
 
@@ -168,6 +179,7 @@ def search_all(
     scenario_id: str | None = None,
     include_shared: bool = True,
     include_inherited: bool = True,
+    parent_id: str | None = None,
 ) -> SearchResponse:
     """Vector search across all entities (texts and tables) with filters and context height.
 
@@ -192,6 +204,7 @@ def search_all(
         scenario_id,
         include_shared,
         include_inherited,
+        parent_id=parent_id,
     )
 
 
@@ -210,6 +223,7 @@ def search_user_index_texts(
     tags: list[str] | None = None,
     limit: int = 10,
     context_height: int = 0,
+    parent_id: str | None = None,
 ) -> SearchResponse:
     """Vector search restricted to a user document index (text fragments) — never the shared corpus."""
     return _search(
@@ -228,6 +242,7 @@ def search_user_index_texts(
         scenario_id,
         False,
         include_inherited,
+        parent_id=parent_id,
     )
 
 
@@ -246,6 +261,7 @@ def search_user_index_tables(
     tags: list[str] | None = None,
     limit: int = 10,
     context_height: int = 0,
+    parent_id: str | None = None,
 ) -> SearchResponse:
     """Vector search restricted to a user document index (tables) — never the shared corpus."""
     return _search(
@@ -264,6 +280,7 @@ def search_user_index_tables(
         scenario_id,
         False,
         include_inherited,
+        parent_id=parent_id,
     )
 
 
@@ -282,6 +299,7 @@ def search_user_index_all(
     tags: list[str] | None = None,
     limit: int = 10,
     context_height: int = 0,
+    parent_id: str | None = None,
 ) -> SearchResponse:
     """Vector search restricted to a user document index (all entities) — never the shared corpus."""
     return _search(
@@ -300,6 +318,7 @@ def search_user_index_all(
         scenario_id,
         False,
         include_inherited,
+        parent_id=parent_id,
     )
 
 
@@ -433,6 +452,25 @@ def get_document(doc_id: str) -> DocumentDetail:
     if detail is None:
         raise ToolError(f"document not found: {doc_id}")
     return detail
+
+
+@mcp.tool()
+def get_node(
+    node_id: str,
+    with_children: bool = True,
+    with_neighbours: bool = True,
+) -> NodeDetail:
+    """One fragment with its parent, children and reading-order neighbours resolved.
+
+    Use this to widen a search hit instead of get_document: search returns parent_id,
+    child_ids, prev_id and next_id, and this follows them one step at a time. For a table
+    row, fetching its parent returns the whole table as table_html — complete regardless of
+    how the rows were chunked for search.
+    """
+    node = Dependencies.get_library().get_node(node_id, with_children, with_neighbours)
+    if node is None:
+        raise ToolError(f"node not found: {node_id}")
+    return node
 
 
 @mcp.tool()
