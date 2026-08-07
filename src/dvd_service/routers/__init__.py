@@ -4,6 +4,9 @@ Endpoints live in dedicated modules (``documents``, ``search``, ``library``); th
 marks the package and re-exports each module's ``router`` under a descriptive name for mounting.
 """
 
+from src.dvd_service.routers.direct_documents import (  # noqa: F401
+    router as direct_documents_router,
+)
 from src.dvd_service.routers.documents import router as documents_router  # noqa: F401
 from src.dvd_service.routers.library import router as library_router  # noqa: F401
 from src.dvd_service.routers.search import router as search_router  # noqa: F401
@@ -13,6 +16,7 @@ from src.dvd_service.routers.user_documents import (  # noqa: F401
 
 __all__ = [
     "documents_router",
+    "direct_documents_router",
     "search_router",
     "library_router",
     "user_documents_router",

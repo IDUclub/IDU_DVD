@@ -128,6 +128,65 @@ class TestProviderSelection:
         client.close()
 
 
+class TestRetryOn5xx:
+    """Transient 5xx (e.g. a CUDA OOM on the shared a.dgx GPU) is retried with backoff."""
+
+    @staticmethod
+    def _capture_sleeps(monkeypatch) -> list[float]:
+        sleeps: list[float] = []
+        monkeypatch.setattr(
+            "src.api_clients.embeddings_client.time.sleep",
+            lambda seconds: sleeps.append(seconds),
+        )
+        return sleeps
+
+    def test_succeeds_after_transient_500s(self, monkeypatch):
+        sleeps = self._capture_sleeps(monkeypatch)
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] < 3:
+                return httpx.Response(500, text="CUDA out of memory")
+            return _ok_handler(request)
+
+        ec = _client_with(handler)
+        assert ec.embed(["a"]) == [[0.0]]
+        assert calls["n"] == 3
+        assert sleeps == [1.0, 2.0]
+        ec.close()
+
+    def test_gives_up_after_max_retries(self, monkeypatch):
+        sleeps = self._capture_sleeps(monkeypatch)
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            return httpx.Response(500, text="CUDA out of memory")
+
+        ec = _client_with(handler)
+        with pytest.raises(httpx.HTTPStatusError):
+            ec.embed(["a"])
+        assert calls["n"] == 4  # 1 initial attempt + 3 retries
+        assert sleeps == [1.0, 2.0, 4.0]
+        ec.close()
+
+    def test_4xx_is_not_retried(self, monkeypatch):
+        sleeps = self._capture_sleeps(monkeypatch)
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            return httpx.Response(400, text="bad request")
+
+        ec = _client_with(handler)
+        with pytest.raises(httpx.HTTPStatusError):
+            ec.embed(["a"])
+        assert calls["n"] == 1
+        assert sleeps == []
+        ec.close()
+
+
 class TestLifecycleAndRepr:
     def test_context_manager_closes_client(self):
         ec = _client_with(_ok_handler)
@@ -140,43 +199,61 @@ class TestLifecycleAndRepr:
         assert r.startswith("GigaEmbeddingsClient(") and "base=" in r and "model=" in r
 
 
-def test_a_503_splits_the_batch_and_retries_each_half(monkeypatch):
-    """503 means the vectorizer hunted for VRAM and queued the batch as long as it could
-    and it still didn't fit. Halving is the one lever the client has that the server
-    doesn't: the server must answer for the batch it was sent, we can send a smaller one.
-    """
-    from src.api_clients.embeddings_client import GigaEmbeddingsClient
+class TestBatchSplittingOn503:
+    """Once the retries are spent, a 503 means the batch is too big rather than too early:
+    the vectorizer has already hunted for VRAM and queued the job on its own side. Halving
+    is the one lever the client has that the server doesn't — the server must answer for
+    the batch it was sent, we get to send a smaller one."""
 
-    seen: list[int] = []
+    @staticmethod
+    def _no_sleep(monkeypatch) -> None:
+        monkeypatch.setattr(
+            "src.api_clients.embeddings_client.time.sleep", lambda _seconds: None
+        )
 
-    class _Resp:
-        def __init__(self, status: int, payload: dict | None = None) -> None:
-            self.status_code = status
-            self._payload = payload or {}
-            self.text = ""
+    def test_splits_the_batch_until_it_fits(self, monkeypatch):
+        self._no_sleep(monkeypatch)
+        sizes: list[int] = []
 
-        def json(self) -> dict:
-            return self._payload
+        def handler(request: httpx.Request) -> httpx.Response:
+            size = len(json.loads(request.content)["input"])
+            sizes.append(size)
+            if size > 2:
+                return httpx.Response(503, text="GPU out of memory")
+            return _ok_handler(request)
 
-        def raise_for_status(self) -> None:
-            if self.status_code >= 400:
-                raise AssertionError("should not be reached for a split batch")
+        ec = _client_with(handler)
 
-    def _post(url, json):  # noqa: A002
-        size = len(json["input"])
-        seen.append(size)
-        if size > 1:
-            return _Resp(503)
-        return _Resp(200, {"data": [{"embedding": [1.0], "index": 0}]})
+        assert ec.embed(["a", "b", "c", "d"]) == [[0.0], [1.0], [0.0], [1.0]]
+        assert sizes[0] == 4  # the whole batch, retried before being split
+        assert sizes[-2:] == [2, 2]  # then one halving was enough
+        ec.close()
 
-    client = GigaEmbeddingsClient.__new__(GigaEmbeddingsClient)
-    client.base = "http://vectorizer"
-    client.model = "m"
-    client.query_prompt = ""
-    client._client = type("C", (), {"post": staticmethod(_post)})()
+    def test_a_single_text_is_never_split(self, monkeypatch):
+        """Nothing left to halve — and the vectorizer splits an oversized text its side."""
+        self._no_sleep(monkeypatch)
 
-    vectors = client.embed(["a", "b", "c", "d"])
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503, text="GPU out of memory")
 
-    assert vectors == [[1.0]] * 4
-    assert seen[0] == 4  # tried whole, then halved down to singles
-    assert max(seen[1:]) < 4
+        ec = _client_with(handler)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            ec.embed(["a"])
+        ec.close()
+
+    def test_other_5xx_are_not_split(self, monkeypatch):
+        """A 500 is the server failing, not a verdict that the batch is too large."""
+        self._no_sleep(monkeypatch)
+        sizes: list[int] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            sizes.append(len(json.loads(request.content)["input"]))
+            return httpx.Response(500, text="boom")
+
+        ec = _client_with(handler)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            ec.embed(["a", "b"])
+        assert set(sizes) == {2}  # retried whole, never halved
+        ec.close()

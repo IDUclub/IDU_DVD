@@ -55,6 +55,7 @@ namespacing сервис будет использовать новую физи
 | `DVD_QDRANT_COLLECTION` | `documents` | **базовое** имя коллекции (см. «Пространства коллекций») |
 | `DVD_VECTOR_SIZE` | `2048` | **только резервное значение** — реальная размерность определяется опросом активного векторизатора при старте и перезаписывает это значение; используется как есть, только если векторизатор недоступен на старте (giga = 2048, bge-m3 = 1024) |
 | `DVD_EMBED_BATCH` | `32` | размер батча при векторизации |
+| `DVD_QDRANT_UPSERT_BATCH_SIZE` | `128` | число точек в одном запросе upsert; HTTP API Qdrant отклоняет запрос больше настроенного лимита (по умолчанию 32 МиБ), а узлы одного крупного документа за один запрос могут этот лимит превысить |
 | `DVD_COLLECTION_NAMESPACING` | `true` | отдельная физическая коллекция под каждое векторное пространство (см. ниже) |
 
 #### Пространства коллекций (namespacing)
@@ -110,12 +111,26 @@ documents__bge_m3_1024                        # резервный ollama / 1024
 
 | Переменная | По умолчанию | Описание |
 |------------|--------------|----------|
-| `DVD_MINIO_ENDPOINT` | `localhost:9000` | адрес MinIO/S3 (`host:port`) |
+| `DVD_MINIO_ENDPOINT` | `localhost:9000` | адрес MinIO/S3 — `host:port`; схему можно указать (см. ниже) |
 | `DVD_MINIO_ACCESS_KEY` | `minioadmin` | access key |
 | `DVD_MINIO_SECRET_KEY` | `minioadmin` | secret key |
 | `DVD_MINIO_SECURE` | `false` | использовать HTTPS для подключения к MinIO |
 | `DVD_MINIO_BUCKET_DOCUMENTS` | `dvd-documents` | бакет общего/обычного корпуса документов |
 | `DVD_MINIO_BUCKET_USER_DOCUMENTS` | `dvd-user-documents` | бакет всех пользовательских индексов |
+
+Оба бакета создаются автоматически при старте приложения, заводить их заранее не нужно.
+
+В отличие от `DVD_QDRANT_URL` / `DVD_REDIS_URL`, канонический вид адреса здесь — `host:port` без
+схемы: протокол выбирает `DVD_MINIO_SECURE`, и minio SDK отвергает endpoint со схемой. Для
+единообразия схему всё же можно написать — она будет срезана, и при незаданном явно
+`DVD_MINIO_SECURE` определит транспорт (`https://` → `true`). Путь в адресе недопустим в любом
+случае, конфигурация с ним не пройдёт валидацию.
+
+```
+DVD_MINIO_ENDPOINT=10.32.1.42:9000          # канонический вид
+DVD_MINIO_ENDPOINT=https://minio.idu:9000   # тоже работает: → minio.idu:9000, SECURE=true
+DVD_MINIO_ENDPOINT=http://minio:9000/store  # ошибка: путь в адресе не допускается
+```
 
 ### Kafka (события жизненного цикла документов)
 
@@ -131,9 +146,14 @@ documents__bge_m3_1024                        # резервный ollama / 1024
 | `DocumentProcessed` | первичная загрузка документа (`POST /documents`) | `document_name` |
 | `DocumentUpdated` | дельта-обновление или полная перезагрузка (`PATCH`/`PUT /documents/{name}`) | `document_name`, `version` |
 | `DocumentDeleted` | удаление документа или одной версии (`DELETE /documents/{name}`) | `document_name`, `versions_removed`, `document_removed` |
+| `DirectDocumentProcessed` | первичная прямая загрузка документа (`POST /documents/direct`) | `document_name` |
+| `DirectDocumentUpdated` | полная прямая замена (`PUT /documents/direct`) | `document_name`, `version` |
 
 `PUT`-перезагрузка объявляется одним `DocumentUpdated` (без промежуточного `DocumentDeleted`);
-перезагрузка ещё не сохранённого документа объявляется как `DocumentProcessed`.
+перезагрузка ещё не сохранённого документа объявляется как `DocumentProcessed`. Прямые эндпоинты
+(`POST`/`PUT /documents/direct`) зеркалят это событиями типа `Direct…`, чтобы потребители различали
+путь загрузки; удаление прямо загруженного документа по-прежнему эмитит базовый `DocumentDeleted`.
+Потребители, которые ещё не знают схемы `Direct…`, просто их игнорируют.
 
 | Переменная | По умолчанию | Описание |
 |------------|--------------|----------|

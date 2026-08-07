@@ -55,6 +55,7 @@ into that new space (embeddings of different models are not comparable).
 | `DVD_QDRANT_COLLECTION` | `documents` | **base** collection name (see Collection namespacing) |
 | `DVD_VECTOR_SIZE` | `2048` | **advisory fallback only** — the real dimension is probed from the active vectorizer at startup and this value is overwritten to match; used verbatim only if the vectorizer is unreachable at boot (giga = 2048, bge-m3 = 1024) |
 | `DVD_EMBED_BATCH` | `32` | batch size during vectorization |
+| `DVD_QDRANT_UPSERT_BATCH_SIZE` | `128` | points per upsert request; Qdrant's HTTP API rejects a request over its configured max size (default 32 MiB), and one large document's nodes can exceed that in a single request |
 | `DVD_COLLECTION_NAMESPACING` | `true` | derive a distinct physical collection per embedding space (see below) |
 
 #### Collection namespacing
@@ -108,12 +109,26 @@ failure here only logs, it doesn't block the Qdrant/Redis deletion).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DVD_MINIO_ENDPOINT` | `localhost:9000` | MinIO/S3 endpoint (`host:port`) |
+| `DVD_MINIO_ENDPOINT` | `localhost:9000` | MinIO/S3 endpoint — `host:port`; a scheme is accepted (see below) |
 | `DVD_MINIO_ACCESS_KEY` | `minioadmin` | access key |
 | `DVD_MINIO_SECRET_KEY` | `minioadmin` | secret key |
 | `DVD_MINIO_SECURE` | `false` | use HTTPS for the MinIO connection |
 | `DVD_MINIO_BUCKET_DOCUMENTS` | `dvd-documents` | bucket for the shared/regular document corpus |
 | `DVD_MINIO_BUCKET_USER_DOCUMENTS` | `dvd-user-documents` | bucket for all user document indices |
+
+Both buckets are created automatically at startup — no need to provision them beforehand.
+
+Unlike `DVD_QDRANT_URL` / `DVD_REDIS_URL`, the canonical form here is a bare `host:port`: the
+transport is picked by `DVD_MINIO_SECURE` and the minio SDK rejects an endpoint carrying a scheme.
+A scheme may still be written for symmetry — it is stripped, and when `DVD_MINIO_SECURE` is not set
+explicitly it decides the transport (`https://` → `true`). A path is never allowed and fails
+validation.
+
+```
+DVD_MINIO_ENDPOINT=10.32.1.42:9000          # canonical
+DVD_MINIO_ENDPOINT=https://minio.idu:9000   # also fine: → minio.idu:9000, SECURE=true
+DVD_MINIO_ENDPOINT=http://minio:9000/store  # error: a path in the endpoint is not allowed
+```
 
 ### Kafka (document lifecycle events)
 
@@ -128,9 +143,14 @@ blocking the queue. Event types:
 | `DocumentProcessed` | first upload of a document (`POST /documents`) | `document_name` |
 | `DocumentUpdated` | delta update or full reload (`PATCH`/`PUT /documents/{name}`) | `document_name`, `version` |
 | `DocumentDeleted` | deletion of a document or one version (`DELETE /documents/{name}`) | `document_name`, `versions_removed`, `document_removed` |
+| `DirectDocumentProcessed` | first direct ingest of a document (`POST /documents/direct`) | `document_name` |
+| `DirectDocumentUpdated` | full direct replace (`PUT /documents/direct`) | `document_name`, `version` |
 
 A `PUT` reload announces a single `DocumentUpdated` (no intermediate `DocumentDeleted`); a reload
-of a not-yet-stored document announces `DocumentProcessed`.
+of a not-yet-stored document announces `DocumentProcessed`. The direct endpoints
+(`POST`/`PUT /documents/direct`) mirror this with the `Direct…` event types so consumers can tell
+the ingestion path apart; deletion of a directly-ingested document still emits the base
+`DocumentDeleted`. Consumers that don't yet know the `Direct…` schemas simply ignore them.
 
 | Variable | Default | Description |
 |----------|---------|-------------|

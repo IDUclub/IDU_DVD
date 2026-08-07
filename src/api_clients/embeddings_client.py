@@ -11,6 +11,8 @@ share the same embedding surface, so the pipeline code does not care which one i
 
 from __future__ import annotations
 
+import time
+
 import httpx
 import structlog
 
@@ -18,6 +20,13 @@ from src.api_clients.ollama_client import OllamaClient
 from src.common.config import settings
 
 log = structlog.get_logger(__name__)
+
+# The shared GPU embeddings service can return a transient 500 under load (e.g. a
+# CUDA OOM on a contended GPU, see the a.dgx:8010 incident) that clears up once the
+# in-flight batch on the other side finishes. Retry those a few times with backoff
+# before giving up; 4xx responses mean the request itself is wrong and are never retried.
+_EMBEDDINGS_MAX_RETRIES = 3
+_EMBEDDINGS_BACKOFF_BASE_SECONDS = 1.0
 
 
 class EmbeddingsError(RuntimeError):
@@ -77,24 +86,55 @@ class GigaEmbeddingsClient:
         body: dict = {"input": texts, "model": self.model}
         if prompt is not None:
             body["prompt"] = prompt
-        resp = self._client.post(self.base + "/v1/embeddings", json=body)
-        if resp.status_code == 503 and len(texts) > 1:
-            # The vectorizer shares its GPU with other tenants; a 503 means it hunted for
-            # memory and queued this batch for as long as it could and it still didn't
-            # fit. Halving is the one thing we can do that it can't: it must answer for
-            # the batch we sent, we get to send a smaller one.
+        try:
+            resp = self._post_with_retry(body)
+        except httpx.HTTPStatusError as exc:
+            # Backoff already gave the GPU time to clear, and a 503 means the vectorizer
+            # hunted for memory and queued this batch for as long as it was allowed to.
+            # So the batch is not too early, it is too big — and halving is the one lever
+            # we have that the server does not: it must answer for the batch it was sent,
+            # we get to send a smaller one. Below two texts there is nothing left to split,
+            # and the vectorizer splits an oversized single text on its own side.
+            if exc.response.status_code != 503 or len(texts) < 2:
+                raise
             middle = len(texts) // 2
             log.warning("embeddings_batch_too_large_splitting", batch=len(texts))
             return self.embed(texts[:middle], prompt) + self.embed(
                 texts[middle:], prompt
             )
-        resp.raise_for_status()
         data = resp.json().get("data")
         if not data:
             raise EmbeddingsError(
                 "Сервис эмбеддингов не вернул data: " + resp.text[:200]
             )
         return [item["embedding"] for item in sorted(data, key=lambda d: d["index"])]
+
+    def _post_with_retry(self, body: dict) -> httpx.Response:
+        """POST /v1/embeddings, retrying transient 5xx responses with backoff.
+
+        Up to ``_EMBEDDINGS_MAX_RETRIES`` retries (4 attempts total), sleeping
+        1s / 2s / 4s between them. A 4xx is raised immediately — retrying a
+        malformed request wouldn't help.
+        """
+        attempt = 0
+        while True:
+            resp = self._client.post(self.base + "/v1/embeddings", json=body)
+            if resp.status_code < 500:
+                resp.raise_for_status()
+                return resp
+
+            attempt += 1
+            if attempt > _EMBEDDINGS_MAX_RETRIES:
+                resp.raise_for_status()
+
+            delay = _EMBEDDINGS_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1))
+            log.warning(
+                "embeddings_request_retrying",
+                status_code=resp.status_code,
+                attempt=attempt,
+                delay=delay,
+            )
+            time.sleep(delay)
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """Document embeddings: explicitly no instruction prefix."""

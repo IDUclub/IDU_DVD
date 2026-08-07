@@ -5,6 +5,8 @@ Covers: default values, environment-variable overrides (DVD_ prefix), and the co
 
 from __future__ import annotations
 
+import pytest
+
 from src.common.config import Settings, settings
 
 
@@ -65,6 +67,54 @@ class TestEnvOverride:
     def test_unknown_env_is_ignored(self, monkeypatch):
         monkeypatch.setenv("DVD_TOTALLY_UNKNOWN", "x")
         Settings()  # extra="ignore" — must not raise
+
+
+class TestMinioEndpoint:
+    """The minio SDK rejects a scheme in the endpoint, so Settings strips it (and lets it
+    pick the transport) instead of letting the app crash at startup."""
+
+    def test_bare_host_port_is_untouched(self):
+        s = Settings(minio_endpoint="10.32.1.42:9000")
+        assert s.minio_endpoint == "10.32.1.42:9000"
+        assert s.minio_secure is False
+
+    def test_http_scheme_is_stripped(self):
+        s = Settings(minio_endpoint="http://10.32.1.42:9000")
+        assert s.minio_endpoint == "10.32.1.42:9000"
+        assert s.minio_secure is False
+
+    def test_https_scheme_implies_secure(self):
+        s = Settings(minio_endpoint="https://minio.example.com")
+        assert s.minio_endpoint == "minio.example.com"
+        assert s.minio_secure is True
+
+    def test_explicit_secure_wins_over_scheme(self):
+        s = Settings(minio_endpoint="https://minio.example.com", minio_secure=False)
+        assert s.minio_secure is False
+
+    def test_trailing_slash_is_dropped(self):
+        assert (
+            Settings(minio_endpoint="http://minio:9000/").minio_endpoint == "minio:9000"
+        )
+
+    def test_env_value_with_scheme_is_normalized(self, monkeypatch):
+        monkeypatch.setenv("DVD_MINIO_ENDPOINT", "https://minio.idu:9000")
+        s = Settings()
+        assert s.minio_endpoint == "minio.idu:9000"
+        assert s.minio_secure is True
+
+    def test_explicit_secure_env_wins_over_scheme(self, monkeypatch):
+        monkeypatch.setenv("DVD_MINIO_ENDPOINT", "https://minio.idu:9000")
+        monkeypatch.setenv("DVD_MINIO_SECURE", "false")
+        assert Settings().minio_secure is False
+
+    def test_path_is_rejected(self):
+        with pytest.raises(ValueError, match="path in the endpoint is not allowed"):
+            Settings(minio_endpoint="http://minio:9000/bucket")
+
+    def test_unknown_scheme_is_rejected(self):
+        with pytest.raises(ValueError, match="unsupported scheme"):
+            Settings(minio_endpoint="s3://minio:9000")
 
 
 class TestRepr:

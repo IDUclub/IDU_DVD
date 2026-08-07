@@ -9,6 +9,7 @@ from src.admin_service.router import router as admin_router
 from src.common.middlewares import RequestLoggingMiddleware
 from src.dependencies import init_dependencies
 from src.dvd_service.routers import (
+    direct_documents_router,
     documents_router,
     library_router,
     search_router,
@@ -39,6 +40,7 @@ app = FastAPI(
 )
 app.add_middleware(RequestLoggingMiddleware)
 app.include_router(documents_router)
+app.include_router(direct_documents_router)
 app.include_router(search_router)
 app.include_router(library_router)
 app.include_router(user_documents_router)

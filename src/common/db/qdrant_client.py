@@ -123,9 +123,16 @@ class QdrantRepository:
             )
 
     def upsert(self, points: Iterable[PointStruct]) -> int:
+        """Upsert ``points``, chunked to stay under Qdrant's max request size.
+
+        One document's nodes used to go up in a single request; a large document (long
+        SP-style regulations, big tables) can push that single JSON payload past Qdrant's
+        default 32 MiB request limit on its own, failing the whole upsert with a 400.
+        """
         points = list(points)
-        if points:
-            self.client.upsert(self.collection, points=points)
+        batch_size = self.settings.qdrant_upsert_batch_size
+        for i in range(0, len(points), batch_size):
+            self.client.upsert(self.collection, points=points[i : i + batch_size])
         return len(points)
 
     def search(self, vector: Sequence[float], query_filter: Filter | None, limit: int):
