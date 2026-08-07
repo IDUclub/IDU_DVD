@@ -78,6 +78,16 @@ class GigaEmbeddingsClient:
         if prompt is not None:
             body["prompt"] = prompt
         resp = self._client.post(self.base + "/v1/embeddings", json=body)
+        if resp.status_code == 503 and len(texts) > 1:
+            # The vectorizer shares its GPU with other tenants; a 503 means it hunted for
+            # memory and queued this batch for as long as it could and it still didn't
+            # fit. Halving is the one thing we can do that it can't: it must answer for
+            # the batch we sent, we get to send a smaller one.
+            middle = len(texts) // 2
+            log.warning("embeddings_batch_too_large_splitting", batch=len(texts))
+            return self.embed(texts[:middle], prompt) + self.embed(
+                texts[middle:], prompt
+            )
         resp.raise_for_status()
         data = resp.json().get("data")
         if not data:

@@ -138,3 +138,45 @@ class TestLifecycleAndRepr:
     def test_repr_mentions_base_and_model(self):
         r = repr(GigaEmbeddingsClient())
         assert r.startswith("GigaEmbeddingsClient(") and "base=" in r and "model=" in r
+
+
+def test_a_503_splits_the_batch_and_retries_each_half(monkeypatch):
+    """503 means the vectorizer hunted for VRAM and queued the batch as long as it could
+    and it still didn't fit. Halving is the one lever the client has that the server
+    doesn't: the server must answer for the batch it was sent, we can send a smaller one.
+    """
+    from src.api_clients.embeddings_client import GigaEmbeddingsClient
+
+    seen: list[int] = []
+
+    class _Resp:
+        def __init__(self, status: int, payload: dict | None = None) -> None:
+            self.status_code = status
+            self._payload = payload or {}
+            self.text = ""
+
+        def json(self) -> dict:
+            return self._payload
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise AssertionError("should not be reached for a split batch")
+
+    def _post(url, json):  # noqa: A002
+        size = len(json["input"])
+        seen.append(size)
+        if size > 1:
+            return _Resp(503)
+        return _Resp(200, {"data": [{"embedding": [1.0], "index": 0}]})
+
+    client = GigaEmbeddingsClient.__new__(GigaEmbeddingsClient)
+    client.base = "http://vectorizer"
+    client.model = "m"
+    client.query_prompt = ""
+    client._client = type("C", (), {"post": staticmethod(_post)})()
+
+    vectors = client.embed(["a", "b", "c", "d"])
+
+    assert vectors == [[1.0]] * 4
+    assert seen[0] == 4  # tried whole, then halved down to singles
+    assert max(seen[1:]) < 4
