@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 
 import src.dvd_service.services.dvd_service as svc
+from src.api_clients import COUNTRY_TERRITORY_ID
 from src.broker.outbox import EventOutbox
 from src.common.db.redis_client import DocumentRegistry, JobStore, RedisClient
 from src.dvd_service.dto import SearchRequest
@@ -21,6 +22,7 @@ from src.dvd_service.modules.hierarchy import HierarchyBuilder
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import VersionDetector
+from src.dvd_service.modules.territory import TerritoryResolver
 from src.dvd_service.services.dvd_service import (
     DocumentEditorService,
     DocumentsService,
@@ -87,6 +89,63 @@ def wired(
 class SimpleNS:
     def __init__(self, **kw):
         self.__dict__.update(kw)
+
+
+@pytest.fixture
+def wired_with_territory(wired):
+    """The same pipeline, with a territory resolver over a faked Urban API attached."""
+    from unit.test_territory import FakeUrbanApi
+
+    def _attach(broken: bool = False):
+        wired.ingestion.territory = TerritoryResolver(FakeUrbanApi(broken=broken))
+        return wired
+
+    return _attach
+
+
+class TestAdministrativeScope:
+    """The head hints reach the payload, and an Urban API outage never fails an ingest."""
+
+    def test_scope_is_written_onto_every_fragment(
+        self, wired_with_territory, sample_raw
+    ):
+        # the faked head pass reports a federal document (see pipeline_chat_handler)
+        wired = wired_with_territory()
+        wired.ingestion.ingest(
+            "doc.docx", sample_raw, DocumentParser.content_hash(sample_raw)
+        )
+        payloads = [payload for _vec, payload in wired.qdrant.points.values()]
+        assert payloads
+        for payload in payloads:
+            assert payload["document_level"] == "federal"
+            assert payload["territory_id"] == COUNTRY_TERRITORY_ID
+            assert payload["territory_name"] == "Россия"
+            assert payload["territory_path"] == [COUNTRY_TERRITORY_ID]
+            assert payload["territory_source"] == "auto"
+            assert payload["tagging_status"] == "ok"
+
+    def test_urban_api_outage_still_indexes_the_document_as_pending(
+        self, wired_with_territory, sample_raw
+    ):
+        """The main degradation path: tagging fails, ingestion does not."""
+        wired = wired_with_territory(broken=True)
+        result = wired.ingestion.ingest(
+            "doc.docx", sample_raw, DocumentParser.content_hash(sample_raw)
+        )
+        assert result["nodes"] > 0
+        _vec, payload = next(iter(wired.qdrant.points.values()))
+        assert payload["tagging_status"] == "pending"
+        assert payload["territory_id"] is None
+        assert payload["territory_source"] == "unset"
+        assert "Urban API недоступен" in payload["tagging_error"]
+
+    def test_without_a_resolver_documents_are_indexed_untagged(self, wired, sample_raw):
+        wired.ingestion.ingest(
+            "doc.docx", sample_raw, DocumentParser.content_hash(sample_raw)
+        )
+        _vec, payload = next(iter(wired.qdrant.points.values()))
+        assert payload["tagging_status"] == "pending"
+        assert payload["document_level"] is None
 
 
 class TestIngest:

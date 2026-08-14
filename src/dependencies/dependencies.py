@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.api_clients import UrbanApiClient
 from src.broker.outbox import EventOutbox
 from src.broker.publisher import KafkaPublisher
 from src.common.config import Settings
@@ -25,6 +26,7 @@ from src.dvd_service.modules.hierarchy import HierarchyBuilder
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import VersionDetector
+from src.dvd_service.modules.territory import TerritoryResolver
 from src.dvd_service.services.dvd_service import (
     DocumentEditorService,
     DocumentsService,
@@ -60,6 +62,8 @@ class Dependencies:
         "structure",
         "hierarchy",
         "version_detector",
+        "urban_api",
+        "territory",
         "reference_extractor",
         "reference_resolver",
         "outbox",
@@ -89,6 +93,8 @@ class Dependencies:
     structure: StructureTagger
     hierarchy: HierarchyBuilder
     version_detector: VersionDetector
+    urban_api: UrbanApiClient
+    territory: TerritoryResolver
     reference_extractor: ReferenceExtractor
     reference_resolver: ReferenceResolver
     outbox: EventOutbox
@@ -124,6 +130,8 @@ class Dependencies:
         structure: StructureTagger,
         hierarchy: HierarchyBuilder,
         version_detector: VersionDetector,
+        urban_api: UrbanApiClient,
+        territory: TerritoryResolver,
         reference_extractor: ReferenceExtractor,
         reference_resolver: ReferenceResolver,
         outbox: EventOutbox,
@@ -151,6 +159,8 @@ class Dependencies:
         self.structure = structure
         self.hierarchy = hierarchy
         self.version_detector = version_detector
+        self.urban_api = urban_api
+        self.territory = territory
         self.reference_extractor = reference_extractor
         self.reference_resolver = reference_resolver
         self.outbox = outbox
@@ -233,6 +243,14 @@ class Dependencies:
     @classmethod
     def get_version_detector(cls) -> VersionDetector:
         return cls.instance().version_detector
+
+    @classmethod
+    def get_urban_api(cls) -> UrbanApiClient:
+        return cls.instance().urban_api
+
+    @classmethod
+    def get_territory(cls) -> TerritoryResolver:
+        return cls.instance().territory
 
     @classmethod
     def get_reference_extractor(cls) -> ReferenceExtractor:

@@ -11,7 +11,7 @@ from pathlib import Path
 import structlog
 from minio import Minio
 
-from src.api_clients import probe_embedding_dim
+from src.api_clients import UrbanApiClient, probe_embedding_dim
 from src.broker.outbox import EventOutbox
 from src.broker.publisher import KafkaPublisher
 from src.common.config import Settings, settings
@@ -30,6 +30,7 @@ from src.dvd_service.modules.hierarchy import HierarchyBuilder
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import VersionDetector
+from src.dvd_service.modules.territory import TerritoryResolver
 from src.dvd_service.services.dvd_service import (
     DocumentEditorService,
     DocumentsService,
@@ -166,6 +167,11 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     version_detector = VersionDetector()
     reference_extractor = ReferenceExtractor(s)
     reference_resolver = ReferenceResolver(qdrant, registry, s)
+    # Urban API is a hard dependency of the configuration (an empty URL never gets here — the
+    # settings validator refuses to build), but not of the boot sequence: it is contacted
+    # lazily, so a stand that is down delays tagging instead of the service.
+    urban_api = UrbanApiClient()
+    territory = TerritoryResolver(urban_api)
 
     # Kafka publishing (otteroad): events are queued in a Redis outbox and delivered
     # by the async publisher started in the lifespan. Without a configured broker the
@@ -186,6 +192,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         jobs,
         s,
         outbox=outbox if publisher.enabled else None,
+        territory=territory,
     )
     search = SearchService(qdrant, s, user_index_registry)
     documents = DocumentsService(qdrant)
@@ -216,6 +223,8 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         structure=structure,
         hierarchy=hierarchy,
         version_detector=version_detector,
+        urban_api=urban_api,
+        territory=territory,
         reference_extractor=reference_extractor,
         reference_resolver=reference_resolver,
         outbox=outbox,

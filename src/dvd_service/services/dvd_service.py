@@ -64,7 +64,8 @@ from src.dvd_service.modules.identity import (
 from src.dvd_service.modules.progress import Progress
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
-from src.dvd_service.modules.tagging import VersionDetector
+from src.dvd_service.modules.tagging import DocumentHead, VersionDetector
+from src.dvd_service.modules.territory import TerritoryResolver, untagged_scope
 
 log = structlog.get_logger(__name__)
 
@@ -130,11 +131,15 @@ class IngestionService:
         jobs: JobStore,
         settings: Settings,
         outbox: EventOutbox | None = None,
+        territory: TerritoryResolver | None = None,
     ) -> None:
         self.parser = parser
         self.structure = structure
         self.hierarchy = hierarchy
         self.version_detector = version_detector
+        # Absent only in tests that wire the service by hand: without it documents are simply
+        # indexed untagged (``pending``) and the backfill job tags them later.
+        self.territory = territory
         self.reference_extractor = reference_extractor
         self.reference_resolver = reference_resolver
         self.qdrant = qdrant
@@ -187,26 +192,42 @@ class IngestionService:
                     on_progress(done, total)
         return vectors
 
-    def _resolve_identity(
+    def _resolve_head(
         self,
         parts: list[dict],
         client: OllamaClient,
         name_override: str | None,
         version_override: str | None,
-    ) -> tuple[str, str]:
-        """Document name + version: manual overrides > 4-digit group in the name > LLM.
+        *,
+        need_scope_hints: bool = False,
+    ) -> tuple[str, str, DocumentHead]:
+        """Document name + version + administrative-scope hints, from at most one LLM call.
 
-        The LLM detector is only invoked when either value cannot be derived without it.
+        Manual overrides win for name and version, and the head pass is skipped entirely when
+        nothing is left to ask it — identity is known *and* the scope was supplied by hand.
+        Otherwise it runs once and answers both halves: it is the same call that used to detect
+        name/version alone, now returning five fields instead of two.
         """
         name = (name_override or "").strip()
         version = (version_override or "").strip()
         if not version and name:
             version = extract_version_from_name(name) or ""
-        if not name or not version:
-            det_name, det_version = self.version_detector.detect(parts, client)
-            name = name or det_name
-            version = version or extract_version_from_name(name) or det_version
-        return name, version.strip() or "unknown"
+        if name and version and not need_scope_hints:
+            return name, version.strip(), DocumentHead(name=name, version=version)
+        head = self.version_detector.detect_head(parts, client)
+        name = name or head.name
+        version = version or extract_version_from_name(name) or head.version
+        return name, version.strip() or "unknown", head
+
+    def _resolve_scope(self, head: DocumentHead) -> dict:
+        """Administrative scope for a document being (re)indexed — never raises.
+
+        A missing resolver or an Urban API outage leaves the slice ``pending``: the document is
+        still indexed and searchable, only untagged until the backfill job gets to it.
+        """
+        if self.territory is None:
+            return untagged_scope()
+        return self.territory.from_hints(head)
 
     @staticmethod
     def _match_by_text(
@@ -447,10 +468,15 @@ class IngestionService:
             progress.complete_stage()
 
             progress.stage("identity")
-            name, version = self._resolve_identity(
-                parts, client, name_override, version_override
+            name, version, head = self._resolve_head(
+                parts,
+                client,
+                name_override,
+                version_override,
+                need_scope_hints=self.territory is not None,
             )
             version, other_versions = self._resolve_version(name, version, content_hash)
+            scope = self._resolve_scope(head)
             progress.complete_stage()
 
             # Fragment tags were produced together with the structural fields (see
@@ -517,6 +543,7 @@ class IngestionService:
                 "source_object_key": source_object_key,
                 "metadata": metadata or {},
                 "uploaded_at": uploaded_at,
+                **scope,
             }
             progress.stage("indexing")
             points = self._build_points(
@@ -665,8 +692,15 @@ class IngestionService:
             progress.complete_stage()
 
             progress.stage("identity")
-            _, version = self._resolve_identity(parts, client, name, version_override)
+            _, version, head = self._resolve_head(
+                parts,
+                client,
+                name,
+                version_override,
+                need_scope_hints=self.territory is not None,
+            )
             version, other_versions = self._resolve_version(name, version, content_hash)
+            scope = self._resolve_scope(head)
             progress.complete_stage()
 
             for order, n in enumerate(nodes):
@@ -777,6 +811,7 @@ class IngestionService:
                 "source_object_key": source_object_key,
                 "metadata": metadata or {},
                 "uploaded_at": uploaded_at,
+                **scope,
             }
             progress.stage("indexing")
             points = self._build_points(
@@ -1033,6 +1068,10 @@ class IngestionService:
                 "source_object_key": None,
                 "metadata": doc.metadata or {},
                 "uploaded_at": uploaded_at,
+                # No head pass runs on caller-supplied fragments, so there are no hints to
+                # resolve: the document is indexed untagged and the backfill job tags it from
+                # its stored text.
+                **untagged_scope(),
             }
             points = self._build_direct_points(doc, vectors, doc_id, identity)
             count = self.qdrant.upsert(points)
