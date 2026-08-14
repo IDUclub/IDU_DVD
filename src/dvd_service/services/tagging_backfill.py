@@ -28,8 +28,8 @@ from src.common.db.qdrant_client import QdrantRepository, scope_conditions
 from src.common.db.redis_client import DocumentRegistry, JobStore
 from src.dvd_service.modules.tagging import VersionDetector
 from src.dvd_service.modules.territory import (
-    STATUS_PENDING,
     SOURCE_MANUAL,
+    STATUS_PENDING,
     TerritoryResolver,
 )
 
@@ -134,7 +134,12 @@ class TaggingBackfillService:
         timer) down with it.
         """
         if not self._lock.acquire(blocking=False):
-            return {"status": "already_running", "tagged": 0, "failed": 0, "documents": []}
+            return {
+                "status": "already_running",
+                "tagged": 0,
+                "failed": 0,
+                "documents": [],
+            }
         started_at = datetime.now(timezone.utc).isoformat()
         tagged = 0
         failed = 0
@@ -235,4 +240,6 @@ class TaggingBackfillService:
             if record:
                 self.registry.register_document(doc_id, {**record, **scope})
         except Exception as exc:  # noqa: BLE001 — the payload is the source of truth
-            log.warning("tagging_backfill_registry_sync_failed", doc_id=doc_id, error=str(exc))
+            log.warning(
+                "tagging_backfill_registry_sync_failed", doc_id=doc_id, error=str(exc)
+            )

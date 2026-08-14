@@ -8,9 +8,16 @@ import time
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 
 from src.__version__ import VERSION
+from src.api_clients import UrbanApiError
 from src.common.config import Settings
 from src.dependencies import Dependencies
 
@@ -104,6 +111,42 @@ async def logout():
     response = RedirectResponse("/admin/ui/login", status_code=303)
     response.delete_cookie(_COOKIE, path="/admin/ui")
     return response
+
+
+@router.get("/territories")
+async def territories(
+    request: Request,
+    query: str = "",
+    limit: int = 20,
+    settings: Settings = Depends(Dependencies.get_settings),
+):
+    """Urban API territory search for the panel's autocomplete (session-protected).
+
+    A proxy rather than a client-side call: the panel's CSP allows no external host, and the
+    tree has ~100k nodes, so the search has to happen server-side anyway. The parent name comes
+    along because it is the only thing that tells two identically named districts apart.
+    """
+    if not _authenticated(request, settings):
+        return JSONResponse({"detail": "unauthorized"}, status_code=401)
+    try:
+        found = await run_in_threadpool(
+            Dependencies.get_urban_api().find_by_name, query, limit=limit
+        )
+    except UrbanApiError as exc:
+        return JSONResponse({"detail": f"Urban API недоступен: {exc}"}, status_code=502)
+    return {
+        "count": len(found),
+        "territories": [
+            {
+                "territory_id": territory.territory_id,
+                "name": territory.name,
+                "parent_name": territory.parent_name,
+                "type_name": territory.type_name,
+                "document_level": territory.document_level,
+            }
+            for territory in found
+        ],
+    }
 
 
 @router.get("/assets/{filename}")

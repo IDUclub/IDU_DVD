@@ -11,6 +11,7 @@ import uuid
 
 import pytest
 from qdrant_client.models import PointStruct
+from unit.test_territory import FakeUrbanApi
 
 import src.dvd_service.services.tagging_backfill as backfill_module
 from src.api_clients import COUNTRY_TERRITORY_ID
@@ -22,7 +23,6 @@ from src.dvd_service.modules.territory import (
     untagged_scope,
 )
 from src.dvd_service.services.tagging_backfill import TaggingBackfillService
-from unit.test_territory import FakeUrbanApi
 
 
 @pytest.fixture
@@ -76,21 +76,19 @@ def _store_pending(qdrant, name="ПЗЗ", territory_id=None, fragments=3, **scop
 
 
 class TestFindingWork:
-    def test_pending_documents_are_found_by_their_payload(
-        self, backfill
-    ):
+    def test_pending_documents_are_found_by_their_payload(self, backfill):
         _store_pending(backfill.qdrant)
         pending = backfill.pending_documents()
         assert [doc["name"] for doc in pending] == ["ПЗЗ"]
         assert pending[0]["texts"], "the head fragments feed the retry's LLM pass"
 
     def test_tagged_documents_are_not_pending(self, backfill):
-        _store_pending(backfill.qdrant, name="готов", tagging_status="ok", territory_id=1)
+        _store_pending(
+            backfill.qdrant, name="готов", tagging_status="ok", territory_id=1
+        )
         assert backfill.pending_documents() == []
 
-    def test_documents_over_the_attempt_cap_are_skipped(
-        self, backfill, settings
-    ):
+    def test_documents_over_the_attempt_cap_are_skipped(self, backfill, settings):
         result = _store_pending(backfill.qdrant)
         backfill.qdrant.set_document_payload(
             result["doc_id"], {"tagging_attempts": settings.tagging_max_attempts}
@@ -109,21 +107,19 @@ class TestSweep:
         assert payload["tagging_status"] == "ok"
         assert payload["territory_source"] == "auto"
 
-    def test_a_manual_choice_is_completed_not_reconsidered(
-        self, backfill
-    ):
+    def test_a_manual_choice_is_completed_not_reconsidered(self, backfill):
         """The admin picked Vyborg while the Urban API was down; the sweep finishes the job."""
         result = _store_pending(backfill.qdrant, territory_id=54)
         backfill.run()
         payload = backfill.qdrant.list_by_doc(result["doc_id"])[0]
-        assert payload["territory_id"] == 54  # not the "federal" the head pass would say
+        assert (
+            payload["territory_id"] == 54
+        )  # not the "federal" the head pass would say
         assert payload["territory_source"] == "manual"
         assert payload["document_level"] == "municipal"
         assert payload["tagging_status"] == "ok"
 
-    def test_running_twice_changes_nothing_the_second_time(
-        self, backfill
-    ):
+    def test_running_twice_changes_nothing_the_second_time(self, backfill):
         _store_pending(backfill.qdrant)
         assert backfill.run()["tagged"] == 1
         assert backfill.run()["processed"] == 0
@@ -144,7 +140,9 @@ class TestSweep:
         self, settings, fake_qdrant, fake_redis, fake_ollama, monkeypatch
     ):
         """Urban API still down: the document stays pending, but visibly so."""
-        monkeypatch.setattr(backfill_module, "OllamaClient", lambda *a, **k: fake_ollama)
+        monkeypatch.setattr(
+            backfill_module, "OllamaClient", lambda *a, **k: fake_ollama
+        )
         redis_client = RedisClient(settings)
         service = TaggingBackfillService(
             fake_qdrant,
@@ -162,9 +160,7 @@ class TestSweep:
         assert payload["tagging_attempts"] == 1
         assert "Urban API" in payload["tagging_error"]
 
-    def test_progress_is_reported_through_the_job_store(
-        self, backfill
-    ):
+    def test_progress_is_reported_through_the_job_store(self, backfill):
         _store_pending(backfill.qdrant)
         backfill.run(job_id="jb")
         job = backfill.jobs.get("jb")
