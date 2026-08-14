@@ -46,6 +46,15 @@ _PAYLOAD_INDEXES: dict[str, PayloadSchemaType] = {
     "lookup_keys": PayloadSchemaType.KEYWORD,
     "span_id": PayloadSchemaType.KEYWORD,
     "order": PayloadSchemaType.INTEGER,
+    # administrative scope (Urban API territory tree). ``territory_path`` is what makes
+    # "documents in force in territory X" a single indexed condition: a filter on the
+    # ancestor chain matches the territory itself and everything above it.
+    "document_level": PayloadSchemaType.KEYWORD,
+    "territory_id": PayloadSchemaType.INTEGER,
+    "territory_name": PayloadSchemaType.KEYWORD,
+    "territory_type_id": PayloadSchemaType.INTEGER,
+    "territory_path": PayloadSchemaType.INTEGER,
+    "tagging_status": PayloadSchemaType.KEYWORD,  # find documents awaiting the backfill
     # user-scoped document index (None for the shared/regular corpus)
     "user_id": PayloadSchemaType.KEYWORD,
     "project_id": PayloadSchemaType.KEYWORD,
