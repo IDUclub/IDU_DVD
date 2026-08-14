@@ -66,6 +66,9 @@ async def document_meta(
     effective_date: str | None = Form(None),
     external_ids: str | None = Form(None),  # JSON object: {code, doi, isbn, url, …}
     metadata: str | None = Form(None),  # JSON object: free-form domain attributes
+    territory_id: int | None = Form(
+        None
+    ),  # Urban API territory (level is derived from it)
 ) -> dict:
     """Optional per-document metadata form fields, shared by upload/update/reload."""
     return {
@@ -77,6 +80,7 @@ async def document_meta(
         "effective_date": effective_date,
         "external_ids": parse_json_field("external_ids", external_ids),
         "metadata": parse_json_field("metadata", metadata),
+        "territory_id": territory_id,
     }
 
 

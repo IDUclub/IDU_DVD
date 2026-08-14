@@ -1,6 +1,8 @@
 "use strict";
 
-const state = { documents: [], tags: [], jobs: [], current: null, fragment: null };
+const state = { documents: [], tags: [], jobs: [], scopes: { levels: [], territories: [] }, territoryOptions: [], current: null, fragment: null };
+
+const LEVEL_LABELS = { federal: "Федеральный", regional: "Региональный", municipal: "Муниципальный" };
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
@@ -43,12 +45,38 @@ function tagsCell(tags) {
   return wrap;
 }
 
+function scopeCell(doc) {
+  const wrap = node("div");
+  if (doc.territory_name) {
+    wrap.append(node("span", "", doc.territory_name));
+    const level = node("small", "muted", LEVEL_LABELS[doc.document_level] || doc.document_level || "");
+    wrap.append(level);
+  } else {
+    wrap.append(node("span", "muted", "—"));
+  }
+  if (doc.tagging_status === "pending") {
+    const badge = node("span", "tag warning", "требует доработки");
+    if (doc.tagging_error) badge.title = doc.tagging_error;
+    wrap.append(badge);
+  }
+  return wrap;
+}
+
 function renderDocuments() {
   const query = $("#doc-search").value.trim().toLowerCase();
   const tag = $("#tag-filter").value;
+  const level = $("#level-filter").value;
+  const territory = $("#territory-filter").value;
+  const pendingOnly = $("#pending-filter").checked;
   const docs = state.documents.filter((doc) => {
-    const haystack = `${doc.name} ${doc.version} ${(doc.tags || []).join(" ")}`.toLowerCase();
-    return (!query || haystack.includes(query)) && (!tag || (doc.tags || []).includes(tag));
+    const haystack = `${doc.name} ${doc.version} ${(doc.tags || []).join(" ")} ${doc.territory_name || ""}`.toLowerCase();
+    if (query && !haystack.includes(query)) return false;
+    if (tag && !(doc.tags || []).includes(tag)) return false;
+    if (level && doc.document_level !== level) return false;
+    // the stored ancestor chain makes a region's filter cover its municipalities too
+    if (territory && !(doc.territory_path || []).includes(Number(territory))) return false;
+    if (pendingOnly && doc.tagging_status !== "pending") return false;
+    return true;
   });
   const body = $("#documents-body");
   body.replaceChildren();
@@ -56,6 +84,7 @@ function renderDocuments() {
     const row = node("tr");
     const name = node("td"); name.append(node("strong", "", doc.name)); name.append(node("small", "muted", doc.source || doc.doc_id));
     row.append(name, node("td", "", doc.version));
+    const scope = node("td"); scope.append(scopeCell(doc)); row.append(scope);
     const tags = node("td"); tags.append(tagsCell(doc.tags)); row.append(tags);
     row.append(node("td", "", String(doc.node_count || 0)), node("td", "", formatDate(doc.uploaded_at)));
     const actions = node("td", "row-actions");
@@ -139,13 +168,59 @@ function renderJobs() {
 }
 
 async function loadDocuments() {
-  const [documents, tags] = await Promise.all([request("/documents"), request("/tags")]);
-  state.documents = documents.documents || []; state.tags = tags.tags || [];
+  const [documents, tags, scopes] = await Promise.all([request("/documents"), request("/tags"), request("/scopes")]);
+  state.documents = documents.documents || []; state.tags = tags.tags || []; state.scopes = scopes;
   $("#stat-docs").textContent = String(documents.count || 0);
   $("#stat-nodes").textContent = String(state.documents.reduce((sum, doc) => sum + (doc.node_count || 0), 0));
   $("#stat-tags").textContent = String(tags.count || 0);
+  $("#stat-pending").textContent = String(scopes.pending_documents || 0);
   const select = $("#tag-filter"); const current = select.value; select.replaceChildren(new Option("Все теги", "")); state.tags.forEach((tag) => select.add(new Option(tag, tag))); select.value = current;
+  const territories = $("#territory-filter"); const chosen = territories.value;
+  territories.replaceChildren(new Option("Все территории", ""));
+  (scopes.territories || []).forEach((item) => territories.add(new Option(`${item.territory_name} (${item.document_count})`, String(item.territory_id))));
+  territories.value = chosen;
   renderDocuments();
+}
+
+// --- territory autocomplete (server-side: the tree is far too large to ship to the browser) ---
+let territoryLookupTimer = null;
+
+async function lookupTerritories(query, datalistId) {
+  if (!query || query.trim().length < 2) return;
+  try {
+    const data = await request(`/admin/ui/territories?query=${encodeURIComponent(query.trim())}`);
+    state.territoryOptions = data.territories || [];
+    const list = $(datalistId); list.replaceChildren();
+    state.territoryOptions.forEach((item) => {
+      const option = document.createElement("option");
+      // the parent is what distinguishes two identically named districts
+      option.value = item.parent_name ? `${item.name} — ${item.parent_name}` : item.name;
+      option.label = item.type_name || "";
+      list.append(option);
+    });
+  } catch (error) { console.error(error); }
+}
+
+function bindTerritoryLookup(inputId, datalistId) {
+  $(inputId).addEventListener("input", (event) => {
+    window.clearTimeout(territoryLookupTimer);
+    const value = event.target.value;
+    territoryLookupTimer = window.setTimeout(() => lookupTerritories(value, datalistId), 250);
+  });
+}
+
+function selectedTerritoryId(inputId) {
+  const value = $(inputId).value.trim();
+  if (!value) return null;
+  const match = state.territoryOptions.find((item) => (item.parent_name ? `${item.name} — ${item.parent_name}` : item.name) === value);
+  return match ? match.territory_id : null;
+}
+
+async function runBackfill() {
+  try {
+    await request("/tagging/backfill", { method: "POST" });
+    toast("Дотегирование запущено"); showView("jobs"); await loadJobs();
+  } catch (error) { toast(error.message, true); }
 }
 
 async function loadJobs() {
@@ -188,6 +263,9 @@ async function submitUpload(event) {
   const form = new FormData(); form.append("file", file);
   const fields = { name, version: $("#upload-version").value.trim(), title: $("#upload-doc-title").value.trim(), doc_type: $("#upload-doc-type").value.trim(), corpus: $("#upload-corpus").value.trim(), lang: $("#upload-lang").value.trim() };
   Object.entries(fields).forEach(([key, value]) => { if (value && !(key === "name" && operation !== "upload")) form.append(key, value); });
+  const territoryId = selectedTerritoryId("#upload-territory");
+  if ($("#upload-territory").value.trim() && territoryId === null) { toast("Выберите территорию из подсказки", true); return; }
+  if (territoryId !== null) form.append("territory_id", String(territoryId));
   const pathName = encodeURIComponent(name); const url = operation === "upload" ? "/documents" : `/documents/${pathName}`; const method = { upload: "POST", update: "PATCH", reload: "PUT" }[operation];
   $("#upload-submit").disabled = true; setUploadProgress(0, 0, "Передача файла");
   try {
@@ -196,6 +274,24 @@ async function submitUpload(event) {
   }
   catch (error) { setUploadProgress($("#upload-overall-bar").value, $("#upload-task-bar").value, `Ошибка: ${error.message}`); toast(error.message, true); }
   finally { $("#upload-submit").disabled = false; }
+}
+
+function territoryField(detail) {
+  const wrap = node("label", "", "Территория действия (применяется ко всем версиям документа)");
+  const input = node("input");
+  input.id = "meta-territory";
+  input.setAttribute("list", "meta-territory-options");
+  input.autocomplete = "off";
+  input.value = detail.territory_name || "";
+  input.placeholder = "Начните вводить название; очистите поле, чтобы снять тег";
+  const list = node("datalist"); list.id = "meta-territory-options";
+  const level = node("small", "muted", detail.territory_name
+    ? `Уровень: ${LEVEL_LABELS[detail.document_level] || "—"} · ${detail.territory_type_name || ""} · источник: ${detail.territory_source === "manual" ? "вручную" : "автоопределение"}`
+    : `Территория не определена${detail.tagging_error ? ` · ${detail.tagging_error}` : ""}`);
+  // The level is derived from the territory and never edited on its own — otherwise a
+  // contradictory pair could be saved.
+  wrap.append(input, list, level);
+  return wrap;
 }
 
 function field(label, id, value = "", type = "text") {
@@ -207,8 +303,10 @@ async function openDocument(doc) {
     const detail = await request(`/library/documents/${encodeURIComponent(doc.doc_id)}`); state.current = { row: doc, detail };
     $("#detail-name").textContent = detail.name; $("#detail-version").textContent = `Версия ${doc.version} · ${detail.fragments.length} фрагментов`;
     const form = $("#metadata-form"); form.replaceChildren(
+      territoryField(detail),
       field("Заголовок", "meta-title", detail.title), field("Тип документа", "meta-doc-type", detail.doc_type), field("Корпус", "meta-corpus", detail.corpus), field("Язык", "meta-lang", detail.lang), field("Статус", "meta-status", detail.status), field("Дата вступления", "meta-effective-date", detail.effective_date), field("Теги, через запятую", "meta-tags", ((detail.tags || []).length ? detail.tags : (doc.tags || [])).join(", ")), field("External IDs, JSON", "meta-external", JSON.stringify(detail.external_ids || {}, null, 2), "textarea"), field("Метаданные, JSON", "meta-metadata", JSON.stringify(detail.metadata || {}, null, 2), "textarea")
     );
+    bindTerritoryLookup("#meta-territory", "#meta-territory-options");
     renderFragments(detail.fragments); $("#document-dialog").showModal();
   } catch (error) { toast(error.message, true); }
 }
@@ -231,6 +329,14 @@ async function saveMetadata(event) {
   event.preventDefault(); if (!state.current) return;
   try {
     const body = { title: $("#meta-title").value || null, doc_type: $("#meta-doc-type").value, corpus: $("#meta-corpus").value, lang: $("#meta-lang").value || null, status: $("#meta-status").value, effective_date: $("#meta-effective-date").value || null, tags: $("#meta-tags").value.split(",").map((v) => v.trim()).filter(Boolean), external_ids: parseJson("#meta-external"), metadata: parseJson("#meta-metadata") };
+    const territoryInput = $("#meta-territory").value.trim();
+    const stored = state.current.detail.territory_name || "";
+    if (territoryInput !== stored) {
+      // An emptied field clears the tag; anything else must resolve to a real territory.
+      const territoryId = territoryInput ? selectedTerritoryId("#meta-territory") : null;
+      if (territoryInput && territoryId === null) { toast("Выберите территорию из подсказки", true); return; }
+      body.territory_id = territoryId;
+    }
     await request(`/library/documents/${encodeURIComponent(state.current.detail.doc_id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); toast("Метаданные сохранены"); await loadDocuments();
   } catch (error) { toast(error.message, true); }
 }
@@ -285,6 +391,9 @@ function init() {
   $$(".tab").forEach((tab) => tab.addEventListener("click", () => { $$(".tab").forEach((item) => item.classList.toggle("active", item === tab)); $$(".tab-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `tab-${tab.dataset.tab}`)); }));
   $("#open-upload").addEventListener("click", () => openUpload()); $("#upload-operation").addEventListener("change", (event) => { $("#upload-title").textContent = event.target.options[event.target.selectedIndex].text; }); $("#upload-form").addEventListener("submit", submitUpload);
   $("#doc-search").addEventListener("input", renderDocuments); $("#tag-filter").addEventListener("change", renderDocuments); $("#refresh-docs").addEventListener("click", loadDocuments);
+  $("#level-filter").addEventListener("change", renderDocuments); $("#territory-filter").addEventListener("change", renderDocuments); $("#pending-filter").addEventListener("change", renderDocuments);
+  $("#run-backfill").addEventListener("click", runBackfill);
+  bindTerritoryLookup("#upload-territory", "#territory-options");
   $("#metadata-form").addEventListener("submit", saveMetadata); $("#fragment-form").addEventListener("submit", saveFragment); $("#delete-document").addEventListener("click", () => deleteVersion(true)); $("#delete-version").addEventListener("click", () => deleteVersion(false)); $("#replace-document").addEventListener("click", () => { const name = state.current.row.name; $("#document-dialog").close(); openUpload("reload", name); }); $("#settings-form").addEventListener("submit", saveSettings);
   showView(location.hash.slice(1) || "overview"); Promise.all([loadDocuments(), loadJobs(), loadSettings()]).catch((error) => toast(error.message, true)); window.setInterval(loadJobs, 2500);
 }

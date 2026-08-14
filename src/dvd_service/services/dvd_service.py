@@ -32,11 +32,13 @@ from src.common.config import Settings
 from src.common.db.minio_client import DocumentStorage
 from src.common.db.qdrant_client import (
     QdrantRepository,
+    scope_conditions,
     shared_only_condition,
     user_scope_conditions,
 )
 from src.common.db.redis_client import DocumentRegistry, JobStore, UserIndexRegistry
 from src.dvd_service.dto import (
+    AdministrativeScope,
     DirectDocumentIn,
     DocumentDetail,
     DocumentFragment,
@@ -47,10 +49,12 @@ from src.dvd_service.dto import (
     DocumentUpdateResponse,
     NodeDetail,
     NodePayload,
+    ScopesResponse,
     SearchHit,
     SearchRequest,
     SearchResponse,
     TagsResponse,
+    TerritoryScope,
 )
 from src.dvd_service.modules.doc_parsers import PARSER_VERSION, DocumentParser
 from src.dvd_service.modules.hierarchy import HierarchyBuilder
@@ -64,7 +68,13 @@ from src.dvd_service.modules.identity import (
 from src.dvd_service.modules.progress import Progress
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
-from src.dvd_service.modules.tagging import VersionDetector
+from src.dvd_service.modules.tagging import DocumentHead, VersionDetector
+from src.dvd_service.modules.territory import (
+    STATUS_PENDING,
+    TerritoryResolver,
+    manual_scope_fields,
+    untagged_scope,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -130,11 +140,15 @@ class IngestionService:
         jobs: JobStore,
         settings: Settings,
         outbox: EventOutbox | None = None,
+        territory: TerritoryResolver | None = None,
     ) -> None:
         self.parser = parser
         self.structure = structure
         self.hierarchy = hierarchy
         self.version_detector = version_detector
+        # Absent only in tests that wire the service by hand: without it documents are simply
+        # indexed untagged (``pending``) and the backfill job tags them later.
+        self.territory = territory
         self.reference_extractor = reference_extractor
         self.reference_resolver = reference_resolver
         self.qdrant = qdrant
@@ -187,26 +201,57 @@ class IngestionService:
                     on_progress(done, total)
         return vectors
 
-    def _resolve_identity(
+    def _resolve_head(
         self,
         parts: list[dict],
         client: OllamaClient,
         name_override: str | None,
         version_override: str | None,
-    ) -> tuple[str, str]:
-        """Document name + version: manual overrides > 4-digit group in the name > LLM.
+        *,
+        need_scope_hints: bool = False,
+    ) -> tuple[str, str, DocumentHead]:
+        """Document name + version + administrative-scope hints, from at most one LLM call.
 
-        The LLM detector is only invoked when either value cannot be derived without it.
+        Manual overrides win for name and version, and the head pass is skipped entirely when
+        nothing is left to ask it — identity is known *and* the scope was supplied by hand.
+        Otherwise it runs once and answers both halves: it is the same call that used to detect
+        name/version alone, now returning five fields instead of two.
         """
         name = (name_override or "").strip()
         version = (version_override or "").strip()
         if not version and name:
             version = extract_version_from_name(name) or ""
-        if not name or not version:
-            det_name, det_version = self.version_detector.detect(parts, client)
-            name = name or det_name
-            version = version or extract_version_from_name(name) or det_version
-        return name, version.strip() or "unknown"
+        if name and version and not need_scope_hints:
+            return name, version.strip(), DocumentHead(name=name, version=version)
+        head = self.version_detector.detect_head(parts, client)
+        name = name or head.name
+        version = version or extract_version_from_name(name) or head.version
+        return name, version.strip() or "unknown", head
+
+    def _resolve_scope(self, head: DocumentHead) -> dict:
+        """Administrative scope for a document being (re)indexed — never raises.
+
+        A missing resolver or an Urban API outage leaves the slice ``pending``: the document is
+        still indexed and searchable, only untagged until the backfill job gets to it.
+        """
+        if self.territory is None:
+            return untagged_scope()
+        return self.territory.from_hints(head)
+
+    def _preset_scope(self, doc_id: str, territory_id: int | None) -> dict:
+        """The scope a write must keep regardless of what the LLM would say, or ``{}``.
+
+        Two cases, in order: a territory supplied with this very request, and a territory a
+        human set earlier on this document. Automatic detection never overrides either — but a
+        human may override a human, which is why an explicit ``territory_id`` wins over the
+        stored one. Returning ``{}`` means "nothing manual here, go ahead and detect".
+        """
+        if self.territory is None:
+            return {}
+        if territory_id is not None:
+            return self.territory.manual_scope(int(territory_id))
+        stored = self.qdrant.list_by_doc(doc_id) if doc_id else []
+        return manual_scope_fields(stored[0]) if stored else {}
 
     @staticmethod
     def _match_by_text(
@@ -409,6 +454,7 @@ class IngestionService:
         external_ids: dict | None = None,
         metadata: dict | None = None,
         effective_date: str | None = None,
+        territory_id: int | None = None,
     ) -> dict:
         doc_id = doc_id or str(uuid.uuid4())
         # Block until a GPU slot is free: the job stays "queued" while it waits, flips to
@@ -447,10 +493,17 @@ class IngestionService:
             progress.complete_stage()
 
             progress.stage("identity")
-            name, version = self._resolve_identity(
-                parts, client, name_override, version_override
+            # Resolved before the head pass so a manually tagged document skips it entirely.
+            preset = self._preset_scope(doc_id, territory_id)
+            name, version, head = self._resolve_head(
+                parts,
+                client,
+                name_override,
+                version_override,
+                need_scope_hints=self.territory is not None and not preset,
             )
             version, other_versions = self._resolve_version(name, version, content_hash)
+            scope = preset or self._resolve_scope(head)
             progress.complete_stage()
 
             # Fragment tags were produced together with the structural fields (see
@@ -517,6 +570,7 @@ class IngestionService:
                 "source_object_key": source_object_key,
                 "metadata": metadata or {},
                 "uploaded_at": uploaded_at,
+                **scope,
             }
             progress.stage("indexing")
             points = self._build_points(
@@ -608,6 +662,7 @@ class IngestionService:
         external_ids: dict | None = None,
         metadata: dict | None = None,
         effective_date: str | None = None,
+        territory_id: int | None = None,
     ) -> dict:
         """Delta update of an existing document under a new version.
 
@@ -665,8 +720,16 @@ class IngestionService:
             progress.complete_stage()
 
             progress.stage("identity")
-            _, version = self._resolve_identity(parts, client, name, version_override)
+            preset = self._preset_scope(doc_id, territory_id)
+            _, version, head = self._resolve_head(
+                parts,
+                client,
+                name,
+                version_override,
+                need_scope_hints=self.territory is not None and not preset,
+            )
             version, other_versions = self._resolve_version(name, version, content_hash)
+            scope = preset or self._resolve_scope(head)
             progress.complete_stage()
 
             for order, n in enumerate(nodes):
@@ -777,6 +840,7 @@ class IngestionService:
                 "source_object_key": source_object_key,
                 "metadata": metadata or {},
                 "uploaded_at": uploaded_at,
+                **scope,
             }
             progress.stage("indexing")
             points = self._build_points(
@@ -871,6 +935,16 @@ class IngestionService:
                 task_progress=0,
                 overall_progress=10,
             )
+        # A reload wipes every stored version, taking the manually set territory with it, and
+        # the fresh ingest would then re-detect it automatically. Rescue the human's choice
+        # before the delete and hand it to the ingest as an explicit one — otherwise PUT would
+        # be a quiet way to undo an admin's work.
+        if meta.get("territory_id") is None and self.territory is not None:
+            stored = self.qdrant.points_by_name(name)
+            inherited = manual_scope_fields(stored[0]) if stored else {}
+            if inherited.get("territory_id") is not None:
+                meta["territory_id"] = inherited["territory_id"]
+
         replaced = True
         try:
             self.delete_document(name, emit_event=False)
@@ -1033,6 +1107,10 @@ class IngestionService:
                 "source_object_key": None,
                 "metadata": doc.metadata or {},
                 "uploaded_at": uploaded_at,
+                # No head pass runs on caller-supplied fragments, so an explicit territory is
+                # the only thing that can tag them here; without it the document is stored
+                # untagged and the backfill job tags it later from its own text.
+                **(self._preset_scope(doc_id, doc.territory_id) or untagged_scope()),
             }
             points = self._build_direct_points(doc, vectors, doc_id, identity)
             count = self.qdrant.upsert(points)
@@ -1114,6 +1192,14 @@ class IngestionService:
                 task_progress=0,
                 overall_progress=10,
             )
+        # Same rescue as the pipeline reload: the delete below would otherwise drop a manually
+        # set territory that the caller did not repeat in this request.
+        if doc.territory_id is None and self.territory is not None:
+            stored = self.qdrant.points_by_name(name)
+            inherited = manual_scope_fields(stored[0]) if stored else {}
+            if inherited.get("territory_id") is not None:
+                doc = doc.model_copy(update={"territory_id": inherited["territory_id"]})
+
         replaced = True
         try:
             self.delete_document(name, emit_event=False)
@@ -1239,16 +1325,31 @@ class IngestionService:
         return result
 
 
+def territory_ancestors(
+    territory: TerritoryResolver | None, territory_ids: list[int] | None
+) -> list[int] | None:
+    """Ancestors of the requested territories, for the "in force here" half of the filter.
+
+    Without a resolver there are none, and the filter degrades to "this territory and
+    everything under it" — narrower, never wrong (see ``scope_conditions``).
+    """
+    if not territory_ids or territory is None:
+        return None
+    return territory.filter_ids(territory_ids)
+
+
 class SearchService:
     def __init__(
         self,
         qdrant: QdrantRepository,
         settings: Settings,
         user_index_registry: UserIndexRegistry,
+        territory: TerritoryResolver | None = None,
     ) -> None:
         self.qdrant = qdrant
         self.settings = settings
         self.user_index_registry = user_index_registry
+        self.territory = territory
 
     def __repr__(self) -> str:
         return (
@@ -1287,6 +1388,14 @@ class SearchService:
             )
         if req.lang:
             must.append(FieldCondition(key="lang", match=MatchValue(value=req.lang)))
+        must.extend(
+            scope_conditions(
+                req.document_level,
+                req.territory_ids,
+                req.tagging_status,
+                territory_ancestors(self.territory, req.territory_ids),
+            )
+        )
         if req.tags:
             must.append(FieldCondition(key="tags", match=MatchAny(any=req.tags)))
         if req.document_names:
@@ -1400,6 +1509,7 @@ class SearchService:
                     text=pl.get("text", ""),
                     context=context,
                     table_html=pl.get("table_html"),
+                    **AdministrativeScope.fields_from(pl),
                 )
             )
         return SearchResponse(count=len(hits), hits=hits)
@@ -1413,8 +1523,11 @@ class DocumentsService:
     they are computed by scrolling Qdrant and grouping by ``(name, version)``.
     """
 
-    def __init__(self, qdrant: QdrantRepository) -> None:
+    def __init__(
+        self, qdrant: QdrantRepository, territory: TerritoryResolver | None = None
+    ) -> None:
         self.qdrant = qdrant
+        self.territory = territory
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(qdrant={type(self.qdrant).__name__})"
@@ -1427,6 +1540,10 @@ class DocumentsService:
         tags: list[str] | None,
         user_id: str | None = None,
         scenario_ids: list[str] | None = None,
+        document_level: str | None = None,
+        territory_ids: list[int] | None = None,
+        tagging_status: str | None = None,
+        ancestor_ids: list[int] | None = None,
     ) -> Filter | None:
         must = []
         if name:
@@ -1437,6 +1554,11 @@ class DocumentsService:
             must.append(FieldCondition(key="block", match=MatchValue(value=block)))
         if tags:
             must.append(FieldCondition(key="tags", match=MatchAny(any=tags)))
+        must.extend(
+            scope_conditions(
+                document_level, territory_ids, tagging_status, ancestor_ids
+            )
+        )
         if user_id and scenario_ids:
             must.extend(user_scope_conditions(user_id, scenario_ids))
         else:
@@ -1455,6 +1577,9 @@ class DocumentsService:
         *,
         user_id: str | None = None,
         scenario_ids: list[str] | None = None,
+        document_level: str | None = None,
+        territory_ids: list[int] | None = None,
+        tagging_status: str | None = None,
     ) -> DocumentListResponse:
         """Aggregated, per-document view, optionally narrowed by the given filters.
 
@@ -1466,7 +1591,18 @@ class DocumentsService:
         default to the shared/regular document corpus.
         """
         payloads = self.qdrant.scroll_payloads(
-            self._build_filter(name, version, block, tags, user_id, scenario_ids)
+            self._build_filter(
+                name,
+                version,
+                block,
+                tags,
+                user_id,
+                scenario_ids,
+                document_level,
+                territory_ids,
+                tagging_status,
+                territory_ancestors(self.territory, territory_ids),
+            )
         )
 
         groups: dict[tuple[str, str], dict] = {}
@@ -1493,6 +1629,8 @@ class DocumentsService:
                     "blocks": set(),
                     "tags": set(),
                     "node_count": 0,
+                    # A document-level fact: identical on every fragment, so the first one wins.
+                    "scope": AdministrativeScope.fields_from(pl),
                 }
                 groups[key] = g
             g["blocks"].add(pl.get("block", "main"))
@@ -1536,6 +1674,7 @@ class DocumentsService:
                         doc_name,
                         doc_version,
                     ),
+                    **g["scope"],
                 )
             )
         documents.sort(key=lambda d: (d.name, d.version))
@@ -1549,9 +1688,15 @@ class LibraryService:
     fragments (each with source grounding), complementing semantic search.
     """
 
-    def __init__(self, qdrant: QdrantRepository, registry: DocumentRegistry) -> None:
+    def __init__(
+        self,
+        qdrant: QdrantRepository,
+        registry: DocumentRegistry,
+        territory: TerritoryResolver | None = None,
+    ) -> None:
         self.qdrant = qdrant
         self.registry = registry
+        self.territory = territory
 
     def __repr__(self) -> str:
         return (
@@ -1593,10 +1738,46 @@ class LibraryService:
             effective_date=pl.get("effective_date"),
             metadata=pl.get("metadata", {}) or {},
             tags=pl.get("tags", []) or [],
+            **AdministrativeScope.fields_from(pl),
         )
 
-    def list_documents(self) -> DocumentList:
-        docs = [self._summary_from_record(r) for r in self.registry.all_documents()]
+    def list_documents(
+        self,
+        *,
+        document_level: str | None = None,
+        territory_ids: list[int] | None = None,
+        tagging_status: str | None = None,
+    ) -> DocumentList:
+        """Every document, or only those matching the administrative-scope filters.
+
+        Unfiltered listing keeps reading the Redis registry (one round trip). A scope filter
+        goes to Qdrant instead: the registry summary of a document ingested before this
+        feature carries no scope at all, so filtering it in Python would silently drop exactly
+        the documents the backfill job exists for.
+        """
+        if not (document_level or territory_ids or tagging_status):
+            docs = [self._summary_from_record(r) for r in self.registry.all_documents()]
+            return DocumentList(count=len(docs), documents=docs)
+
+        conditions = scope_conditions(
+            document_level,
+            territory_ids,
+            tagging_status,
+            territory_ancestors(self.territory, territory_ids),
+        )
+        conditions.append(shared_only_condition())
+        payloads = self.qdrant.scroll_payloads(Filter(must=conditions))
+        counts: dict[str, int] = {}
+        first: dict[str, dict] = {}
+        for pl in payloads:
+            doc_id = pl.get("doc_id", "")
+            counts[doc_id] = counts.get(doc_id, 0) + 1
+            first.setdefault(doc_id, pl)
+        docs = [
+            self._summary_from_payload(pl, counts[doc_id])
+            for doc_id, pl in first.items()
+        ]
+        docs.sort(key=lambda d: (d.name, d.version))
         return DocumentList(count=len(docs), documents=docs)
 
     def get_document(self, doc_id: str) -> DocumentDetail | None:
@@ -1701,6 +1882,9 @@ class DocumentEditorService:
         "external_ids",
         "metadata",
         "tags",
+        # Setting this expands into the whole administrative-scope slice (see below); the
+        # derived fields are not editable on their own, so the pair can never disagree.
+        "territory_id",
     }
     FRAGMENT_FIELDS = {"text", "tags", "metadata", "table_html"}
 
@@ -1709,10 +1893,24 @@ class DocumentEditorService:
         qdrant: QdrantRepository,
         registry: DocumentRegistry,
         settings: Settings,
+        territory: TerritoryResolver | None = None,
     ) -> None:
         self.qdrant = qdrant
         self.registry = registry
         self.settings = settings
+        self.territory = territory
+
+    def _expand_territory(self, territory_id) -> dict:
+        """Turn an edited ``territory_id`` into the full scope slice, marked ``manual``.
+
+        ``None`` clears the tag back to untagged/pending, which is how an admin undoes a wrong
+        territory and hands the document back to automatic detection.
+        """
+        if self.territory is None:
+            raise ValueError("territory resolver is not configured")
+        if territory_id in (None, ""):
+            return untagged_scope()
+        return self.territory.by_territory_id(int(territory_id))
 
     def update_document(self, doc_id: str, updates: dict) -> DocumentUpdateResponse:
         points = self.qdrant.list_by_doc(doc_id)
@@ -1721,6 +1919,9 @@ class DocumentEditorService:
         changes = {k: v for k, v in updates.items() if k in self.DOCUMENT_FIELDS}
         if not changes:
             raise ValueError("no editable fields supplied")
+        if "territory_id" in changes:
+            # A document's scope is one fact spread over several fields — write them together.
+            changes.update(self._expand_territory(changes.pop("territory_id")))
 
         first = points[0]
         if "external_ids" in changes:
@@ -1806,3 +2007,49 @@ class TagsService:
             tags.update(pl.get("tags", []) or [])
         sorted_tags = sorted(tags)
         return TagsResponse(count=len(sorted_tags), tags=sorted_tags)
+
+    def get_scopes(self) -> ScopesResponse:
+        """Levels and territories the shared corpus actually uses, with document counts.
+
+        Same full scroll as ``get_tags`` — distinct payload values have no cheaper source
+        here, and the two are used the same way (populate a filter control before filtering).
+        """
+        payloads = self.qdrant.scroll_payloads(Filter(must=[shared_only_condition()]))
+        levels: set[str] = set()
+        territories: dict[int, dict] = {}
+        pending: set[str] = set()
+        for pl in payloads:
+            if level := pl.get("document_level"):
+                levels.add(level)
+            if pl.get("tagging_status") == STATUS_PENDING:
+                pending.add(pl.get("doc_id", ""))
+            territory_id = pl.get("territory_id")
+            if territory_id is None:
+                continue
+            entry = territories.setdefault(
+                int(territory_id),
+                {
+                    "territory_id": int(territory_id),
+                    "territory_name": pl.get("territory_name"),
+                    "territory_type_name": pl.get("territory_type_name"),
+                    "document_level": pl.get("document_level"),
+                    "doc_ids": set(),
+                },
+            )
+            entry["doc_ids"].add(pl.get("doc_id", ""))
+        found = [
+            TerritoryScope(
+                territory_id=entry["territory_id"],
+                territory_name=entry["territory_name"],
+                territory_type_name=entry["territory_type_name"],
+                document_level=entry["document_level"],
+                document_count=len(entry["doc_ids"]),
+            )
+            for entry in territories.values()
+        ]
+        found.sort(key=lambda t: (t.document_level or "", t.territory_name or ""))
+        return ScopesResponse(
+            levels=sorted(levels),
+            territories=found,
+            pending_documents=len(pending),
+        )

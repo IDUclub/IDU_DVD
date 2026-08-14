@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 
 import src.dvd_service.services.dvd_service as svc
+from src.api_clients import COUNTRY_TERRITORY_ID
 from src.broker.outbox import EventOutbox
 from src.common.db.redis_client import DocumentRegistry, JobStore, RedisClient
 from src.dvd_service.dto import SearchRequest
@@ -21,6 +22,7 @@ from src.dvd_service.modules.hierarchy import HierarchyBuilder
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import VersionDetector
+from src.dvd_service.modules.territory import TerritoryResolver
 from src.dvd_service.services.dvd_service import (
     DocumentEditorService,
     DocumentsService,
@@ -87,6 +89,234 @@ def wired(
 class SimpleNS:
     def __init__(self, **kw):
         self.__dict__.update(kw)
+
+
+@pytest.fixture
+def wired_with_territory(wired):
+    """The same pipeline, with a territory resolver over a faked Urban API attached."""
+    from unit.test_territory import FakeUrbanApi
+
+    def _attach(broken: bool = False):
+        resolver = TerritoryResolver(FakeUrbanApi(broken=broken))
+        wired.ingestion.territory = resolver
+        wired.search.territory = resolver
+        wired.documents.territory = resolver
+        wired.library.territory = resolver
+        return wired
+
+    return _attach
+
+
+class TestAdministrativeScope:
+    """The head hints reach the payload, and an Urban API outage never fails an ingest."""
+
+    def test_scope_is_written_onto_every_fragment(
+        self, wired_with_territory, sample_raw
+    ):
+        # the faked head pass reports a federal document (see pipeline_chat_handler)
+        wired = wired_with_territory()
+        wired.ingestion.ingest(
+            "doc.docx", sample_raw, DocumentParser.content_hash(sample_raw)
+        )
+        payloads = [payload for _vec, payload in wired.qdrant.points.values()]
+        assert payloads
+        for payload in payloads:
+            assert payload["document_level"] == "federal"
+            assert payload["territory_id"] == COUNTRY_TERRITORY_ID
+            assert payload["territory_name"] == "Россия"
+            assert payload["territory_path"] == [COUNTRY_TERRITORY_ID]
+            assert payload["territory_source"] == "auto"
+            assert payload["tagging_status"] == "ok"
+
+    def test_urban_api_outage_still_indexes_the_document_as_pending(
+        self, wired_with_territory, sample_raw
+    ):
+        """The main degradation path: tagging fails, ingestion does not."""
+        wired = wired_with_territory(broken=True)
+        result = wired.ingestion.ingest(
+            "doc.docx", sample_raw, DocumentParser.content_hash(sample_raw)
+        )
+        assert result["nodes"] > 0
+        _vec, payload = next(iter(wired.qdrant.points.values()))
+        assert payload["tagging_status"] == "pending"
+        assert payload["territory_id"] is None
+        assert payload["territory_source"] == "unset"
+        assert "Urban API недоступен" in payload["tagging_error"]
+
+    def test_without_a_resolver_documents_are_indexed_untagged(self, wired, sample_raw):
+        wired.ingestion.ingest(
+            "doc.docx", sample_raw, DocumentParser.content_hash(sample_raw)
+        )
+        _vec, payload = next(iter(wired.qdrant.points.values()))
+        assert payload["tagging_status"] == "pending"
+        assert payload["document_level"] is None
+
+
+class TestManualScopeWins:
+    """Automatic detection never overwrites a human's territory — on any write path."""
+
+    def _payload(self, wired):
+        _vec, payload = next(iter(wired.qdrant.points.values()))
+        return payload
+
+    def test_explicit_territory_overrides_detection(
+        self, wired_with_territory, sample_raw
+    ):
+        wired = wired_with_territory()
+        wired.ingestion.ingest(
+            "doc.docx",
+            sample_raw,
+            DocumentParser.content_hash(sample_raw),
+            territory_id=54,  # the head pass would have said "federal"
+        )
+        payload = self._payload(wired)
+        assert payload["territory_id"] == 54
+        assert payload["document_level"] == "municipal"
+        assert payload["territory_source"] == "manual"
+
+    def test_manual_identity_and_territory_skip_the_llm_entirely(
+        self, wired_with_territory, sample_raw
+    ):
+        """Nothing is left to ask the model, so the head pass is not run."""
+        wired = wired_with_territory()
+        before = len(wired.ollama.chat_calls)
+        wired.ingestion.ingest(
+            "doc.docx",
+            sample_raw,
+            DocumentParser.content_hash(sample_raw),
+            name_override="СП 5.13130.2025",
+            version_override="2025",
+            territory_id=54,
+        )
+        head_calls = [
+            call
+            for call in wired.ollama.chat_calls[before:]
+            if "level" in call[2].get("properties", {})
+        ]
+        assert head_calls == []
+
+    def test_a_new_version_keeps_the_manual_territory(
+        self, wired_with_territory, sample_raw
+    ):
+        wired = wired_with_territory()
+        wired.ingestion.ingest(
+            "doc.docx",
+            sample_raw,
+            DocumentParser.content_hash(sample_raw),
+            name_override="СП 1",
+            territory_id=54,
+        )
+        updated = sample_raw + [
+            {
+                "text": "Новый пункт документа.",
+                "category": "NarrativeText",
+                "html": None,
+            }
+        ]
+        wired.ingestion.update(
+            "СП 1",
+            "doc2.docx",
+            updated,
+            DocumentParser.content_hash(updated),
+            version_override="2026",
+        )
+        for _vec, payload in wired.qdrant.points.values():
+            assert payload["territory_id"] == 54
+            assert payload["territory_source"] == "manual"
+
+    def test_a_full_reload_keeps_the_manual_territory(
+        self, wired_with_territory, sample_raw
+    ):
+        """PUT wipes the document first — the rescue before the delete is what saves the tag."""
+        wired = wired_with_territory()
+        wired.ingestion.ingest(
+            "doc.docx",
+            sample_raw,
+            DocumentParser.content_hash(sample_raw),
+            name_override="СП 1",
+            territory_id=54,
+        )
+        wired.ingestion.reload(
+            "СП 1", "doc.docx", sample_raw, DocumentParser.content_hash(sample_raw)
+        )
+        payload = self._payload(wired)
+        assert payload["territory_id"] == 54
+        assert payload["territory_source"] == "manual"
+
+    def test_a_human_may_override_a_human(self, wired_with_territory, sample_raw):
+        wired = wired_with_territory()
+        wired.ingestion.ingest(
+            "doc.docx",
+            sample_raw,
+            DocumentParser.content_hash(sample_raw),
+            name_override="СП 1",
+            territory_id=54,
+        )
+        wired.ingestion.reload(
+            "СП 1",
+            "doc.docx",
+            sample_raw,
+            DocumentParser.content_hash(sample_raw),
+            territory_id=1,
+        )
+        payload = self._payload(wired)
+        assert payload["territory_id"] == 1
+        assert payload["document_level"] == "regional"
+
+    def test_editing_the_territory_rewrites_the_whole_scope(
+        self, wired_with_territory, sample_raw
+    ):
+        """The admin panel edits one field; level, names and path follow from it."""
+        from unit.test_territory import FakeUrbanApi
+
+        wired = wired_with_territory()
+        wired.editor.territory = TerritoryResolver(FakeUrbanApi())
+        result = wired.ingestion.ingest(
+            "doc.docx", sample_raw, DocumentParser.content_hash(sample_raw)
+        )
+        wired.editor.update_document(result["doc_id"], {"territory_id": 1})
+        payload = self._payload(wired)
+        assert payload["territory_id"] == 1
+        assert payload["document_level"] == "regional"
+        assert payload["territory_name"] == "Ленинградская область"
+        assert payload["territory_path"] == [COUNTRY_TERRITORY_ID, 1]
+        assert payload["territory_source"] == "manual"
+
+    def test_clearing_the_territory_hands_the_document_back_to_detection(
+        self, wired_with_territory, sample_raw
+    ):
+        from unit.test_territory import FakeUrbanApi
+
+        wired = wired_with_territory()
+        wired.editor.territory = TerritoryResolver(FakeUrbanApi())
+        result = wired.ingestion.ingest(
+            "doc.docx",
+            sample_raw,
+            DocumentParser.content_hash(sample_raw),
+            territory_id=54,
+        )
+        wired.editor.update_document(result["doc_id"], {"territory_id": None})
+        payload = self._payload(wired)
+        assert payload["territory_id"] is None
+        assert payload["territory_source"] == "unset"
+        assert payload["tagging_status"] == "pending"
+
+    def test_an_outage_keeps_the_chosen_id_as_pending(
+        self, wired_with_territory, sample_raw
+    ):
+        """The upload still succeeds; the backfill finishes resolving the chosen territory."""
+        wired = wired_with_territory(broken=True)
+        wired.ingestion.ingest(
+            "doc.docx",
+            sample_raw,
+            DocumentParser.content_hash(sample_raw),
+            territory_id=54,
+        )
+        payload = self._payload(wired)
+        assert payload["territory_id"] == 54
+        assert payload["territory_source"] == "manual"
+        assert payload["tagging_status"] == "pending"
+        assert payload["document_level"] is None
 
 
 class TestIngest:
@@ -774,6 +1004,85 @@ class TestReloadDocument:
         }
 
 
+class TestScopeFilters:
+    """Level/territory are filterable, and a hit carries the scope back to the caller."""
+
+    def _ingest(self, wired, sample_raw, name, territory_id):
+        return wired.ingestion.ingest(
+            "doc.docx",
+            list(sample_raw),
+            DocumentParser.content_hash(sample_raw) + name,
+            name_override=name,
+            territory_id=territory_id,
+        )
+
+    def test_filter_by_document_level(self, wired_with_territory, sample_raw):
+        wired = wired_with_territory()
+        self._ingest(wired, sample_raw, "СП федеральный", COUNTRY_TERRITORY_ID)
+        self._ingest(wired, sample_raw, "ПЗЗ Выборга", 54)
+        resp = wired.search.search(
+            SearchRequest(query="требования", limit=50, document_level="municipal"),
+            None,
+        )
+        assert resp.count >= 1
+        assert {hit.name for hit in resp.hits} == {"ПЗЗ Выборга"}
+
+    def test_territory_filter_matches_the_ancestor_chain(
+        self, wired_with_territory, sample_raw
+    ):
+        """Asking for Vyborg also returns the federal documents in force there."""
+        wired = wired_with_territory()
+        self._ingest(wired, sample_raw, "СП федеральный", COUNTRY_TERRITORY_ID)
+        self._ingest(wired, sample_raw, "ПЗЗ Выборга", 54)
+        self._ingest(wired, sample_raw, "Закон Ленобласти", 1)
+        resp = wired.search.search(
+            SearchRequest(query="требования", limit=50, territory_ids=[54]), None
+        )
+        assert {hit.name for hit in resp.hits} == {
+            "СП федеральный",
+            "Закон Ленобласти",
+            "ПЗЗ Выборга",
+        }
+
+    def test_a_sibling_territory_is_not_matched(self, wired_with_territory, sample_raw):
+        wired = wired_with_territory()
+        self._ingest(wired, sample_raw, "ПЗЗ Выборга", 54)
+        resp = wired.search.search(
+            SearchRequest(query="требования", limit=50, territory_ids=[3144]), None
+        )
+        assert resp.count == 0
+
+    def test_search_hits_carry_the_scope(self, wired_with_territory, sample_raw):
+        wired = wired_with_territory()
+        self._ingest(wired, sample_raw, "ПЗЗ Выборга", 54)
+        hit = wired.search.search(
+            SearchRequest(query="требования", limit=1), None
+        ).hits[0]
+        assert hit.document_level == "municipal"
+        assert hit.territory_name == "Выборгский муниципальный район"
+        assert hit.territory_path == [COUNTRY_TERRITORY_ID, 1, 54]
+
+    def test_document_listing_filters_and_reports_the_scope(
+        self, wired_with_territory, sample_raw
+    ):
+        wired = wired_with_territory()
+        self._ingest(wired, sample_raw, "ПЗЗ Выборга", 54)
+        self._ingest(wired, sample_raw, "СП федеральный", COUNTRY_TERRITORY_ID)
+        listing = wired.documents.list_documents(document_level="municipal")
+        assert [d.name for d in listing.documents] == ["ПЗЗ Выборга"]
+        assert listing.documents[0].territory_id == 54
+        assert listing.documents[0].territory_source == "manual"
+
+    def test_pending_documents_are_findable(self, wired_with_territory, sample_raw):
+        """How the admin panel lists what still needs a human."""
+        wired = wired_with_territory(broken=True)
+        wired.ingestion.ingest(
+            "doc.docx", sample_raw, DocumentParser.content_hash(sample_raw)
+        )
+        listing = wired.documents.list_documents(tagging_status="pending")
+        assert listing.count == 1
+
+
 class TestSearch:
     def test_search_returns_hits_after_ingest(self, wired, sample_raw):
         h = DocumentParser.content_hash(sample_raw)
@@ -1424,7 +1733,9 @@ class TestSearchWithinNode:
         from src.dvd_service.services.dvd_service import SearchService
 
         req = SearchRequest(query="q", **kwargs)
-        return SearchService._build_filter(SearchService, req, None)
+        service = SearchService.__new__(SearchService)
+        service.territory = None
+        return service._build_filter(req, None)
 
     @staticmethod
     def _keys(flt):
@@ -1446,3 +1757,52 @@ class TestSearchWithinNode:
 
         keys = self._keys(flt)
         assert {"parent_id", "tags", "doc_id"} <= set(keys)
+
+
+class TestDocumentScopes:
+    """get_scopes reports what the corpus actually holds — the values worth filtering by."""
+
+    def test_lists_levels_territories_and_pending_count(
+        self, wired_with_territory, sample_raw
+    ):
+        wired = wired_with_territory()
+        wired.ingestion.ingest(
+            "a.docx",
+            list(sample_raw),
+            DocumentParser.content_hash(sample_raw) + "a",
+            name_override="ПЗЗ Выборга",
+            territory_id=54,
+        )
+        wired.ingestion.ingest(
+            "b.docx",
+            list(sample_raw),
+            DocumentParser.content_hash(sample_raw) + "b",
+            name_override="СП 1",
+            territory_id=COUNTRY_TERRITORY_ID,
+        )
+        scopes = wired.tags.get_scopes()
+        assert scopes.levels == ["federal", "municipal"]
+        assert {t.territory_id for t in scopes.territories} == {
+            COUNTRY_TERRITORY_ID,
+            54,
+        }
+        assert all(t.document_count == 1 for t in scopes.territories)
+        assert scopes.pending_documents == 0
+
+    def test_counts_documents_not_fragments(self, wired_with_territory, sample_raw):
+        wired = wired_with_territory()
+        wired.ingestion.ingest(
+            "a.docx",
+            sample_raw,
+            DocumentParser.content_hash(sample_raw),
+            territory_id=54,
+        )
+        territory = wired.tags.get_scopes().territories[0]
+        assert territory.document_count == 1  # the document has several fragments
+
+    def test_pending_documents_are_counted(self, wired_with_territory, sample_raw):
+        wired = wired_with_territory(broken=True)
+        wired.ingestion.ingest(
+            "a.docx", sample_raw, DocumentParser.content_hash(sample_raw)
+        )
+        assert wired.tags.get_scopes().pending_documents == 1

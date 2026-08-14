@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from qdrant_client.models import FieldCondition, Filter, MatchValue
+from qdrant_client.models import FieldCondition, Filter, MatchValue, PayloadSchemaType
 
 from src.common.db.qdrant_client import (
     _PAYLOAD_INDEXES,
@@ -44,6 +44,14 @@ class TestEnsureCollection:
         client.create_collection.assert_not_called()
         # namespaced name already encodes the dimension -> no runtime dimension probe
         client.get_collection.assert_not_called()
+
+    def test_administrative_scope_fields_are_indexed(self):
+        """Filtering by level/territory is the point of the separate payload fields."""
+        assert _PAYLOAD_INDEXES["document_level"] == PayloadSchemaType.KEYWORD
+        assert _PAYLOAD_INDEXES["territory_id"] == PayloadSchemaType.INTEGER
+        # the ancestor chain answers "in force in territory X" without walking the tree
+        assert _PAYLOAD_INDEXES["territory_path"] == PayloadSchemaType.INTEGER
+        assert _PAYLOAD_INDEXES["tagging_status"] == PayloadSchemaType.KEYWORD
 
     def test_namespaced_collection_name_encodes_model_and_dim(self, repo_and_client):
         repo, _ = repo_and_client

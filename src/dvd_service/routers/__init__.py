@@ -10,6 +10,7 @@ from src.dvd_service.routers.direct_documents import (  # noqa: F401
 from src.dvd_service.routers.documents import router as documents_router  # noqa: F401
 from src.dvd_service.routers.library import router as library_router  # noqa: F401
 from src.dvd_service.routers.search import router as search_router  # noqa: F401
+from src.dvd_service.routers.tagging import router as tagging_router  # noqa: F401
 from src.dvd_service.routers.user_documents import (  # noqa: F401
     router as user_documents_router,
 )
@@ -19,5 +20,6 @@ __all__ = [
     "direct_documents_router",
     "search_router",
     "library_router",
+    "tagging_router",
     "user_documents_router",
 ]

@@ -21,6 +21,9 @@ request and response models are pydantic-based and defined under `src/dvd_servic
 | `POST /search/tables` | search relevant tables |
 | `POST /search` | search across all entities (texts and tables) |
 | `GET /tags` | all unique tags present in the document collection |
+| `GET /scopes` | document levels and territories present in the collection, with counts |
+| `GET /tagging/pending` | documents whose level/territory is still unresolved |
+| `POST /tagging/backfill` | tag pending documents now (background job) |
 | `GET /library/documents` | list documents from the registry (identity/corpus metadata) |
 | `GET /library/documents/{doc_id}` | one document: assembled text + metadata + ordered fragments |
 | `GET /library/nodes/{node_id}` | one fragment with its parent, children and reading-order neighbours |
@@ -426,6 +429,50 @@ Example:
 curl "http://localhost:8000/tags"
 ```
 
+## Administrative scope (level and territory)
+
+Every document carries the administrative scope it applies to, derived from the Urban API territory
+tree during ingestion (see `docs/en/pipeline.md`). It is a document-level fact: identical on every
+fragment and shared by all versions of a document.
+
+Fields returned on search hits, `GET /documents` and the library API:
+
+| Field | Meaning |
+|-------|---------|
+| `document_level` | `federal` / `regional` / `municipal` — always derived from the territory's depth in the tree |
+| `territory_id`, `territory_name` | the Urban API territory the document applies to (federal documents point at "Россия", 12639) |
+| `territory_type_id`, `territory_type_name` | the Urban API territory type, for display |
+| `territory_path` | ancestor ids, root first (`[12639, 1, 54]`) |
+| `level_source`, `territory_source` | `manual` / `auto` / `unset` — automatic detection never overwrites `manual` |
+| `territory_confidence` | automatic match confidence, `0..1` |
+| `tagging_status`, `tagging_error` | `ok` / `pending`, and why the last attempt did not resolve |
+
+Filters accepted by `POST /search*`, `GET /documents` and `GET /library/documents`:
+
+| Parameter | Effect |
+|-----------|--------|
+| `document_level` | exact level match |
+| `territory_ids` | a territory **and everything under it**, plus the higher-level documents **in force on it** — one OR over the stored ancestor chain |
+| `tagging_status` | `pending` lists the documents still awaiting automatic tagging |
+
+Setting a territory manually: `territory_id` as a form field on `POST`/`PATCH`/`PUT /documents` and
+`/user-documents`, as a field of the direct-ingestion DTO, or via `PATCH
+/library/documents/{doc_id}`. Sending `territory_id: null` in the PATCH clears the tag and hands
+the document back to automatic detection. The level is never set directly — it follows the
+territory, so the two cannot disagree.
+
+| Method and path | Purpose |
+|-----------------|---------|
+| `GET /scopes` | levels and territories actually present in the collection, with document counts |
+| `GET /tagging/pending` | documents whose scope is unresolved, with the reason for each |
+| `POST /tagging/backfill` | run the tagging sweep now (`?dry_run=`, `?limit=`); returns a `job_id` |
+
+```
+curl "http://localhost:8000/scopes"
+curl -X POST "http://localhost:8000/tagging/backfill?dry_run=true"
+curl "http://localhost:8000/documents?document_level=municipal&territory_ids=54"
+```
+
 ## Library (document read API)
 
 A consumer-facing read API (e.g. for the MSI-TSIM service) that complements semantic search with
@@ -598,8 +645,10 @@ All tools are synchronous and share the same `Dependencies` singleton as the HTT
 | `get_node` | one fragment plus its parent, children and neighbours — widen a hit without reading the whole document |
 
 `search_*` also accept `parent_id` — search only inside one node (e.g. within a table you already found) instead of across the corpus.
+Every `search_*` tool and `list_documents` also accept `document_level` and `territory_ids`; call `get_document_scopes` first — it is the only place those ids come from.
 | `find_document` | resolve documents by lookup key / external id (`key`) |
 | `get_tags` | all unique tags in the collection, sorted alphabetically — no parameters |
+| `get_document_scopes` | levels and territories the collection actually holds, with document counts — where an agent gets `territory_ids` |
 
 ### get_tags
 

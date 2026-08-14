@@ -5,6 +5,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field, model_validator
 
 from src.dvd_service.dto.reference import DocumentRef
+from src.dvd_service.dto.scope import AdministrativeScope
 
 
 class SearchRequest(BaseModel):
@@ -25,6 +26,15 @@ class SearchRequest(BaseModel):
     corpus: str | None = None  # filter by logical corpus/namespace
     lang: str | None = None  # filter by language
     tags: list[str] | None = None  # filter by tags (any of)
+
+    # --- administrative scope (Urban API territory tree) ---
+    document_level: str | None = None  # federal | regional | municipal
+    territory_ids: list[int] | None = (
+        None  # match the territory or anything above it: the condition runs against the
+        # stored ancestor chain, so asking for Vyborg also returns the regional and
+        # federal documents that are in force there
+    )
+    tagging_status: str | None = None  # ok | pending (documents awaiting the backfill)
     limit: int = 10
     context_height: int = 0  # how many neighbour fragments to attach before/after
 
@@ -48,7 +58,7 @@ class SearchRequest(BaseModel):
         return self
 
 
-class SearchHit(BaseModel):
+class SearchHit(AdministrativeScope):
     id: str
     score: float
     doc_id: str
@@ -109,3 +119,25 @@ class SearchResponse(BaseModel):
 class TagsResponse(BaseModel):
     count: int
     tags: list[str]
+
+
+class TerritoryScope(BaseModel):
+    """One territory that documents in the corpus are actually tagged with."""
+
+    territory_id: int
+    territory_name: str | None = None
+    territory_type_name: str | None = None
+    document_level: str | None = None
+    document_count: int = 0
+
+
+class ScopesResponse(BaseModel):
+    """The administrative scopes present in the corpus — what it is worth filtering by.
+
+    Deliberately *not* the Urban API catalogue: a territory with no documents would only give
+    a caller an id that returns nothing.
+    """
+
+    levels: list[str] = Field(default_factory=list)
+    territories: list[TerritoryScope] = Field(default_factory=list)
+    pending_documents: int = 0  # documents still awaiting automatic tagging

@@ -49,6 +49,9 @@ class DirectDocumentIn(BaseModel):
     title: str | None = None
     source_uri: str | None = None
     effective_date: str | None = None
+    # Urban API territory this document applies to. Set it and the level is derived from the
+    # tree; leave it out and the document is stored pending for the backfill job to tag.
+    territory_id: int | None = None
     external_ids: dict = Field(default_factory=dict)
     metadata: dict = Field(default_factory=dict)
     embedding_provider: str | None = (
