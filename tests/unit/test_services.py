@@ -1757,3 +1757,52 @@ class TestSearchWithinNode:
 
         keys = self._keys(flt)
         assert {"parent_id", "tags", "doc_id"} <= set(keys)
+
+
+class TestDocumentScopes:
+    """get_scopes reports what the corpus actually holds — the values worth filtering by."""
+
+    def test_lists_levels_territories_and_pending_count(
+        self, wired_with_territory, sample_raw
+    ):
+        wired = wired_with_territory()
+        wired.ingestion.ingest(
+            "a.docx",
+            list(sample_raw),
+            DocumentParser.content_hash(sample_raw) + "a",
+            name_override="ПЗЗ Выборга",
+            territory_id=54,
+        )
+        wired.ingestion.ingest(
+            "b.docx",
+            list(sample_raw),
+            DocumentParser.content_hash(sample_raw) + "b",
+            name_override="СП 1",
+            territory_id=COUNTRY_TERRITORY_ID,
+        )
+        scopes = wired.tags.get_scopes()
+        assert scopes.levels == ["federal", "municipal"]
+        assert {t.territory_id for t in scopes.territories} == {
+            COUNTRY_TERRITORY_ID,
+            54,
+        }
+        assert all(t.document_count == 1 for t in scopes.territories)
+        assert scopes.pending_documents == 0
+
+    def test_counts_documents_not_fragments(self, wired_with_territory, sample_raw):
+        wired = wired_with_territory()
+        wired.ingestion.ingest(
+            "a.docx",
+            sample_raw,
+            DocumentParser.content_hash(sample_raw),
+            territory_id=54,
+        )
+        territory = wired.tags.get_scopes().territories[0]
+        assert territory.document_count == 1  # the document has several fragments
+
+    def test_pending_documents_are_counted(self, wired_with_territory, sample_raw):
+        wired = wired_with_territory(broken=True)
+        wired.ingestion.ingest(
+            "a.docx", sample_raw, DocumentParser.content_hash(sample_raw)
+        )
+        assert wired.tags.get_scopes().pending_documents == 1

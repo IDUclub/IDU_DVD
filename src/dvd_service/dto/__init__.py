@@ -25,10 +25,12 @@ from src.dvd_service.dto.node_payload import NodePayload  # noqa: F401
 from src.dvd_service.dto.reference import DocumentRef  # noqa: F401
 from src.dvd_service.dto.scope import AdministrativeScope  # noqa: F401
 from src.dvd_service.dto.search import (  # noqa: F401
+    ScopesResponse,
     SearchHit,
     SearchRequest,
     SearchResponse,
     TagsResponse,
+    TerritoryScope,
 )
 from src.dvd_service.dto.upload import (  # noqa: F401
     ActiveJobsResponse,
@@ -68,6 +70,8 @@ __all__ = [
     "SearchHit",
     "SearchResponse",
     "TagsResponse",
+    "ScopesResponse",
+    "TerritoryScope",
     "UserIndexCreateRequest",
     "UserIndexInfo",
     "UserIndexListResponse",

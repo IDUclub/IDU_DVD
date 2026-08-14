@@ -119,3 +119,25 @@ class SearchResponse(BaseModel):
 class TagsResponse(BaseModel):
     count: int
     tags: list[str]
+
+
+class TerritoryScope(BaseModel):
+    """One territory that documents in the corpus are actually tagged with."""
+
+    territory_id: int
+    territory_name: str | None = None
+    territory_type_name: str | None = None
+    document_level: str | None = None
+    document_count: int = 0
+
+
+class ScopesResponse(BaseModel):
+    """The administrative scopes present in the corpus — what it is worth filtering by.
+
+    Deliberately *not* the Urban API catalogue: a territory with no documents would only give
+    a caller an id that returns nothing.
+    """
+
+    levels: list[str] = Field(default_factory=list)
+    territories: list[TerritoryScope] = Field(default_factory=list)
+    pending_documents: int = 0  # documents still awaiting automatic tagging

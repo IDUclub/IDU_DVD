@@ -16,6 +16,7 @@ from src.dvd_service.dto import (
     DocumentList,
     DocumentListResponse,
     NodeDetail,
+    ScopesResponse,
     SearchRequest,
     SearchResponse,
     TagsResponse,
@@ -47,6 +48,8 @@ def _search(
     include_shared: bool = True,
     include_inherited: bool = True,
     parent_id: str | None = None,
+    document_level: str | None = None,
+    territory_ids: list[int] | None = None,
 ) -> SearchResponse:
     req = SearchRequest(
         query=query,
@@ -64,6 +67,8 @@ def _search(
         include_shared=include_shared,
         include_inherited=include_inherited,
         parent_id=parent_id,
+        document_level=document_level,
+        territory_ids=territory_ids,
     )
     return Dependencies.get_search().search(req, kind)
 
@@ -85,6 +90,8 @@ def search_texts(
     include_shared: bool = True,
     include_inherited: bool = True,
     parent_id: str | None = None,
+    document_level: str | None = None,
+    territory_ids: list[int] | None = None,
 ) -> SearchResponse:
     """Vector search over text fragments (kind=text) with filters and context height.
 
@@ -92,6 +99,10 @@ def search_texts(
     subclause/...). ``document_names`` restricts results to any of the given document names.
     ``parent_id`` searches only among one node's direct children — drill into a clause or a
     table you already found (get its id from a previous hit or from get_node).
+
+    Narrow by administrative scope with ``document_level`` (federal/regional/municipal)
+    and ``territory_ids`` — Urban API territory ids from ``get_document_scopes``, which
+    match both a territory's own documents and the higher-level ones in force there.
     Set ``user_id``+``scenario_id`` to also search a user document index (combined search);
     add ``include_shared=False`` to search only that index, or ``include_inherited=False`` to
     skip its inheritance chain.
@@ -113,6 +124,8 @@ def search_texts(
         include_shared,
         include_inherited,
         parent_id=parent_id,
+        document_level=document_level,
+        territory_ids=territory_ids,
     )
 
 
@@ -133,6 +146,8 @@ def search_tables(
     include_shared: bool = True,
     include_inherited: bool = True,
     parent_id: str | None = None,
+    document_level: str | None = None,
+    territory_ids: list[int] | None = None,
 ) -> SearchResponse:
     """Vector search over tables (kind=table) with filters and context height.
 
@@ -160,6 +175,8 @@ def search_tables(
         include_shared,
         include_inherited,
         parent_id=parent_id,
+        document_level=document_level,
+        territory_ids=territory_ids,
     )
 
 
@@ -180,6 +197,8 @@ def search_all(
     include_shared: bool = True,
     include_inherited: bool = True,
     parent_id: str | None = None,
+    document_level: str | None = None,
+    territory_ids: list[int] | None = None,
 ) -> SearchResponse:
     """Vector search across all entities (texts and tables) with filters and context height.
 
@@ -187,6 +206,10 @@ def search_all(
     ``user_id``+``scenario_id`` to also search a user document index (combined search); add
     ``include_shared=False`` to search only that index, or ``include_inherited=False`` to skip
     its inheritance chain.
+
+    Narrow by administrative scope with ``document_level`` (federal/regional/municipal)
+    and ``territory_ids`` — Urban API territory ids from ``get_document_scopes``, which
+    match both a territory's own documents and the higher-level ones in force there.
     """
     return _search(
         query,
@@ -205,6 +228,8 @@ def search_all(
         include_shared,
         include_inherited,
         parent_id=parent_id,
+        document_level=document_level,
+        territory_ids=territory_ids,
     )
 
 
@@ -224,6 +249,8 @@ def search_user_index_texts(
     limit: int = 10,
     context_height: int = 0,
     parent_id: str | None = None,
+    document_level: str | None = None,
+    territory_ids: list[int] | None = None,
 ) -> SearchResponse:
     """Vector search restricted to a user document index (text fragments) — never the shared corpus."""
     return _search(
@@ -243,6 +270,8 @@ def search_user_index_texts(
         False,
         include_inherited,
         parent_id=parent_id,
+        document_level=document_level,
+        territory_ids=territory_ids,
     )
 
 
@@ -262,6 +291,8 @@ def search_user_index_tables(
     limit: int = 10,
     context_height: int = 0,
     parent_id: str | None = None,
+    document_level: str | None = None,
+    territory_ids: list[int] | None = None,
 ) -> SearchResponse:
     """Vector search restricted to a user document index (tables) — never the shared corpus."""
     return _search(
@@ -281,6 +312,8 @@ def search_user_index_tables(
         False,
         include_inherited,
         parent_id=parent_id,
+        document_level=document_level,
+        territory_ids=territory_ids,
     )
 
 
@@ -300,6 +333,8 @@ def search_user_index_all(
     limit: int = 10,
     context_height: int = 0,
     parent_id: str | None = None,
+    document_level: str | None = None,
+    territory_ids: list[int] | None = None,
 ) -> SearchResponse:
     """Vector search restricted to a user document index (all entities) — never the shared corpus."""
     return _search(
@@ -319,6 +354,8 @@ def search_user_index_all(
         False,
         include_inherited,
         parent_id=parent_id,
+        document_level=document_level,
+        territory_ids=territory_ids,
     )
 
 
@@ -330,10 +367,26 @@ def list_documents(
     tags: list[str] | None = None,
     uploaded_from: str | None = None,
     uploaded_to: str | None = None,
+    document_level: str | None = None,
+    territory_ids: list[int] | None = None,
+    tagging_status: str | None = None,
 ) -> DocumentListResponse:
-    """Documents already in the shared store, aggregated by (name, version), with optional filters."""
+    """Documents already in the shared store, aggregated by (name, version), with optional filters.
+
+    ``document_level`` is federal/regional/municipal; ``territory_ids`` are Urban API territory
+    ids (get them from ``get_document_scopes``) and match both the documents of a territory and
+    the higher-level documents in force on it.
+    """
     return Dependencies.get_documents().list_documents(
-        name, version, block, tags, uploaded_from, uploaded_to
+        name,
+        version,
+        block,
+        tags,
+        uploaded_from,
+        uploaded_to,
+        document_level=document_level,
+        territory_ids=territory_ids,
+        tagging_status=tagging_status,
     )
 
 
@@ -483,3 +536,14 @@ def find_document(key: str) -> DocumentList:
 def get_tags() -> TagsResponse:
     """All unique tags present in the document collection, sorted alphabetically."""
     return Dependencies.get_tags().get_tags()
+
+
+@mcp.tool()
+def get_document_scopes() -> ScopesResponse:
+    """Document levels and territories the collection actually holds, with document counts.
+
+    Call this before filtering by ``document_level`` / ``territory_ids``: it is where the
+    territory ids come from. Only territories that have documents behind them are listed, so
+    every value it returns is a filter that returns something.
+    """
+    return Dependencies.get_tags().get_scopes()

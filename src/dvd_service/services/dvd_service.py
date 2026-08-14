@@ -49,10 +49,12 @@ from src.dvd_service.dto import (
     DocumentUpdateResponse,
     NodeDetail,
     NodePayload,
+    ScopesResponse,
     SearchHit,
     SearchRequest,
     SearchResponse,
     TagsResponse,
+    TerritoryScope,
 )
 from src.dvd_service.modules.doc_parsers import PARSER_VERSION, DocumentParser
 from src.dvd_service.modules.hierarchy import HierarchyBuilder
@@ -68,6 +70,7 @@ from src.dvd_service.modules.references import ReferenceExtractor, ReferenceReso
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import DocumentHead, VersionDetector
 from src.dvd_service.modules.territory import (
+    STATUS_PENDING,
     TerritoryResolver,
     manual_scope_fields,
     untagged_scope,
@@ -2004,3 +2007,49 @@ class TagsService:
             tags.update(pl.get("tags", []) or [])
         sorted_tags = sorted(tags)
         return TagsResponse(count=len(sorted_tags), tags=sorted_tags)
+
+    def get_scopes(self) -> ScopesResponse:
+        """Levels and territories the shared corpus actually uses, with document counts.
+
+        Same full scroll as ``get_tags`` — distinct payload values have no cheaper source
+        here, and the two are used the same way (populate a filter control before filtering).
+        """
+        payloads = self.qdrant.scroll_payloads(Filter(must=[shared_only_condition()]))
+        levels: set[str] = set()
+        territories: dict[int, dict] = {}
+        pending: set[str] = set()
+        for pl in payloads:
+            if level := pl.get("document_level"):
+                levels.add(level)
+            if pl.get("tagging_status") == STATUS_PENDING:
+                pending.add(pl.get("doc_id", ""))
+            territory_id = pl.get("territory_id")
+            if territory_id is None:
+                continue
+            entry = territories.setdefault(
+                int(territory_id),
+                {
+                    "territory_id": int(territory_id),
+                    "territory_name": pl.get("territory_name"),
+                    "territory_type_name": pl.get("territory_type_name"),
+                    "document_level": pl.get("document_level"),
+                    "doc_ids": set(),
+                },
+            )
+            entry["doc_ids"].add(pl.get("doc_id", ""))
+        found = [
+            TerritoryScope(
+                territory_id=entry["territory_id"],
+                territory_name=entry["territory_name"],
+                territory_type_name=entry["territory_type_name"],
+                document_level=entry["document_level"],
+                document_count=len(entry["doc_ids"]),
+            )
+            for entry in territories.values()
+        ]
+        found.sort(key=lambda t: (t.document_level or "", t.territory_name or ""))
+        return ScopesResponse(
+            levels=sorted(levels),
+            territories=found,
+            pending_documents=len(pending),
+        )

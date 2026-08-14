@@ -6,7 +6,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
 from src.dependencies import Dependencies
-from src.dvd_service.dto import SearchRequest, SearchResponse, TagsResponse
+from src.dvd_service.dto import (
+    ScopesResponse,
+    SearchRequest,
+    SearchResponse,
+    TagsResponse,
+)
 from src.dvd_service.services.dvd_service import SearchService, TagsService
 
 router = APIRouter(tags=["search"])
@@ -44,6 +49,16 @@ async def search_all(
 async def get_tags(tags_svc: TagsService = Depends(Dependencies.get_tags)):
     """All unique tags present in the shared document collection, sorted alphabetically."""
     return await run_in_threadpool(tags_svc.get_tags)
+
+
+@router.get("/scopes", response_model=ScopesResponse)
+async def get_scopes(tags_svc: TagsService = Depends(Dependencies.get_tags)):
+    """Document levels and territories actually present in the collection, with counts.
+
+    What a filter control (or an agent) should offer: territories with no documents behind
+    them would only produce empty result sets.
+    """
+    return await run_in_threadpool(tags_svc.get_scopes)
 
 
 def _require_user_index_scope(req: SearchRequest) -> SearchRequest:
