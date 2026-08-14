@@ -13,9 +13,10 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from src.dvd_service.dto.reference import DocumentRef
+from src.dvd_service.dto.scope import AdministrativeScope
 
 
-class DocumentInfo(BaseModel):
+class DocumentInfo(AdministrativeScope):
     doc_id: str
     name: str
     version: str
@@ -39,7 +40,7 @@ class DocumentListResponse(BaseModel):
     documents: list[DocumentInfo]
 
 
-class DocumentSummary(BaseModel):
+class DocumentSummary(AdministrativeScope):
     doc_id: str
     name: str
     title: str | None = None

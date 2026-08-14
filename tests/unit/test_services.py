@@ -97,7 +97,11 @@ def wired_with_territory(wired):
     from unit.test_territory import FakeUrbanApi
 
     def _attach(broken: bool = False):
-        wired.ingestion.territory = TerritoryResolver(FakeUrbanApi(broken=broken))
+        resolver = TerritoryResolver(FakeUrbanApi(broken=broken))
+        wired.ingestion.territory = resolver
+        wired.search.territory = resolver
+        wired.documents.territory = resolver
+        wired.library.territory = resolver
         return wired
 
     return _attach
@@ -1000,6 +1004,85 @@ class TestReloadDocument:
         }
 
 
+class TestScopeFilters:
+    """Level/territory are filterable, and a hit carries the scope back to the caller."""
+
+    def _ingest(self, wired, sample_raw, name, territory_id):
+        return wired.ingestion.ingest(
+            "doc.docx",
+            list(sample_raw),
+            DocumentParser.content_hash(sample_raw) + name,
+            name_override=name,
+            territory_id=territory_id,
+        )
+
+    def test_filter_by_document_level(self, wired_with_territory, sample_raw):
+        wired = wired_with_territory()
+        self._ingest(wired, sample_raw, "СП федеральный", COUNTRY_TERRITORY_ID)
+        self._ingest(wired, sample_raw, "ПЗЗ Выборга", 54)
+        resp = wired.search.search(
+            SearchRequest(query="требования", limit=50, document_level="municipal"),
+            None,
+        )
+        assert resp.count >= 1
+        assert {hit.name for hit in resp.hits} == {"ПЗЗ Выборга"}
+
+    def test_territory_filter_matches_the_ancestor_chain(
+        self, wired_with_territory, sample_raw
+    ):
+        """Asking for Vyborg also returns the federal documents in force there."""
+        wired = wired_with_territory()
+        self._ingest(wired, sample_raw, "СП федеральный", COUNTRY_TERRITORY_ID)
+        self._ingest(wired, sample_raw, "ПЗЗ Выборга", 54)
+        self._ingest(wired, sample_raw, "Закон Ленобласти", 1)
+        resp = wired.search.search(
+            SearchRequest(query="требования", limit=50, territory_ids=[54]), None
+        )
+        assert {hit.name for hit in resp.hits} == {
+            "СП федеральный",
+            "Закон Ленобласти",
+            "ПЗЗ Выборга",
+        }
+
+    def test_a_sibling_territory_is_not_matched(self, wired_with_territory, sample_raw):
+        wired = wired_with_territory()
+        self._ingest(wired, sample_raw, "ПЗЗ Выборга", 54)
+        resp = wired.search.search(
+            SearchRequest(query="требования", limit=50, territory_ids=[3144]), None
+        )
+        assert resp.count == 0
+
+    def test_search_hits_carry_the_scope(self, wired_with_territory, sample_raw):
+        wired = wired_with_territory()
+        self._ingest(wired, sample_raw, "ПЗЗ Выборга", 54)
+        hit = wired.search.search(
+            SearchRequest(query="требования", limit=1), None
+        ).hits[0]
+        assert hit.document_level == "municipal"
+        assert hit.territory_name == "Выборгский муниципальный район"
+        assert hit.territory_path == [COUNTRY_TERRITORY_ID, 1, 54]
+
+    def test_document_listing_filters_and_reports_the_scope(
+        self, wired_with_territory, sample_raw
+    ):
+        wired = wired_with_territory()
+        self._ingest(wired, sample_raw, "ПЗЗ Выборга", 54)
+        self._ingest(wired, sample_raw, "СП федеральный", COUNTRY_TERRITORY_ID)
+        listing = wired.documents.list_documents(document_level="municipal")
+        assert [d.name for d in listing.documents] == ["ПЗЗ Выборга"]
+        assert listing.documents[0].territory_id == 54
+        assert listing.documents[0].territory_source == "manual"
+
+    def test_pending_documents_are_findable(self, wired_with_territory, sample_raw):
+        """How the admin panel lists what still needs a human."""
+        wired = wired_with_territory(broken=True)
+        wired.ingestion.ingest(
+            "doc.docx", sample_raw, DocumentParser.content_hash(sample_raw)
+        )
+        listing = wired.documents.list_documents(tagging_status="pending")
+        assert listing.count == 1
+
+
 class TestSearch:
     def test_search_returns_hits_after_ingest(self, wired, sample_raw):
         h = DocumentParser.content_hash(sample_raw)
@@ -1650,7 +1733,9 @@ class TestSearchWithinNode:
         from src.dvd_service.services.dvd_service import SearchService
 
         req = SearchRequest(query="q", **kwargs)
-        return SearchService._build_filter(SearchService, req, None)
+        service = SearchService.__new__(SearchService)
+        service.territory = None
+        return service._build_filter(req, None)
 
     @staticmethod
     def _keys(flt):

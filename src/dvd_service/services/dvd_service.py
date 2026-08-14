@@ -32,11 +32,13 @@ from src.common.config import Settings
 from src.common.db.minio_client import DocumentStorage
 from src.common.db.qdrant_client import (
     QdrantRepository,
+    scope_conditions,
     shared_only_condition,
     user_scope_conditions,
 )
 from src.common.db.redis_client import DocumentRegistry, JobStore, UserIndexRegistry
 from src.dvd_service.dto import (
+    AdministrativeScope,
     DirectDocumentIn,
     DocumentDetail,
     DocumentFragment,
@@ -1320,16 +1322,31 @@ class IngestionService:
         return result
 
 
+def territory_ancestors(
+    territory: TerritoryResolver | None, territory_ids: list[int] | None
+) -> list[int] | None:
+    """Ancestors of the requested territories, for the "in force here" half of the filter.
+
+    Without a resolver there are none, and the filter degrades to "this territory and
+    everything under it" — narrower, never wrong (see ``scope_conditions``).
+    """
+    if not territory_ids or territory is None:
+        return None
+    return territory.filter_ids(territory_ids)
+
+
 class SearchService:
     def __init__(
         self,
         qdrant: QdrantRepository,
         settings: Settings,
         user_index_registry: UserIndexRegistry,
+        territory: TerritoryResolver | None = None,
     ) -> None:
         self.qdrant = qdrant
         self.settings = settings
         self.user_index_registry = user_index_registry
+        self.territory = territory
 
     def __repr__(self) -> str:
         return (
@@ -1368,6 +1385,14 @@ class SearchService:
             )
         if req.lang:
             must.append(FieldCondition(key="lang", match=MatchValue(value=req.lang)))
+        must.extend(
+            scope_conditions(
+                req.document_level,
+                req.territory_ids,
+                req.tagging_status,
+                territory_ancestors(self.territory, req.territory_ids),
+            )
+        )
         if req.tags:
             must.append(FieldCondition(key="tags", match=MatchAny(any=req.tags)))
         if req.document_names:
@@ -1481,6 +1506,7 @@ class SearchService:
                     text=pl.get("text", ""),
                     context=context,
                     table_html=pl.get("table_html"),
+                    **AdministrativeScope.fields_from(pl),
                 )
             )
         return SearchResponse(count=len(hits), hits=hits)
@@ -1494,8 +1520,11 @@ class DocumentsService:
     they are computed by scrolling Qdrant and grouping by ``(name, version)``.
     """
 
-    def __init__(self, qdrant: QdrantRepository) -> None:
+    def __init__(
+        self, qdrant: QdrantRepository, territory: TerritoryResolver | None = None
+    ) -> None:
         self.qdrant = qdrant
+        self.territory = territory
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(qdrant={type(self.qdrant).__name__})"
@@ -1508,6 +1537,10 @@ class DocumentsService:
         tags: list[str] | None,
         user_id: str | None = None,
         scenario_ids: list[str] | None = None,
+        document_level: str | None = None,
+        territory_ids: list[int] | None = None,
+        tagging_status: str | None = None,
+        ancestor_ids: list[int] | None = None,
     ) -> Filter | None:
         must = []
         if name:
@@ -1518,6 +1551,11 @@ class DocumentsService:
             must.append(FieldCondition(key="block", match=MatchValue(value=block)))
         if tags:
             must.append(FieldCondition(key="tags", match=MatchAny(any=tags)))
+        must.extend(
+            scope_conditions(
+                document_level, territory_ids, tagging_status, ancestor_ids
+            )
+        )
         if user_id and scenario_ids:
             must.extend(user_scope_conditions(user_id, scenario_ids))
         else:
@@ -1536,6 +1574,9 @@ class DocumentsService:
         *,
         user_id: str | None = None,
         scenario_ids: list[str] | None = None,
+        document_level: str | None = None,
+        territory_ids: list[int] | None = None,
+        tagging_status: str | None = None,
     ) -> DocumentListResponse:
         """Aggregated, per-document view, optionally narrowed by the given filters.
 
@@ -1547,7 +1588,18 @@ class DocumentsService:
         default to the shared/regular document corpus.
         """
         payloads = self.qdrant.scroll_payloads(
-            self._build_filter(name, version, block, tags, user_id, scenario_ids)
+            self._build_filter(
+                name,
+                version,
+                block,
+                tags,
+                user_id,
+                scenario_ids,
+                document_level,
+                territory_ids,
+                tagging_status,
+                territory_ancestors(self.territory, territory_ids),
+            )
         )
 
         groups: dict[tuple[str, str], dict] = {}
@@ -1574,6 +1626,8 @@ class DocumentsService:
                     "blocks": set(),
                     "tags": set(),
                     "node_count": 0,
+                    # A document-level fact: identical on every fragment, so the first one wins.
+                    "scope": AdministrativeScope.fields_from(pl),
                 }
                 groups[key] = g
             g["blocks"].add(pl.get("block", "main"))
@@ -1617,6 +1671,7 @@ class DocumentsService:
                         doc_name,
                         doc_version,
                     ),
+                    **g["scope"],
                 )
             )
         documents.sort(key=lambda d: (d.name, d.version))
@@ -1630,9 +1685,15 @@ class LibraryService:
     fragments (each with source grounding), complementing semantic search.
     """
 
-    def __init__(self, qdrant: QdrantRepository, registry: DocumentRegistry) -> None:
+    def __init__(
+        self,
+        qdrant: QdrantRepository,
+        registry: DocumentRegistry,
+        territory: TerritoryResolver | None = None,
+    ) -> None:
         self.qdrant = qdrant
         self.registry = registry
+        self.territory = territory
 
     def __repr__(self) -> str:
         return (
@@ -1674,10 +1735,46 @@ class LibraryService:
             effective_date=pl.get("effective_date"),
             metadata=pl.get("metadata", {}) or {},
             tags=pl.get("tags", []) or [],
+            **AdministrativeScope.fields_from(pl),
         )
 
-    def list_documents(self) -> DocumentList:
-        docs = [self._summary_from_record(r) for r in self.registry.all_documents()]
+    def list_documents(
+        self,
+        *,
+        document_level: str | None = None,
+        territory_ids: list[int] | None = None,
+        tagging_status: str | None = None,
+    ) -> DocumentList:
+        """Every document, or only those matching the administrative-scope filters.
+
+        Unfiltered listing keeps reading the Redis registry (one round trip). A scope filter
+        goes to Qdrant instead: the registry summary of a document ingested before this
+        feature carries no scope at all, so filtering it in Python would silently drop exactly
+        the documents the backfill job exists for.
+        """
+        if not (document_level or territory_ids or tagging_status):
+            docs = [self._summary_from_record(r) for r in self.registry.all_documents()]
+            return DocumentList(count=len(docs), documents=docs)
+
+        conditions = scope_conditions(
+            document_level,
+            territory_ids,
+            tagging_status,
+            territory_ancestors(self.territory, territory_ids),
+        )
+        conditions.append(shared_only_condition())
+        payloads = self.qdrant.scroll_payloads(Filter(must=conditions))
+        counts: dict[str, int] = {}
+        first: dict[str, dict] = {}
+        for pl in payloads:
+            doc_id = pl.get("doc_id", "")
+            counts[doc_id] = counts.get(doc_id, 0) + 1
+            first.setdefault(doc_id, pl)
+        docs = [
+            self._summary_from_payload(pl, counts[doc_id])
+            for doc_id, pl in first.items()
+        ]
+        docs.sort(key=lambda d: (d.name, d.version))
         return DocumentList(count=len(docs), documents=docs)
 
     def get_document(self, doc_id: str) -> DocumentDetail | None:

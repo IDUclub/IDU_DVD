@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import difflib
 import re
+from collections.abc import Sequence
 
 import structlog
 
@@ -221,6 +222,33 @@ class TerritoryResolver:
                 "level_source": SOURCE_MANUAL,
                 "tagging_error": f"Urban API недоступен: {exc}",
             }
+
+    def filter_ids(self, territory_ids: Sequence[int]) -> list[int]:
+        """Expand requested territories into the id set a scope filter should match.
+
+        A document stores its own territory's ancestor chain, so matching that chain against
+        the *requested* territory alone would only find documents of that territory and its
+        descendants. Expanding the request to its ancestors as well makes one filter answer
+        both questions a caller actually has: "documents in force in Vyborg" (which includes
+        the regional and federal ones) and "everything about Leningrad Oblast" (which includes
+        Vyborg's own documents).
+
+        An Urban API outage degrades to the plain ids — a narrower answer, never a wrong one.
+        """
+        expanded: list[int] = []
+        for territory_id in territory_ids or []:
+            try:
+                expanded.extend(self.urban.ancestor_path(int(territory_id)))
+            except (
+                Exception
+            ) as exc:  # noqa: BLE001 — a filter must not fail on an outage
+                log.warning(
+                    "territory_filter_not_expanded",
+                    territory_id=territory_id,
+                    error=str(exc),
+                )
+                expanded.append(int(territory_id))
+        return sorted(set(expanded))
 
     # --- automatic detection ------------------------------------------------------------
 

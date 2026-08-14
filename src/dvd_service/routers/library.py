@@ -6,6 +6,8 @@ ordered fragments — what a consumer needs to hydrate its own derived entities.
 
 from __future__ import annotations
 
+from functools import partial
+
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 
@@ -27,10 +29,30 @@ router = APIRouter(prefix="/library", tags=["library"])
 
 @router.get("/documents", response_model=DocumentList)
 async def list_documents(
+    document_level: str | None = Query(
+        None, description="federal | regional | municipal"
+    ),
+    territory_ids: list[int] | None = Query(
+        None,
+        description="Urban API territory ids; matches the territory or anything above it",
+    ),
+    tagging_status: str | None = Query(None, description="ok | pending"),
     library: LibraryService = Depends(Dependencies.get_library),
 ):
-    """All documents in the store with their identity/corpus metadata."""
-    return await run_in_threadpool(library.list_documents)
+    """All documents in the store with their identity/corpus/scope metadata.
+
+    The administrative-scope filters narrow the listing the same way they narrow search:
+    ``territory_ids`` matches the stored ancestor chain, so a municipality also brings back
+    the regional and federal documents in force there.
+    """
+    return await run_in_threadpool(
+        partial(
+            library.list_documents,
+            document_level=document_level,
+            territory_ids=territory_ids,
+            tagging_status=tagging_status,
+        )
+    )
 
 
 @router.get("/lookup", response_model=DocumentList)

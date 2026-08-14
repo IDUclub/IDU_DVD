@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from functools import partial
 from pathlib import Path
 
 import structlog
@@ -227,14 +228,37 @@ async def list_documents(
     tags: list[str] | None = Query(None),
     uploaded_from: str | None = None,
     uploaded_to: str | None = None,
+    document_level: str | None = Query(
+        None, description="federal | regional | municipal"
+    ),
+    territory_ids: list[int] | None = Query(
+        None,
+        description="Urban API territory ids; matches the territory or anything above it",
+    ),
+    tagging_status: str | None = Query(
+        None, description="ok | pending (pending = awaiting automatic tagging)"
+    ),
     documents: DocumentsService = Depends(Dependencies.get_documents),
 ):
     """Documents already in the store, aggregated by (name, version), with optional filters.
 
     ``uploaded_from``/``uploaded_to`` are ISO 8601 timestamps (e.g. ``2026-06-01``).
+    ``territory_ids`` filters on the stored ancestor chain, so asking for a municipality also
+    returns the regional and federal documents in force there.
     """
     return await run_in_threadpool(
-        documents.list_documents, name, version, block, tags, uploaded_from, uploaded_to
+        partial(
+            documents.list_documents,
+            name,
+            version,
+            block,
+            tags,
+            uploaded_from,
+            uploaded_to,
+            document_level=document_level,
+            territory_ids=territory_ids,
+            tagging_status=tagging_status,
+        )
     )
 
 

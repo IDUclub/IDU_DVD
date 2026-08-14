@@ -145,8 +145,22 @@ class FakeDocuments:
     def __init__(self):
         self.calls = []
 
-    def list_documents(self, name, version, block, tags, uploaded_from, uploaded_to):
+    def list_documents(
+        self,
+        name,
+        version,
+        block,
+        tags,
+        uploaded_from,
+        uploaded_to,
+        *,
+        document_level=None,
+        territory_ids=None,
+        tagging_status=None,
+    ):
         self.calls.append((name, version, block, tags, uploaded_from, uploaded_to))
+        self.scope_calls = getattr(self, "scope_calls", [])
+        self.scope_calls.append((document_level, territory_ids, tagging_status))
         return DocumentListResponse(count=0, documents=[])
 
 
@@ -446,6 +460,19 @@ class TestListDocuments:
             "count": 0,
             "documents": [],
         }
+
+    def test_forwards_scope_filters_to_service(self, client):
+        c, fakes = client
+        resp = c.get(
+            "/documents",
+            params={
+                "document_level": "municipal",
+                "territory_ids": [54, 1],
+                "tagging_status": "pending",
+            },
+        )
+        assert resp.status_code == 200
+        assert fakes["documents"].scope_calls[-1] == ("municipal", [54, 1], "pending")
 
 
 class TestJobStatus:

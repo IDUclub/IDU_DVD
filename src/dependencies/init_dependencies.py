@@ -194,10 +194,10 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         outbox=outbox if publisher.enabled else None,
         territory=territory,
     )
-    search = SearchService(qdrant, s, user_index_registry)
-    documents = DocumentsService(qdrant)
+    search = SearchService(qdrant, s, user_index_registry, territory=territory)
+    documents = DocumentsService(qdrant, territory=territory)
     editor = DocumentEditorService(qdrant, registry, s, territory=territory)
-    library = LibraryService(qdrant, registry)
+    library = LibraryService(qdrant, registry, territory=territory)
     tags = TagsService(qdrant)
     user_index_service = UserIndexService(
         qdrant,
