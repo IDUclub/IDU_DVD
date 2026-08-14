@@ -77,6 +77,14 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     redis_job_ttl: int = 86400  # seconds, job status TTL
 
+    # --- Urban API (territory hierarchy behind document level/territory tagging) ---
+    # Only public, unauthenticated endpoints are used, so no token is configured or sent.
+    # A mandatory dependency: an empty URL fails fast at startup (see _require_urban_api).
+    # A *runtime* outage never blocks ingestion — the document is indexed with
+    # ``tagging_status="pending"`` and the backfill job fills the tags in later.
+    urban_api_url: str = "https://urban-api.testing.idulab.ru"
+    urban_api_timeout: float = 10.0
+
     # --- Admin UI ---
     # No insecure default: /admin/ui stays unavailable until a password is configured.
     # The password also derives the HMAC key for the short-lived login cookie.
@@ -202,6 +210,22 @@ class Settings(BaseSettings):
         if scheme and "minio_secure" not in data:
             data["minio_secure"] = scheme == "https"
         return data
+
+    @model_validator(mode="after")
+    def _require_urban_api(self) -> "Settings":
+        """Refuse to start without an Urban API URL — territory tagging has no fallback.
+
+        Document level and territory are derived from the Urban API territory tree, and there
+        is no offline mode: booting without it would silently degrade every ingest to
+        ``pending`` forever. A runtime outage is a different matter and is tolerated.
+        """
+        if not (self.urban_api_url or "").strip():
+            raise ValueError(
+                "DVD_URBAN_API_URL: обязательный параметр — Urban API поставляет иерархию "
+                "территорий для тегирования документов (например "
+                "https://urban-api.testing.idulab.ru)"
+            )
+        return self
 
     @property
     def embedding_model_name(self) -> str:

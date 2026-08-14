@@ -117,6 +117,25 @@ class TestMinioEndpoint:
             Settings(minio_endpoint="s3://minio:9000")
 
 
+class TestUrbanApi:
+    """Urban API is a mandatory dependency: territory tagging has no offline mode."""
+
+    def test_default_points_at_the_idu_stand(self):
+        assert Settings().urban_api_url.startswith("https://urban-api")
+
+    def test_empty_url_refuses_to_start(self):
+        with pytest.raises(ValueError, match="DVD_URBAN_API_URL"):
+            Settings(urban_api_url="")
+
+    def test_blank_url_refuses_to_start(self):
+        with pytest.raises(ValueError, match="DVD_URBAN_API_URL"):
+            Settings(urban_api_url="   ")
+
+    def test_env_override(self, monkeypatch):
+        monkeypatch.setenv("DVD_URBAN_API_URL", "http://urban-api.local")
+        assert Settings().urban_api_url == "http://urban-api.local"
+
+
 class TestRepr:
     def test_repr_is_concise_and_mentions_key_endpoints(self):
         r = repr(Settings())
