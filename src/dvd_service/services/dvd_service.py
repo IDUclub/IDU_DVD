@@ -45,6 +45,7 @@ from src.dvd_service.dto import (
     DocumentListResponse,
     DocumentSummary,
     DocumentUpdateResponse,
+    NodeDetail,
     NodePayload,
     SearchHit,
     SearchRequest,
@@ -1272,6 +1273,10 @@ class SearchService:
             must.append(
                 FieldCondition(key="doc_id", match=MatchValue(value=req.doc_id))
             )
+        if req.parent_id:
+            must.append(
+                FieldCondition(key="parent_id", match=MatchValue(value=req.parent_id))
+            )
         if req.doc_type:
             must.append(
                 FieldCondition(key="doc_type", match=MatchValue(value=req.doc_type))
@@ -1614,6 +1619,63 @@ class LibraryService:
         ]
         text = "\n".join(f.text for f in fragments if f.text)
         return DocumentDetail(**summary.model_dump(), text=text, fragments=fragments)
+
+    @staticmethod
+    def _fragment(payload: dict, node_id: str) -> DocumentFragment:
+        """Build a fragment from a payload, injecting the point id the way ``list_by_doc`` does.
+
+        ``retrieve`` keys its result by point id but leaves the payload untouched, and the id
+        lives on the point rather than inside the payload.
+        """
+        pl = {**payload, "id": node_id}
+        return DocumentFragment(
+            **{k: pl[k] for k in DocumentFragment.model_fields if k in pl}
+        )
+
+    def get_node(
+        self,
+        node_id: str,
+        with_children: bool = True,
+        with_neighbours: bool = True,
+    ) -> NodeDetail | None:
+        """One node with its parent, children and reading-order neighbours resolved.
+
+        The step between a search hit and ``get_document`` that was missing: a caller that
+        wants the rest of a table (or the clause a fragment sits under) can widen exactly as
+        far as it needs instead of pulling every fragment of the document.
+        """
+        payload = self.qdrant.retrieve([node_id]).get(node_id)
+        if payload is None:
+            return None
+
+        child_ids = list(payload.get("child_ids") or []) if with_children else []
+        neighbour_ids = (
+            [i for i in (payload.get("prev_id"), payload.get("next_id")) if i]
+            if with_neighbours
+            else []
+        )
+        parent_id = payload.get("parent_id")
+        wanted = child_ids + neighbour_ids + ([parent_id] if parent_id else [])
+        # One round trip for every relative, however many were asked for.
+        related = self.qdrant.retrieve(wanted) if wanted else {}
+
+        def resolve(rid: str | None) -> DocumentFragment | None:
+            pl = related.get(rid) if rid else None
+            return self._fragment(pl, rid) if pl else None
+
+        children = [f for f in (resolve(cid) for cid in child_ids) if f]
+        children.sort(key=lambda f: f.order)
+
+        return NodeDetail(
+            **self._fragment(payload, node_id).model_dump(),
+            doc_id=payload.get("doc_id", ""),
+            name=payload.get("name", ""),
+            version=payload.get("version", ""),
+            parent=resolve(parent_id),
+            children=children,
+            prev=resolve(payload.get("prev_id")) if with_neighbours else None,
+            next=resolve(payload.get("next_id")) if with_neighbours else None,
+        )
 
     def find_documents(self, key: str) -> DocumentList:
         """Resolve documents by an exact lookup key / external id value."""

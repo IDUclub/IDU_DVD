@@ -197,3 +197,63 @@ class TestLifecycleAndRepr:
     def test_repr_mentions_base_and_model(self):
         r = repr(GigaEmbeddingsClient())
         assert r.startswith("GigaEmbeddingsClient(") and "base=" in r and "model=" in r
+
+
+class TestBatchSplittingOn503:
+    """Once the retries are spent, a 503 means the batch is too big rather than too early:
+    the vectorizer has already hunted for VRAM and queued the job on its own side. Halving
+    is the one lever the client has that the server doesn't — the server must answer for
+    the batch it was sent, we get to send a smaller one."""
+
+    @staticmethod
+    def _no_sleep(monkeypatch) -> None:
+        monkeypatch.setattr(
+            "src.api_clients.embeddings_client.time.sleep", lambda _seconds: None
+        )
+
+    def test_splits_the_batch_until_it_fits(self, monkeypatch):
+        self._no_sleep(monkeypatch)
+        sizes: list[int] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            size = len(json.loads(request.content)["input"])
+            sizes.append(size)
+            if size > 2:
+                return httpx.Response(503, text="GPU out of memory")
+            return _ok_handler(request)
+
+        ec = _client_with(handler)
+
+        assert ec.embed(["a", "b", "c", "d"]) == [[0.0], [1.0], [0.0], [1.0]]
+        assert sizes[0] == 4  # the whole batch, retried before being split
+        assert sizes[-2:] == [2, 2]  # then one halving was enough
+        ec.close()
+
+    def test_a_single_text_is_never_split(self, monkeypatch):
+        """Nothing left to halve — and the vectorizer splits an oversized text its side."""
+        self._no_sleep(monkeypatch)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503, text="GPU out of memory")
+
+        ec = _client_with(handler)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            ec.embed(["a"])
+        ec.close()
+
+    def test_other_5xx_are_not_split(self, monkeypatch):
+        """A 500 is the server failing, not a verdict that the batch is too large."""
+        self._no_sleep(monkeypatch)
+        sizes: list[int] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            sizes.append(len(json.loads(request.content)["input"]))
+            return httpx.Response(500, text="boom")
+
+        ec = _client_with(handler)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            ec.embed(["a", "b"])
+        assert set(sizes) == {2}  # retried whole, never halved
+        ec.close()
