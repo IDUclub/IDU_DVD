@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 
+from src.api_clients import TerritoryNotFound, UrbanApiError
 from src.dependencies import Dependencies
 from src.dvd_service.dto import (
     DocumentDetail,
@@ -80,11 +81,20 @@ async def update_document_metadata(
     body: DocumentUpdateRequest = Body(...),
     editor: DocumentEditorService = Depends(Dependencies.get_editor),
 ):
-    """Manually update metadata/tags on every fragment belonging to a document."""
+    """Manually update metadata/tags on every fragment belonging to a document.
+
+    ``territory_id`` is resolved against the Urban API before anything is written, so an
+    unknown territory answers 404 and an unreachable Urban API answers 502 — an explicit
+    manual choice is never stored half-resolved.
+    """
     try:
         return await run_in_threadpool(
             editor.update_document, doc_id, body.model_dump(exclude_unset=True)
         )
+    except TerritoryNotFound as exc:
+        raise HTTPException(404, f"территория не найдена в Urban API: {exc}")
+    except UrbanApiError as exc:
+        raise HTTPException(502, f"Urban API недоступен: {exc}")
     except KeyError as exc:
         raise HTTPException(404, str(exc.args[0]))
     except ValueError as exc:

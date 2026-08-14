@@ -129,6 +129,10 @@ class DocumentUpdateRequest(BaseModel):
     external_ids: dict | None = None
     metadata: dict | None = None
     tags: list[str] | None = None
+    # Urban API territory. Sending it rewrites the whole administrative scope (level, names,
+    # ancestor path) and marks it manual, so automatic detection will not touch it again;
+    # sending an explicit ``null`` clears the tag and hands the document back to detection.
+    territory_id: int | None = None
 
 
 class DocumentUpdateResponse(BaseModel):

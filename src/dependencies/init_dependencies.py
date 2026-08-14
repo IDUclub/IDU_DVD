@@ -196,7 +196,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     )
     search = SearchService(qdrant, s, user_index_registry)
     documents = DocumentsService(qdrant)
-    editor = DocumentEditorService(qdrant, registry, s)
+    editor = DocumentEditorService(qdrant, registry, s, territory=territory)
     library = LibraryService(qdrant, registry)
     tags = TagsService(qdrant)
     user_index_service = UserIndexService(

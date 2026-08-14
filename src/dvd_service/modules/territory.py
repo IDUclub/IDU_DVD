@@ -27,6 +27,7 @@ from src.api_clients import (
     LEVEL_MUNICIPAL,
     LEVEL_REGIONAL,
     Territory,
+    TerritoryNotFound,
     UrbanApiClient,
     UrbanApiError,
 )
@@ -190,13 +191,36 @@ class TerritoryResolver:
     def by_territory_id(
         self, territory_id: int, *, source: str = SOURCE_MANUAL
     ) -> dict:
-        """Scope for an explicitly chosen territory — the admin panel and the upload forms.
+        """Scope for an explicitly chosen territory — the admin panel's edit path.
 
         Raises :class:`UrbanApiError` (or ``TerritoryNotFound``) so the caller can answer the
         request with a real error instead of silently storing an unresolved id.
         """
         territory = self.urban.territory(int(territory_id))
         return self._scope_of(territory, source, 1.0)
+
+    def manual_scope(self, territory_id: int) -> dict:
+        """Scope for a territory supplied with an upload — outage-tolerant.
+
+        A wrong id still fails loudly (``TerritoryNotFound``): that is a caller mistake, and
+        indexing a document under a territory that does not exist helps nobody. An Urban API
+        *outage*, on the other hand, must not block the upload, so the chosen id is stored as
+        ``manual`` with a ``pending`` status and the backfill job fills in the rest of the
+        slice later — the human's choice survives either way.
+        """
+        try:
+            return self.by_territory_id(territory_id)
+        except TerritoryNotFound:
+            raise
+        except UrbanApiError as exc:
+            log.warning("manual_territory_unresolved", error=str(exc))
+            return {
+                **untagged_scope(),
+                "territory_id": int(territory_id),
+                "territory_source": SOURCE_MANUAL,
+                "level_source": SOURCE_MANUAL,
+                "tagging_error": f"Urban API недоступен: {exc}",
+            }
 
     # --- automatic detection ------------------------------------------------------------
 

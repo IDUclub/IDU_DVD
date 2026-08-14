@@ -65,7 +65,11 @@ from src.dvd_service.modules.progress import Progress
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import DocumentHead, VersionDetector
-from src.dvd_service.modules.territory import TerritoryResolver, untagged_scope
+from src.dvd_service.modules.territory import (
+    TerritoryResolver,
+    manual_scope_fields,
+    untagged_scope,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -228,6 +232,21 @@ class IngestionService:
         if self.territory is None:
             return untagged_scope()
         return self.territory.from_hints(head)
+
+    def _preset_scope(self, doc_id: str, territory_id: int | None) -> dict:
+        """The scope a write must keep regardless of what the LLM would say, or ``{}``.
+
+        Two cases, in order: a territory supplied with this very request, and a territory a
+        human set earlier on this document. Automatic detection never overrides either — but a
+        human may override a human, which is why an explicit ``territory_id`` wins over the
+        stored one. Returning ``{}`` means "nothing manual here, go ahead and detect".
+        """
+        if self.territory is None:
+            return {}
+        if territory_id is not None:
+            return self.territory.manual_scope(int(territory_id))
+        stored = self.qdrant.list_by_doc(doc_id) if doc_id else []
+        return manual_scope_fields(stored[0]) if stored else {}
 
     @staticmethod
     def _match_by_text(
@@ -430,6 +449,7 @@ class IngestionService:
         external_ids: dict | None = None,
         metadata: dict | None = None,
         effective_date: str | None = None,
+        territory_id: int | None = None,
     ) -> dict:
         doc_id = doc_id or str(uuid.uuid4())
         # Block until a GPU slot is free: the job stays "queued" while it waits, flips to
@@ -468,15 +488,17 @@ class IngestionService:
             progress.complete_stage()
 
             progress.stage("identity")
+            # Resolved before the head pass so a manually tagged document skips it entirely.
+            preset = self._preset_scope(doc_id, territory_id)
             name, version, head = self._resolve_head(
                 parts,
                 client,
                 name_override,
                 version_override,
-                need_scope_hints=self.territory is not None,
+                need_scope_hints=self.territory is not None and not preset,
             )
             version, other_versions = self._resolve_version(name, version, content_hash)
-            scope = self._resolve_scope(head)
+            scope = preset or self._resolve_scope(head)
             progress.complete_stage()
 
             # Fragment tags were produced together with the structural fields (see
@@ -635,6 +657,7 @@ class IngestionService:
         external_ids: dict | None = None,
         metadata: dict | None = None,
         effective_date: str | None = None,
+        territory_id: int | None = None,
     ) -> dict:
         """Delta update of an existing document under a new version.
 
@@ -692,15 +715,16 @@ class IngestionService:
             progress.complete_stage()
 
             progress.stage("identity")
+            preset = self._preset_scope(doc_id, territory_id)
             _, version, head = self._resolve_head(
                 parts,
                 client,
                 name,
                 version_override,
-                need_scope_hints=self.territory is not None,
+                need_scope_hints=self.territory is not None and not preset,
             )
             version, other_versions = self._resolve_version(name, version, content_hash)
-            scope = self._resolve_scope(head)
+            scope = preset or self._resolve_scope(head)
             progress.complete_stage()
 
             for order, n in enumerate(nodes):
@@ -906,6 +930,16 @@ class IngestionService:
                 task_progress=0,
                 overall_progress=10,
             )
+        # A reload wipes every stored version, taking the manually set territory with it, and
+        # the fresh ingest would then re-detect it automatically. Rescue the human's choice
+        # before the delete and hand it to the ingest as an explicit one — otherwise PUT would
+        # be a quiet way to undo an admin's work.
+        if meta.get("territory_id") is None and self.territory is not None:
+            stored = self.qdrant.points_by_name(name)
+            inherited = manual_scope_fields(stored[0]) if stored else {}
+            if inherited.get("territory_id") is not None:
+                meta["territory_id"] = inherited["territory_id"]
+
         replaced = True
         try:
             self.delete_document(name, emit_event=False)
@@ -1068,10 +1102,10 @@ class IngestionService:
                 "source_object_key": None,
                 "metadata": doc.metadata or {},
                 "uploaded_at": uploaded_at,
-                # No head pass runs on caller-supplied fragments, so there are no hints to
-                # resolve: the document is indexed untagged and the backfill job tags it from
-                # its stored text.
-                **untagged_scope(),
+                # No head pass runs on caller-supplied fragments, so an explicit territory is
+                # the only thing that can tag them here; without it the document is stored
+                # untagged and the backfill job tags it later from its own text.
+                **(self._preset_scope(doc_id, doc.territory_id) or untagged_scope()),
             }
             points = self._build_direct_points(doc, vectors, doc_id, identity)
             count = self.qdrant.upsert(points)
@@ -1153,6 +1187,14 @@ class IngestionService:
                 task_progress=0,
                 overall_progress=10,
             )
+        # Same rescue as the pipeline reload: the delete below would otherwise drop a manually
+        # set territory that the caller did not repeat in this request.
+        if doc.territory_id is None and self.territory is not None:
+            stored = self.qdrant.points_by_name(name)
+            inherited = manual_scope_fields(stored[0]) if stored else {}
+            if inherited.get("territory_id") is not None:
+                doc = doc.model_copy(update={"territory_id": inherited["territory_id"]})
+
         replaced = True
         try:
             self.delete_document(name, emit_event=False)
@@ -1740,6 +1782,9 @@ class DocumentEditorService:
         "external_ids",
         "metadata",
         "tags",
+        # Setting this expands into the whole administrative-scope slice (see below); the
+        # derived fields are not editable on their own, so the pair can never disagree.
+        "territory_id",
     }
     FRAGMENT_FIELDS = {"text", "tags", "metadata", "table_html"}
 
@@ -1748,10 +1793,24 @@ class DocumentEditorService:
         qdrant: QdrantRepository,
         registry: DocumentRegistry,
         settings: Settings,
+        territory: TerritoryResolver | None = None,
     ) -> None:
         self.qdrant = qdrant
         self.registry = registry
         self.settings = settings
+        self.territory = territory
+
+    def _expand_territory(self, territory_id) -> dict:
+        """Turn an edited ``territory_id`` into the full scope slice, marked ``manual``.
+
+        ``None`` clears the tag back to untagged/pending, which is how an admin undoes a wrong
+        territory and hands the document back to automatic detection.
+        """
+        if self.territory is None:
+            raise ValueError("territory resolver is not configured")
+        if territory_id in (None, ""):
+            return untagged_scope()
+        return self.territory.by_territory_id(int(territory_id))
 
     def update_document(self, doc_id: str, updates: dict) -> DocumentUpdateResponse:
         points = self.qdrant.list_by_doc(doc_id)
@@ -1760,6 +1819,9 @@ class DocumentEditorService:
         changes = {k: v for k, v in updates.items() if k in self.DOCUMENT_FIELDS}
         if not changes:
             raise ValueError("no editable fields supplied")
+        if "territory_id" in changes:
+            # A document's scope is one fact spread over several fields — write them together.
+            changes.update(self._expand_territory(changes.pop("territory_id")))
 
         first = points[0]
         if "external_ids" in changes:
