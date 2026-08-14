@@ -39,6 +39,7 @@ from src.dvd_service.services.dvd_service import (
     SearchService,
     TagsService,
 )
+from src.dvd_service.services.tagging_backfill import TaggingBackfillService
 from src.dvd_service.services.user_index_service import UserIndexService
 from src.system_service.controllers import SystemController
 
@@ -199,6 +200,9 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     editor = DocumentEditorService(qdrant, registry, s, territory=territory)
     library = LibraryService(qdrant, registry, territory=territory)
     tags = TagsService(qdrant)
+    tagging_backfill = TaggingBackfillService(
+        qdrant, registry, territory, version_detector, jobs, s
+    )
     user_index_service = UserIndexService(
         qdrant,
         redis,
@@ -235,6 +239,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         editor=editor,
         library=library,
         tags=tags,
+        tagging_backfill=tagging_backfill,
         user_index_registry=user_index_registry,
         user_index_service=user_index_service,
         system=system,

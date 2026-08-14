@@ -35,6 +35,7 @@ from src.dvd_service.services.dvd_service import (
     SearchService,
     TagsService,
 )
+from src.dvd_service.services.tagging_backfill import TaggingBackfillService
 from src.dvd_service.services.user_index_service import UserIndexService
 from src.system_service.controllers import SystemController
 
@@ -74,6 +75,7 @@ class Dependencies:
         "editor",
         "library",
         "tags",
+        "tagging_backfill",
         "user_index_registry",
         "user_index_service",
         "system",
@@ -105,6 +107,7 @@ class Dependencies:
     editor: DocumentEditorService
     library: LibraryService
     tags: TagsService
+    tagging_backfill: TaggingBackfillService
     user_index_registry: UserIndexRegistry
     user_index_service: UserIndexService
     system: SystemController
@@ -142,6 +145,7 @@ class Dependencies:
         editor: DocumentEditorService,
         library: LibraryService,
         tags: TagsService,
+        tagging_backfill: TaggingBackfillService,
         user_index_registry: UserIndexRegistry,
         user_index_service: UserIndexService,
         system: SystemController,
@@ -171,6 +175,7 @@ class Dependencies:
         self.editor = editor
         self.library = library
         self.tags = tags
+        self.tagging_backfill = tagging_backfill
         self.user_index_registry = user_index_registry
         self.user_index_service = user_index_service
         self.system = system
@@ -291,6 +296,10 @@ class Dependencies:
     @classmethod
     def get_tags(cls) -> TagsService:
         return cls.instance().tags
+
+    @classmethod
+    def get_tagging_backfill(cls) -> TaggingBackfillService:
+        return cls.instance().tagging_backfill
 
     @classmethod
     def get_user_index_registry(cls) -> UserIndexRegistry:

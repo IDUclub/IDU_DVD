@@ -85,6 +85,16 @@ class Settings(BaseSettings):
     urban_api_url: str = "https://urban-api.testing.idulab.ru"
     urban_api_timeout: float = 10.0
 
+    # --- Tagging backfill (documents left pending by an outage or an unclear document) ---
+    # The sweep runs shortly after startup (not during it — it makes LLM and HTTP calls),
+    # then on a timer, and on demand from the admin panel. The attempt cap keeps a document
+    # only a human can resolve from burning LLM time forever.
+    tagging_backfill_delay: float = 30.0  # seconds after startup before the first sweep
+    tagging_backfill_interval: float = (
+        3600.0  # seconds between sweeps; 0 disables the timer
+    )
+    tagging_max_attempts: int = 5
+
     # --- Admin UI ---
     # No insecure default: /admin/ui stays unavailable until a password is configured.
     # The password also derives the HMAC key for the short-lived login cookie.
