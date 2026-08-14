@@ -93,8 +93,13 @@ well as `kind` (`text`/`table`) and `table_html`.
 
 ## Stage 5. Version, tags, vectorization, ingestion
 
-- `VersionDetector.detect(parts, client)` determines `name` (short designation) and `version` (full
-  revision, including amendments).
+- `VersionDetector.detect_head(parts, client)` reads the document head (title page, foreword,
+  imprint) once and returns five fields: `name` (short designation), `version` (full revision,
+  including amendments), and the administrative-scope hints `level` / `territory` / `region`. It is
+  one structured-output call, not two — the head is where both facts are stated. When name and
+  version are supplied manually *and* a `territory_id` was given, the call is skipped entirely.
+- The scope hints are resolved against the Urban API territory tree (`TerritoryResolver`) — see
+  "Administrative scope" below.
 - Fragment tags (key topics and terms) are **not** a separate LLM pass: `StructureTagger.tag` emits
   them alongside the structural fields in Stage 2, and they ride the hierarchy onto each node, so
   Stage 5 just reads `node["tags"]`.
@@ -116,6 +121,45 @@ well as `kind` (`text`/`table`) and `table_html`.
   upload, `DocumentUpdated` for a delta update or full reload, `DocumentDeleted` for a deletion —
   so downstream services can react to every change of the stored corpus (see
   `docs/en/configuration.md`).
+
+## Administrative scope (document level and territory)
+
+Every fragment carries the document's administrative scope, so a caller can filter by it and cite
+it: `document_level` (`federal` / `regional` / `municipal`), `territory_id` / `territory_name` /
+`territory_type_id` / `territory_type_name`, and `territory_path` — the territory's ancestor chain,
+root first (`[12639, 1, 54]`). It is a document-level fact: identical on every fragment and shared
+by every version of a document (they share one `doc_id`).
+
+**The level is always derived from the territory**, from its depth in the Urban API tree (1 =
+"Россия" → federal, 2 = subject of the federation → regional, deeper → municipal), never from
+`territory_type`: a type does not determine depth ("Город" is a level-3 municipality in one place
+and a settlement inside one in another), and "Город федерального значения" (Moscow, Saint
+Petersburg) is a *region* despite its name. Federal documents point at "Россия" (12639), so a level
+without a territory does not exist.
+
+Resolution order:
+
+1. an explicit `territory_id` from the request (upload form, direct-ingestion DTO, `PATCH
+   /library/documents/{doc_id}`) — recorded as `manual`;
+2. a `manual` territory already stored on the document — carried over on a new version and on a
+   full reload (a reload rescues it before wiping the document, so `PUT` cannot silently undo an
+   admin's work);
+3. automatic matching from the head hints: `federal` → "Россия"; `regional` → matched against the
+   89 subjects; `municipal` → found through the Urban API's server-side name search and narrowed by
+   the region hint.
+
+**An ambiguous name is not resolved.** "Кировский район" exists in a dozen regions; the document is
+stored with `tagging_status="pending"` and the reason in `tagging_error` instead of a plausible
+guess. The same happens when the Urban API is unreachable — ingestion is never blocked by it.
+
+`territory_source` / `level_source` (`manual` / `auto` / `unset`) and `territory_confidence` record
+where the values came from. **Automatic detection never overwrites `manual`**; an explicit
+`territory_id` may override an earlier one (a human may override a human).
+
+Pending documents are picked up by `TaggingBackfillService`: ~30 s after startup, then hourly, and
+on demand via `POST /tagging/backfill`. It re-runs the head pass over the stored fragment text (no
+source file needed), completes a manually chosen territory without reconsidering it, and gives up
+on a document after `DVD_TAGGING_MAX_ATTEMPTS`, recording the reason.
 
 ## Stage 5.5. Reference extraction and linking
 

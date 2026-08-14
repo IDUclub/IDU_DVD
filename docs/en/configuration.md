@@ -95,6 +95,31 @@ namespaced.
 | `DVD_REDIS_URL` | `redis://localhost:6379/0` | Redis address |
 | `DVD_REDIS_JOB_TTL` | `86400` | job status TTL, seconds |
 
+### Urban API (document level and territory)
+
+The territory tree behind the administrative scope of every document (see `docs/en/pipeline.md`).
+Only public, unauthenticated endpoints are used — `/api/v1/territory_types`,
+`/api/v1/territories_without_geometry`, `/api/v1/territory/{id}` — so no token is configured or
+sent, and DVD reads nothing but the catalogue.
+
+**Mandatory in configuration, tolerant at runtime.** An empty `DVD_URBAN_API_URL` fails the
+settings validation and the service refuses to start: tagging has no offline mode, and booting
+without it would silently degrade every ingest forever. A runtime *outage* is different — the
+document is indexed with `tagging_status="pending"` and the backfill job tags it later, so a stand
+that is down never blocks uploads.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DVD_URBAN_API_URL` | `https://urban-api.testing.idulab.ru` | Urban API base URL; empty value fails startup |
+| `DVD_URBAN_API_TIMEOUT` | `10.0` | request timeout, seconds (3 retries with backoff on 5xx/network errors) |
+| `DVD_TAGGING_BACKFILL_DELAY` | `30` | seconds after startup before the first backfill sweep |
+| `DVD_TAGGING_BACKFILL_INTERVAL` | `3600` | seconds between sweeps; `0` disables the timer |
+| `DVD_TAGGING_MAX_ATTEMPTS` | `5` | automatic attempts per document before it is left to a human |
+
+The sweep deliberately runs *after* startup rather than during it (it makes LLM and HTTP calls),
+and the timer matters as much as the startup run: without it, a document that arrived during an
+outage would stay untagged until someone restarted the service.
+
 ### MinIO (original source files)
 
 Every upload/PATCH/PUT on `/documents` and `/user-documents` persists the original file to MinIO,

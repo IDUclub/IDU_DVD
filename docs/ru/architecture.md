@@ -15,7 +15,8 @@
 | FastAPI | HTTP API, фоновые задачи |
 | Qdrant | векторная база; отдельная коллекция под каждое векторное пространство (namespacing), payload-индексы |
 | Redis | статусы задач парсинга, реестр документов и версий (неймспейсится по коллекции), outbox Kafka-событий |
-| Ollama | LLM (разметка, мердж, теги, версия); резервный провайдер эмбеддингов |
+| Ollama | LLM (разметка, мердж, теги, «голова» документа); резервный провайдер эмбеддингов |
+| Urban API | дерево территорий для тегирования уровня и территории документа; только публичные эндпоинты, без токена. Обязателен в конфигурации (пустой URL роняет старт), терпим в рантайме (при сбое документы остаются `pending` до дотегирования) |
 | giga-vectorizer | эмбеддинги (Giga-Embeddings-instruct, 2048-d) через OpenAI-совместимый `/v1/embeddings`; только CUDA, отдельный репозиторий |
 | Kafka (otteroad) | опциональная публикация событий жизненного цикла документов (`DocumentProcessed` / `DocumentUpdated` / `DocumentDeleted`, плюс `DirectDocumentProcessed` / `DirectDocumentUpdated` для прямой загрузки) для смежных сервисов |
 | unstructured (python-docx) | извлечение текста и таблиц из `.docx` |
@@ -53,6 +54,7 @@ Dependencies(
 |------|------------|
 | `src/common/config/app_config.py` | `Settings` — конфигурация (pydantic-settings) |
 | `src/api_clients/ollama_client.py` | `OllamaClient`, `OllamaError` |
+| `src/api_clients/urban_api_client.py` | `UrbanApiClient`, `Territory`, маппинг уровня |
 | `src/api_clients/embeddings_client.py` | `GigaEmbeddingsClient`, `EmbeddingsError`, `create_embedder` (выбор провайдера) |
 | `src/common/db/qdrant_client.py` | `QdrantRepository` |
 | `src/common/db/redis_client.py` | `RedisClient`, `JobStore`, `DocumentRegistry` |
@@ -61,8 +63,10 @@ Dependencies(
 | `src/dvd_service/modules/structure.py` | `StructureTagger` (этапы 2, 3, 3.5) |
 | `src/dvd_service/modules/hierarchy.py` | `HierarchyBuilder` (этап 4 и развёртка узлов) |
 | `src/dvd_service/modules/tagging.py` | `Tagger`, `VersionDetector` |
+| `src/dvd_service/modules/territory.py` | `TerritoryResolver` — территория Urban API и уровень документа |
 | `src/dvd_service/modules/windowing.py` | `make_windows`, `reconcile` |
 | `src/dvd_service/services/dvd_service.py` | `IngestionService`, `SearchService`, `DocumentsService`, `LibraryService` |
+| `src/dvd_service/services/tagging_backfill.py` | `TaggingBackfillService` — дотегирование документов в статусе `pending` |
 | `src/dvd_service/modules/identity.py` | хелперы идентичности документа (`normalize_key`, `make_version_id`, `make_span_id`, `build_aliases`, `build_lookup_keys`) |
 | `src/dvd_service/dto/` | `NodePayload` (`node_payload.py`) и DTO запросов/ответов (`upload.py`, `search.py`, `document.py`, `reference.py`) |
 | `src/dvd_service/routers/` | HTTP-эндпоинты (`documents.py`, `search.py`, `library.py`) |
@@ -174,6 +178,15 @@ ASGI-приложение MCP-сервера (`src/mcp_server/app.py`) монт�
 | `aliases` | list[str] | человекочитаемые обозначения (имя + значения внешних id) |
 | `lookup_keys` | list[str] | ключи точного поиска (нормализованное имя + формы внешних id) |
 | `status` | str | `active` / `archived` |
+| `document_level` | str | уровень действия: `federal` / `regional` / `municipal` — выводится из территории |
+| `territory_id` | int | территория Urban API, на которую распространяется документ (federal → «Россия», 12639) |
+| `territory_name` | str | название территории |
+| `territory_type_id` / `territory_type_name` | int / str | тип территории Urban API (только для отображения — уровень он не определяет) |
+| `territory_path` | list[int] | цепочка предков от корня (`[12639, 1, 54]`) — превращает фильтр по территории в одно индексированное условие |
+| `level_source` / `territory_source` | str | `manual` / `auto` / `unset` — автоопределение никогда не перезаписывает `manual` |
+| `territory_confidence` | float | уверенность автоподбора |
+| `tagging_status` | str | `ok` / `pending` (ожидает дотегирования) |
+| `tagging_attempts` / `tagging_error` | int / str | сколько было автоматических попыток и почему последняя не удалась |
 | `effective_date` | str | дата вступления в силу, если задана |
 | `supersedes` / `superseded_by` | list[str] | связи жизненного цикла версий (зарезервировано) |
 | `source` | str | имя исходного файла |
