@@ -1,3 +1,9 @@
+## v0.11.1 (2026-08-16)
+
+### Refactor
+
+- scope user documents by project (#44)
+
 ## v0.11.0 (2026-08-05)
 
 ### Feat
