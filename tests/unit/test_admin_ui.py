@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.admin_service.router import router
+from src.api_clients import Territory, UrbanApiError
 from src.common.config import Settings
 from src.dependencies import Dependencies
 
@@ -59,3 +60,78 @@ def test_static_assets_are_served_locally():
         assert "--accent" in css.text and "loadDocuments" in js.text
         assert "overall-progress" in css.text and "task-progress" in css.text
         assert "uploadRequest" in js.text and "overall_progress" in js.text
+
+
+class FakeUrbanApi:
+    """Stands in for the Urban API behind the panel's territory autocomplete."""
+
+    def __init__(self, broken: bool = False):
+        self.broken = broken
+        self.queries = []
+
+    def find_by_name(self, query, limit=20, **_kwargs):
+        self.queries.append((query, limit))
+        if self.broken:
+            raise UrbanApiError("connection refused")
+        return [
+            Territory(
+                54,
+                "Выборгский муниципальный район",
+                3,
+                2,
+                "Муниципальное образование",
+                1,
+                "Ленинградская область",
+            )
+        ]
+
+
+def _authenticated_client(urban_api) -> TestClient:
+    client = _client()
+    Dependencies.reset()
+    fields = {name: object() for name in Dependencies._FIELDS}
+    fields["urban_api"] = urban_api
+    Dependencies().set(**fields)
+    client.post("/admin/ui/login", data={"password": "secret"})
+    return client
+
+
+def test_territory_search_requires_a_session():
+    with _client() as client:
+        response = client.get("/admin/ui/territories?query=Выборг")
+        assert response.status_code == 401
+
+
+def test_territory_search_returns_candidates_with_their_parent():
+    """The parent is what lets an admin tell two identically named districts apart."""
+    urban_api = FakeUrbanApi()
+    with _authenticated_client(urban_api) as client:
+        response = client.get("/admin/ui/territories?query=Выборг")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["count"] == 1
+        assert body["territories"][0]["territory_id"] == 54
+        assert body["territories"][0]["parent_name"] == "Ленинградская область"
+        assert body["territories"][0]["document_level"] == "municipal"
+    Dependencies.reset()
+
+
+def test_territory_search_reports_an_urban_api_outage():
+    with _authenticated_client(FakeUrbanApi(broken=True)) as client:
+        response = client.get("/admin/ui/territories?query=Выборг")
+        assert response.status_code == 502
+        assert "Urban API" in response.json()["detail"]
+    Dependencies.reset()
+
+
+def test_panel_exposes_the_scope_controls():
+    with _client() as client:
+        page = client.get("/admin/ui/assets/admin.js").text
+        markup = (
+            client.post("/admin/ui/login", data={"password": "secret"})
+            and client.get("/admin/ui").text
+        )
+        assert "level-filter" in markup and "territory-filter" in markup
+        assert "pending-filter" in markup and "run-backfill" in markup
+        assert "meta-territory" in page and "/tagging/backfill" in page
+        assert "/admin/ui/territories" in page

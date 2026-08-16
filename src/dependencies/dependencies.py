@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.api_clients import UrbanApiClient
 from src.broker.outbox import EventOutbox
 from src.broker.publisher import KafkaPublisher
 from src.common.config import Settings
@@ -25,6 +26,7 @@ from src.dvd_service.modules.hierarchy import HierarchyBuilder
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import VersionDetector
+from src.dvd_service.modules.territory import TerritoryResolver
 from src.dvd_service.services.dvd_service import (
     DocumentEditorService,
     DocumentsService,
@@ -33,6 +35,7 @@ from src.dvd_service.services.dvd_service import (
     SearchService,
     TagsService,
 )
+from src.dvd_service.services.tagging_backfill import TaggingBackfillService
 from src.dvd_service.services.user_index_service import UserIndexService
 from src.system_service.controllers import SystemController
 
@@ -60,6 +63,8 @@ class Dependencies:
         "structure",
         "hierarchy",
         "version_detector",
+        "urban_api",
+        "territory",
         "reference_extractor",
         "reference_resolver",
         "outbox",
@@ -70,6 +75,7 @@ class Dependencies:
         "editor",
         "library",
         "tags",
+        "tagging_backfill",
         "user_index_registry",
         "user_index_service",
         "system",
@@ -89,6 +95,8 @@ class Dependencies:
     structure: StructureTagger
     hierarchy: HierarchyBuilder
     version_detector: VersionDetector
+    urban_api: UrbanApiClient
+    territory: TerritoryResolver
     reference_extractor: ReferenceExtractor
     reference_resolver: ReferenceResolver
     outbox: EventOutbox
@@ -99,6 +107,7 @@ class Dependencies:
     editor: DocumentEditorService
     library: LibraryService
     tags: TagsService
+    tagging_backfill: TaggingBackfillService
     user_index_registry: UserIndexRegistry
     user_index_service: UserIndexService
     system: SystemController
@@ -124,6 +133,8 @@ class Dependencies:
         structure: StructureTagger,
         hierarchy: HierarchyBuilder,
         version_detector: VersionDetector,
+        urban_api: UrbanApiClient,
+        territory: TerritoryResolver,
         reference_extractor: ReferenceExtractor,
         reference_resolver: ReferenceResolver,
         outbox: EventOutbox,
@@ -134,6 +145,7 @@ class Dependencies:
         editor: DocumentEditorService,
         library: LibraryService,
         tags: TagsService,
+        tagging_backfill: TaggingBackfillService,
         user_index_registry: UserIndexRegistry,
         user_index_service: UserIndexService,
         system: SystemController,
@@ -151,6 +163,8 @@ class Dependencies:
         self.structure = structure
         self.hierarchy = hierarchy
         self.version_detector = version_detector
+        self.urban_api = urban_api
+        self.territory = territory
         self.reference_extractor = reference_extractor
         self.reference_resolver = reference_resolver
         self.outbox = outbox
@@ -161,6 +175,7 @@ class Dependencies:
         self.editor = editor
         self.library = library
         self.tags = tags
+        self.tagging_backfill = tagging_backfill
         self.user_index_registry = user_index_registry
         self.user_index_service = user_index_service
         self.system = system
@@ -235,6 +250,14 @@ class Dependencies:
         return cls.instance().version_detector
 
     @classmethod
+    def get_urban_api(cls) -> UrbanApiClient:
+        return cls.instance().urban_api
+
+    @classmethod
+    def get_territory(cls) -> TerritoryResolver:
+        return cls.instance().territory
+
+    @classmethod
     def get_reference_extractor(cls) -> ReferenceExtractor:
         return cls.instance().reference_extractor
 
@@ -273,6 +296,10 @@ class Dependencies:
     @classmethod
     def get_tags(cls) -> TagsService:
         return cls.instance().tags
+
+    @classmethod
+    def get_tagging_backfill(cls) -> TaggingBackfillService:
+        return cls.instance().tagging_backfill
 
     @classmethod
     def get_user_index_registry(cls) -> UserIndexRegistry:

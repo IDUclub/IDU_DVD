@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from src.dvd_service.dto.reference import DocumentRef
 
-PAYLOAD_SCHEMA_VERSION = 2
+PAYLOAD_SCHEMA_VERSION = 3
 
 
 class NodePayload(BaseModel):
@@ -55,10 +55,38 @@ class NodePayload(BaseModel):
         default_factory=list
     )  # exact-match keys (normalized name + external id forms)
 
+    # --- administrative scope (Urban API territory tree) ---
+    # A document-level fact: every fragment of a document carries the same values, and an
+    # edit applies to all versions at once (they share ``doc_id``). ``document_level`` is
+    # always derived from the territory's depth in the tree, never from its type, so the two
+    # can never disagree. Federal documents point at "Россия" (12639), so a level without a
+    # territory does not exist.
+    document_level: str | None = None  # federal | regional | municipal
+    territory_id: int | None = None  # Urban API territory id
+    territory_name: str | None = None
+    territory_type_id: int | None = None  # Urban API territory_type reference
+    territory_type_name: str | None = None  # human-readable, for the admin UI
+    territory_path: list[int] = Field(
+        default_factory=list
+    )  # ancestor ids root-first incl. self ([12639, 1, 54]) — "in force in X" is one MatchAny
+
+    # Provenance of the two fields above. ``manual`` is never overwritten by automatic
+    # detection (a human may still override a human); ``unset`` means nothing was determined.
+    level_source: str = "unset"  # manual | auto | unset
+    territory_source: str = "unset"  # manual | auto | unset
+    territory_confidence: float | None = None  # automatic match confidence, 0..1
+    tagging_status: str = (
+        "pending"  # ok | pending (pending = awaiting the backfill job)
+    )
+    tagging_attempts: int = 0  # automatic attempts made, so a stuck document is visible
+    tagging_error: str | None = None  # why the last attempt failed
+
     # --- user-scoped index (None for the shared/regular document corpus) ---
-    user_id: str | None = None  # root of the isolation key (user_id, scenario_id)
-    project_id: str | None = None  # filter-only tag, not an isolation boundary
-    scenario_id: str | None = None  # scenario this document was uploaded into
+    user_id: str | None = None  # owner side of the (user_id, project_id) isolation key
+    project_id: str | None = None  # project side of the isolation key
+    scenario_id: str | None = (
+        None  # legacy payload compatibility; new writes leave it empty
+    )
 
     # --- version lifecycle (general-purpose) ---
     status: str = "active"  # active | archived

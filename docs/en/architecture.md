@@ -15,7 +15,8 @@ a fallback provider — `DVD_EMBEDDINGS_PROVIDER`).
 | FastAPI | HTTP API, background tasks |
 | Qdrant | vector database; one collection per embedding space (namespaced), payload indexes |
 | Redis | parsing job statuses, document and version registry (namespaced per collection), Kafka event outbox |
-| Ollama | LLM (markup, merge, tags, version); fallback embeddings provider |
+| Ollama | LLM (markup, merge, tags, document head); fallback embeddings provider |
+| Urban API | territory tree for document tagging plus scenario-to-project resolution for user documents. A token is optional for private projects. Mandatory in configuration (an empty URL fails startup) |
 | giga-vectorizer | embeddings (Giga-Embeddings-instruct, 2048-d) via OpenAI-compatible `/v1/embeddings`; CUDA-only, separate repository |
 | Kafka (otteroad) | optional publishing of document lifecycle events (`DocumentProcessed` / `DocumentUpdated` / `DocumentDeleted`, plus `DirectDocumentProcessed` / `DirectDocumentUpdated` for direct ingestion) for downstream services |
 | unstructured (python-docx) | text and table extraction from `.docx` |
@@ -52,6 +53,7 @@ Dependencies(
 |------|----------|
 | `src/common/config/app_config.py` | `Settings` — configuration (pydantic-settings) |
 | `src/api_clients/ollama_client.py` | `OllamaClient`, `OllamaError` |
+| `src/api_clients/urban_api_client.py` | `UrbanApiClient`, `Territory`, the level mapping |
 | `src/api_clients/embeddings_client.py` | `GigaEmbeddingsClient`, `EmbeddingsError`, `create_embedder` (provider selection) |
 | `src/common/db/qdrant_client.py` | `QdrantRepository` |
 | `src/common/db/redis_client.py` | `RedisClient`, `JobStore`, `DocumentRegistry` |
@@ -60,8 +62,10 @@ Dependencies(
 | `src/dvd_service/modules/structure.py` | `StructureTagger` (Stages 2, 3, 3.5) |
 | `src/dvd_service/modules/hierarchy.py` | `HierarchyBuilder` (Stage 4 and node flattening) |
 | `src/dvd_service/modules/tagging.py` | `Tagger`, `VersionDetector` |
+| `src/dvd_service/modules/territory.py` | `TerritoryResolver` — Urban API territory + level of a document |
 | `src/dvd_service/modules/windowing.py` | `make_windows`, `reconcile` |
 | `src/dvd_service/services/dvd_service.py` | `IngestionService`, `SearchService`, `DocumentsService`, `LibraryService` |
+| `src/dvd_service/services/tagging_backfill.py` | `TaggingBackfillService` — tags documents left `pending` |
 | `src/dvd_service/modules/identity.py` | document identity helpers (`normalize_key`, `make_version_id`, `make_span_id`, `build_aliases`, `build_lookup_keys`) |
 | `src/dvd_service/dto/` | `NodePayload` (`node_payload.py`) and request/response DTOs (`upload.py`, `search.py`, `document.py`, `reference.py`) |
 | `src/dvd_service/routers/` | HTTP endpoints (`documents.py`, `search.py`, `library.py`) |
@@ -169,6 +173,15 @@ vectorized. Payload contents (`NodePayload`):
 | `aliases` | list[str] | human-readable designations (name + external id values) |
 | `lookup_keys` | list[str] | exact-match keys (normalized name + external id forms) for resolution |
 | `status` | str | `active` / `archived` |
+| `document_level` | str | administrative level: `federal` / `regional` / `municipal` — derived from the territory |
+| `territory_id` | int | Urban API territory the document applies to (federal → "Россия", 12639) |
+| `territory_name` | str | territory name |
+| `territory_type_id` / `territory_type_name` | int / str | Urban API territory type (display only — it does not determine the level) |
+| `territory_path` | list[int] | ancestor ids, root first (`[12639, 1, 54]`) — makes a territory filter one indexed condition |
+| `level_source` / `territory_source` | str | `manual` / `auto` / `unset` — automatic detection never overwrites `manual` |
+| `territory_confidence` | float | automatic match confidence |
+| `tagging_status` | str | `ok` / `pending` (awaiting the backfill) |
+| `tagging_attempts` / `tagging_error` | int / str | automatic attempts made and why the last one failed |
 | `effective_date` | str | effective date, when supplied |
 | `supersedes` / `superseded_by` | list[str] | version-lifecycle links (reserved) |
 | `source` | str | source file name |

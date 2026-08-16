@@ -11,12 +11,36 @@ from src.api_clients.embeddings_client import (  # noqa: F401
     probe_embedding_dim,
 )
 from src.api_clients.ollama_client import OllamaClient, OllamaError  # noqa: F401
+from src.api_clients.urban_api_client import (  # noqa: F401
+    COUNTRY_TERRITORY_ID,
+    DOCUMENT_LEVELS,
+    LEVEL_FEDERAL,
+    LEVEL_MUNICIPAL,
+    LEVEL_REGIONAL,
+    ScenarioNotFound,
+    Territory,
+    TerritoryNotFound,
+    UrbanApiClient,
+    UrbanApiError,
+    normalized_level,
+)
 
 __all__ = [
+    "COUNTRY_TERRITORY_ID",
+    "DOCUMENT_LEVELS",
+    "LEVEL_FEDERAL",
+    "LEVEL_MUNICIPAL",
+    "LEVEL_REGIONAL",
     "EmbeddingsError",
     "GigaEmbeddingsClient",
     "OllamaClient",
     "OllamaError",
+    "Territory",
+    "TerritoryNotFound",
+    "ScenarioNotFound",
+    "UrbanApiClient",
+    "UrbanApiError",
     "create_embedder",
+    "normalized_level",
     "probe_embedding_dim",
 ]

@@ -1,9 +1,8 @@
 """User-scoped document indices: create/list/delete indices, and the per-request factory that
 builds a scoped ``IngestionService`` for uploading/updating/deleting documents inside one.
 
-An index is keyed by ``(user_id, scenario_id)``, tagged with a mandatory ``project_id`` (a filter
-tag, not an isolation boundary), and may declare a ``parent_scenario_id`` for live/dynamic
-inheritance (resolved at read time via ``UserIndexRegistry.ancestor_chain``, never copied).
+Document data is keyed by ``(user_id, project_id)``.  Scenario-shaped index records remain as a
+compatibility catalogue for older clients, but never define the Qdrant or document-registry scope.
 """
 
 from __future__ import annotations
@@ -46,8 +45,45 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
-def _registry_prefix(settings: Settings, user_id: str, scenario_id: str) -> str:
-    return f"{settings.registry_prefix}:user:{user_id}:{scenario_id}"
+def _registry_prefix(settings: Settings, user_id: str, project_id: str) -> str:
+    return f"{settings.registry_prefix}:user:{user_id}:project:{project_id}"
+
+
+def _migrate_legacy_registry(
+    redis: RedisClient,
+    settings: Settings,
+    user_id: str,
+    scenario_id: str | None,
+    project_id: str,
+) -> None:
+    """Merge one legacy scenario registry into the project registry, once.
+
+    Qdrant points written by the previous model already carry ``project_id``. Redis metadata was
+    the remaining scenario-scoped piece; copying it lazily keeps duplicate detection and delta
+    updates working immediately after a rolling deployment without rewriting Qdrant.
+    """
+    if not scenario_id:
+        return
+    old_prefix = f"{settings.registry_prefix}:user:{user_id}:{scenario_id}"
+    new_prefix = _registry_prefix(settings, user_id, project_id)
+    marker = f"{new_prefix}:migrated_scenario:{scenario_id}"
+    if redis.r.exists(marker):
+        return
+    for old_key in redis.r.scan_iter(match=f"{old_prefix}:*"):
+        suffix = old_key[len(old_prefix) :]
+        new_key = f"{new_prefix}{suffix}"
+        key_type = redis.r.type(old_key)
+        if key_type == "string":
+            redis.r.setnx(new_key, redis.r.get(old_key))
+        elif key_type == "set":
+            values = redis.r.smembers(old_key)
+            if values:
+                redis.r.sadd(new_key, *values)
+        elif key_type == "list":
+            values = redis.r.lrange(old_key, 0, -1)
+            if values and not redis.r.exists(new_key):
+                redis.r.rpush(new_key, *values)
+    redis.r.set(marker, "1")
 
 
 def build_user_ingestion(
@@ -66,7 +102,7 @@ def build_user_ingestion(
     outbox: EventOutbox | None,
     user_id: str,
     project_id: str,
-    scenario_id: str,
+    scenario_id: str | None = None,
 ) -> IngestionService:
     """Build a per-request ``IngestionService`` scoped to one user document index.
 
@@ -77,15 +113,21 @@ def build_user_ingestion(
     reference-linking disabled (that stage resolves cross-document links against the shared,
     unscoped collection — not meaningful, and not safe, for ad hoc user uploads).
     """
+    _migrate_legacy_registry(redis, settings, user_id, scenario_id, project_id)
     scoped_registry = DocumentRegistry(
-        redis, prefix=_registry_prefix(settings, user_id, scenario_id)
+        redis, prefix=_registry_prefix(settings, user_id, project_id)
     )
     scoped_qdrant = ScopedQdrantRepository(
         qdrant, user_id=user_id, project_id=project_id, scenario_id=scenario_id
     )
     scoped_settings = settings.model_copy(update={"enable_reference_linking": False})
     scoped_outbox = (
-        ScopedEventOutbox(outbox, user_id=user_id, scenario_id=scenario_id)
+        ScopedEventOutbox(
+            outbox,
+            user_id=user_id,
+            project_id=project_id,
+            scenario_id=scenario_id,
+        )
         if outbox is not None
         else None
     )
@@ -106,7 +148,11 @@ def build_user_ingestion(
 
 
 def build_user_ingestion_from_deps(
-    deps: "Dependencies", *, user_id: str, project_id: str, scenario_id: str
+    deps: "Dependencies",
+    *,
+    user_id: str,
+    project_id: str,
+    scenario_id: str | None = None,
 ) -> IngestionService:
     """Convenience wrapper around ``build_user_ingestion`` reading from the ``Dependencies``
     singleton — the single implementation shared by the REST router and the MCP tools.
@@ -131,8 +177,10 @@ def build_user_ingestion_from_deps(
 
 
 class UserIndexService:
-    """Create/list/delete user document indices (the `(user_id, scenario_id)` buckets themselves,
-    not the documents inside them — those go through the per-request `IngestionService`).
+    """Manage legacy scenario index records over project-scoped document storage.
+
+    Create/list remain compatible with existing callers. Deleting any record removes the whole
+    ``(user_id, project_id)`` document scope and every scenario record pointing to that project.
     """
 
     def __init__(
@@ -159,8 +207,8 @@ class UserIndexService:
     def _to_info(record: dict, document_count: int) -> UserIndexInfo:
         return UserIndexInfo(**record, document_count=document_count)
 
-    def _document_count(self, user_id: str, scenario_id: str) -> int:
-        flt = Filter(must=user_scope_conditions(user_id, [scenario_id]))
+    def _document_count(self, user_id: str, project_id: str) -> int:
+        flt = Filter(must=user_scope_conditions(user_id, [project_id]))
         return self.qdrant.count(flt)
 
     def create_index(
@@ -178,7 +226,7 @@ class UserIndexService:
     def list_indices(self, user_id: str) -> UserIndexListResponse:
         records = self.index_registry.list_for_user(user_id)
         indices = [
-            self._to_info(r, self._document_count(user_id, r["scenario_id"]))
+            self._to_info(r, self._document_count(user_id, r["project_id"]))
             for r in records
         ]
         return UserIndexListResponse(count=len(indices), indices=indices)
@@ -191,9 +239,11 @@ class UserIndexService:
         top of ``document.events`` (e.g. NormGraph) has no way to learn a whole index was wiped in
         one call, since this bypasses ``IngestionService.delete_document``'s own per-document event.
         """
-        if self.index_registry.get(user_id, scenario_id) is None:
+        record = self.index_registry.get(user_id, scenario_id)
+        if record is None:
             raise KeyError(f"index not found: {user_id}/{scenario_id}")
-        flt = Filter(must=user_scope_conditions(user_id, [scenario_id]))
+        project_id = str(record["project_id"])
+        flt = Filter(must=user_scope_conditions(user_id, [project_id]))
         payloads = self.qdrant.scroll_payloads(flt)
         source_keys = {
             pl["source_object_key"] for pl in payloads if pl.get("source_object_key")
@@ -212,12 +262,29 @@ class UserIndexService:
         for key in source_keys:
             self.storage.delete(key)
         DocumentRegistry(
-            self.redis, prefix=_registry_prefix(self.settings, user_id, scenario_id)
+            self.redis, prefix=_registry_prefix(self.settings, user_id, project_id)
         ).wipe()
-        self.index_registry.delete(user_id, scenario_id)
+        project_records = [
+            item
+            for item in self.index_registry.list_for_user(user_id)
+            if str(item.get("project_id")) == project_id
+        ]
+        for item in project_records:
+            legacy_scenario_id = item["scenario_id"]
+            DocumentRegistry(
+                self.redis,
+                prefix=(
+                    f"{self.settings.registry_prefix}:user:"
+                    f"{user_id}:{legacy_scenario_id}"
+                ),
+            ).wipe()
+            self.index_registry.delete(user_id, legacy_scenario_id)
         if self.outbox is not None:
             scoped_outbox = ScopedEventOutbox(
-                self.outbox, user_id=user_id, scenario_id=scenario_id
+                self.outbox,
+                user_id=user_id,
+                project_id=project_id,
+                scenario_id=scenario_id,
             )
             for name, versions in versions_by_name.items():
                 scoped_outbox.enqueue(

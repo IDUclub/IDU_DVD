@@ -6,9 +6,12 @@ ordered fragments — what a consumer needs to hydrate its own derived entities.
 
 from __future__ import annotations
 
+from functools import partial
+
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 
+from src.api_clients import TerritoryNotFound, UrbanApiError
 from src.dependencies import Dependencies
 from src.dvd_service.dto import (
     DocumentDetail,
@@ -26,10 +29,30 @@ router = APIRouter(prefix="/library", tags=["library"])
 
 @router.get("/documents", response_model=DocumentList)
 async def list_documents(
+    document_level: str | None = Query(
+        None, description="federal | regional | municipal"
+    ),
+    territory_ids: list[int] | None = Query(
+        None,
+        description="Urban API territory ids; matches the territory or anything above it",
+    ),
+    tagging_status: str | None = Query(None, description="ok | pending"),
     library: LibraryService = Depends(Dependencies.get_library),
 ):
-    """All documents in the store with their identity/corpus metadata."""
-    return await run_in_threadpool(library.list_documents)
+    """All documents in the store with their identity/corpus/scope metadata.
+
+    The administrative-scope filters narrow the listing the same way they narrow search:
+    ``territory_ids`` matches the stored ancestor chain, so a municipality also brings back
+    the regional and federal documents in force there.
+    """
+    return await run_in_threadpool(
+        partial(
+            library.list_documents,
+            document_level=document_level,
+            territory_ids=territory_ids,
+            tagging_status=tagging_status,
+        )
+    )
 
 
 @router.get("/lookup", response_model=DocumentList)
@@ -80,11 +103,20 @@ async def update_document_metadata(
     body: DocumentUpdateRequest = Body(...),
     editor: DocumentEditorService = Depends(Dependencies.get_editor),
 ):
-    """Manually update metadata/tags on every fragment belonging to a document."""
+    """Manually update metadata/tags on every fragment belonging to a document.
+
+    ``territory_id`` is resolved against the Urban API before anything is written, so an
+    unknown territory answers 404 and an unreachable Urban API answers 502 — an explicit
+    manual choice is never stored half-resolved.
+    """
     try:
         return await run_in_threadpool(
             editor.update_document, doc_id, body.model_dump(exclude_unset=True)
         )
+    except TerritoryNotFound as exc:
+        raise HTTPException(404, f"территория не найдена в Urban API: {exc}")
+    except UrbanApiError as exc:
+        raise HTTPException(502, f"Urban API недоступен: {exc}")
     except KeyError as exc:
         raise HTTPException(404, str(exc.args[0]))
     except ValueError as exc:

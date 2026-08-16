@@ -13,9 +13,10 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from src.dvd_service.dto.reference import DocumentRef
+from src.dvd_service.dto.scope import AdministrativeScope
 
 
-class DocumentInfo(BaseModel):
+class DocumentInfo(AdministrativeScope):
     doc_id: str
     name: str
     version: str
@@ -27,8 +28,7 @@ class DocumentInfo(BaseModel):
     node_count: int = 0
     uploaded_at: str | None = None
     source: str | None = None
-    # populated only via the user-index listing path — the scenario a listed document actually
-    # belongs to (own vs. inherited from a parent scenario)
+    # legacy metadata from scenario-scoped points; new project-scoped writes leave this empty
     scenario_id: str | None = None
     # proxied download link (this service, not a raw MinIO URL) — None if no source was stored
     source_file_url: str | None = None
@@ -39,7 +39,7 @@ class DocumentListResponse(BaseModel):
     documents: list[DocumentInfo]
 
 
-class DocumentSummary(BaseModel):
+class DocumentSummary(AdministrativeScope):
     doc_id: str
     name: str
     title: str | None = None
@@ -129,6 +129,10 @@ class DocumentUpdateRequest(BaseModel):
     external_ids: dict | None = None
     metadata: dict | None = None
     tags: list[str] | None = None
+    # Urban API territory. Sending it rewrites the whole administrative scope (level, names,
+    # ancestor path) and marks it manual, so automatic detection will not touch it again;
+    # sending an explicit ``null`` clears the tag and hands the document back to detection.
+    territory_id: int | None = None
 
 
 class DocumentUpdateResponse(BaseModel):

@@ -46,10 +46,18 @@ _PAYLOAD_INDEXES: dict[str, PayloadSchemaType] = {
     "lookup_keys": PayloadSchemaType.KEYWORD,
     "span_id": PayloadSchemaType.KEYWORD,
     "order": PayloadSchemaType.INTEGER,
+    # administrative scope (Urban API territory tree). ``territory_path`` is what makes
+    # "documents in force in territory X" a single indexed condition: a filter on the
+    # ancestor chain matches the territory itself and everything above it.
+    "document_level": PayloadSchemaType.KEYWORD,
+    "territory_id": PayloadSchemaType.INTEGER,
+    "territory_name": PayloadSchemaType.KEYWORD,
+    "territory_type_id": PayloadSchemaType.INTEGER,
+    "territory_path": PayloadSchemaType.INTEGER,
+    "tagging_status": PayloadSchemaType.KEYWORD,  # find documents awaiting the backfill
     # user-scoped document index (None for the shared/regular corpus)
     "user_id": PayloadSchemaType.KEYWORD,
     "project_id": PayloadSchemaType.KEYWORD,
-    "scenario_id": PayloadSchemaType.KEYWORD,
 }
 
 
@@ -63,13 +71,64 @@ def shared_only_condition() -> IsEmptyCondition:
 
 
 def user_scope_conditions(
-    user_id: str, scenario_ids: Sequence[str]
+    user_id: str, project_ids: Sequence[str]
 ) -> list[FieldCondition]:
-    """``[user_id == user_id, scenario_id in scenario_ids]`` — a user index's isolation key."""
+    """``[user_id == user_id, project_id in project_ids]`` — a user index's isolation key."""
     return [
         FieldCondition(key="user_id", match=MatchValue(value=user_id)),
-        FieldCondition(key="scenario_id", match=MatchAny(any=list(scenario_ids))),
+        FieldCondition(key="project_id", match=MatchAny(any=list(project_ids))),
     ]
+
+
+def scope_conditions(
+    document_level: str | None = None,
+    territory_ids: Sequence[int] | None = None,
+    tagging_status: str | None = None,
+    ancestor_ids: Sequence[int] | None = None,
+) -> list:
+    """Administrative-scope filter conditions, shared by search and the document listings.
+
+    A territory filter answers two questions at once, as an OR:
+
+    * *documents of this territory and everything under it* — the requested id appears in the
+      document's stored ancestor chain (asking for Leningrad Oblast also finds Vyborg's own
+      documents);
+    * *documents in force on this territory* — the document's own territory is one of the
+      requested territory's ancestors (asking for Vyborg also finds the regional and federal
+      documents that apply there). This half needs ``ancestor_ids``, which the caller resolves
+      from the Urban API; without it the filter is simply the narrower first half.
+
+    Matching the ancestor chain against ancestors on *both* sides would be wrong: every chain
+    starts at "Россия", so it would match the entire corpus.
+    """
+    conditions: list = []
+    if document_level:
+        conditions.append(
+            FieldCondition(key="document_level", match=MatchValue(value=document_level))
+        )
+    if territory_ids:
+        subtree = FieldCondition(
+            key="territory_path", match=MatchAny(any=[int(t) for t in territory_ids])
+        )
+        if ancestor_ids:
+            conditions.append(
+                Filter(
+                    should=[
+                        subtree,
+                        FieldCondition(
+                            key="territory_id",
+                            match=MatchAny(any=[int(t) for t in ancestor_ids]),
+                        ),
+                    ]
+                )
+            )
+        else:
+            conditions.append(subtree)
+    if tagging_status:
+        conditions.append(
+            FieldCondition(key="tagging_status", match=MatchValue(value=tagging_status))
+        )
+    return conditions
 
 
 class QdrantRepository:
@@ -413,9 +472,8 @@ class QdrantRepository:
 class ScopedQdrantRepository:
     """Write-path wrapper restricting ``IngestionService`` to one user document index.
 
-    Stamps ``user_id``/``project_id``/``scenario_id`` onto every upserted point and narrows every
-    name/doc_id-based lookup or mutation to that exact ``(user_id, scenario_id)`` pair — never the
-    inheritance chain, so a write can never touch a parent scenario's data. Implements exactly the
+    Stamps ``user_id``/``project_id`` onto every upserted point and narrows every name/doc_id-based
+    lookup or mutation to that exact ``(user_id, project_id)`` pair. Implements exactly the
     subset of :class:`QdrantRepository`'s interface that :class:`IngestionService` calls, so it can
     be swapped in without any change to the ingestion pipeline itself.
     """
@@ -426,7 +484,7 @@ class ScopedQdrantRepository:
         *,
         user_id: str,
         project_id: str,
-        scenario_id: str,
+        scenario_id: str | None = None,
     ) -> None:
         self._inner = inner
         self.collection = inner.collection
@@ -434,9 +492,8 @@ class ScopedQdrantRepository:
         self._stamp = {
             "user_id": user_id,
             "project_id": project_id,
-            "scenario_id": scenario_id,
         }
-        self._scope_must = user_scope_conditions(user_id, [scenario_id])
+        self._scope_must = user_scope_conditions(user_id, [project_id])
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(inner={self._inner!r}, scope={self._stamp})"

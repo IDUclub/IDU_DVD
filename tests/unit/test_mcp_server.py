@@ -10,13 +10,16 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 import src.mcp_server.server as server
+from src.api_clients import ScenarioNotFound
 from src.dependencies import Dependencies
 from src.dvd_service.dto import (
     DeleteResponse,
     DocumentListResponse,
+    ScopesResponse,
     SearchHit,
     SearchResponse,
     TagsResponse,
+    TerritoryScope,
     UserIndexDeleteResponse,
     UserIndexInfo,
     UserIndexListResponse,
@@ -50,8 +53,22 @@ class FakeDocuments:
     def __init__(self):
         self.calls = []
 
-    def list_documents(self, name, version, block, tags, uploaded_from, uploaded_to):
+    def list_documents(
+        self,
+        name,
+        version,
+        block,
+        tags,
+        uploaded_from,
+        uploaded_to,
+        *,
+        document_level=None,
+        territory_ids=None,
+        tagging_status=None,
+    ):
         self.calls.append((name, version, block, tags, uploaded_from, uploaded_to))
+        self.scope_calls = getattr(self, "scope_calls", [])
+        self.scope_calls.append((document_level, territory_ids, tagging_status))
         return DocumentListResponse(count=0, documents=[])
 
 
@@ -128,6 +145,20 @@ class TestUserIndexSearchTools:
 class FakeTags:
     def get_tags(self):
         return TagsResponse(count=1, tags=["alpha"])
+
+    def get_scopes(self):
+        return ScopesResponse(
+            levels=["federal", "municipal"],
+            territories=[
+                TerritoryScope(
+                    territory_id=54,
+                    territory_name="Выборгский муниципальный район",
+                    document_level="municipal",
+                    document_count=2,
+                )
+            ],
+            pending_documents=1,
+        )
 
 
 class FakeUserIndexService:
@@ -216,15 +247,30 @@ class TestGetTagsTool:
         resp = server.get_tags()
         assert resp.count == 1 and resp.tags == ["alpha"]
 
+    def test_get_document_scopes_lists_what_the_corpus_holds(self):
+        _set_singleton_with_tags(FakeTags())
+        resp = server.get_document_scopes()
+        assert resp.levels == ["federal", "municipal"]
+        assert resp.territories[0].territory_id == 54
+        assert resp.pending_documents == 1
+
+
+class FakeUrbanApi:
+    def project_id_for_scenario(self, scenario_id):
+        if scenario_id == "ghost":
+            raise ScenarioNotFound("scenario not found: ghost")
+        return "p1"
+
 
 def _set_full_singleton(**overrides) -> None:
     fields = {n: object() for n in Dependencies._FIELDS}
+    fields["urban_api"] = FakeUrbanApi()
     fields.update(overrides)
     Dependencies().set(**fields)
 
 
 class TestListUserDocumentsTool:
-    def test_scopes_to_ancestor_chain_by_default(
+    def test_resolves_scenario_to_project(
         self, settings, fake_redis, fake_qdrant, user_index_registry
     ):
         user_index_registry.create("u1", "s1", "p1")
@@ -235,7 +281,7 @@ class TestListUserDocumentsTool:
 
         assert resp == DocumentListResponse(count=0, documents=[])
 
-    def test_include_inherited_false_limits_to_own_scenario(
+    def test_include_inherited_is_noop_for_project_scope(
         self, settings, fake_redis, fake_qdrant, user_index_registry, monkeypatch
     ):
         user_index_registry.create("u1", "s1", "p1")
@@ -253,7 +299,7 @@ class TestListUserDocumentsTool:
 
         monkeypatch.setattr(DocumentsService, "list_documents", _spy)
         server.list_user_documents("u1", "s2", include_inherited=False)
-        assert captured["scenario_ids"] == ["s2"]
+        assert captured["project_ids"] == ["p1"]
 
 
 class TestDeleteUserDocumentTool:
@@ -322,6 +368,7 @@ class TestServerObject:
             "pending_references",
             "list_documents",
             "get_tags",
+            "get_document_scopes",
             "create_user_index",
             "list_user_indices",
             "delete_user_index",
@@ -329,3 +376,32 @@ class TestServerObject:
             "delete_user_document",
         ):
             assert hasattr(server, tool)
+
+
+class TestScopeFilterForwarding:
+    """The scope filters exist on every search tool, not only the shared-corpus ones."""
+
+    @pytest.mark.parametrize(
+        "tool,args",
+        [
+            (server.search_texts, ("q",)),
+            (server.search_tables, ("q",)),
+            (server.search_all, ("q",)),
+            (server.search_user_index_texts, ("u1", "s1", "q")),
+            (server.search_user_index_tables, ("u1", "s1", "q")),
+            (server.search_user_index_all, ("u1", "s1", "q")),
+        ],
+    )
+    def test_level_and_territories_reach_the_request(self, tool, args):
+        fake = FakeSearch()
+        _set_singleton_with_search(fake)
+        tool(*args, document_level="municipal", territory_ids=[54])
+        req, _kind = fake.calls[-1]
+        assert req.document_level == "municipal"
+        assert req.territory_ids == [54]
+
+    def test_list_documents_forwards_scope_filters(self):
+        fake = FakeDocuments()
+        _set_singleton_with_documents(fake)
+        server.list_documents(document_level="federal", territory_ids=[12639])
+        assert fake.scope_calls[-1] == ("federal", [12639], None)

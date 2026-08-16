@@ -25,7 +25,7 @@
   <main class="content">
     <header class="topbar">
       <div><p class="eyebrow">УПРАВЛЕНИЕ БИБЛИОТЕКОЙ</p><h1 id="page-title">Обзор</h1></div>
-      <div class="top-actions"><button id="theme-toggle" class="icon-button" aria-label="Переключить тему">◐</button><button id="open-upload" class="button primary">＋ Загрузить</button></div>
+      <div class="top-actions"><button id="theme-toggle" class="icon-button" aria-label="Переключить тему">◐</button><button id="run-backfill" class="button">Дотегировать</button><button id="open-upload" class="button primary">＋ Загрузить</button></div>
     </header>
 
     <div id="toast" class="toast" role="status"></div>
@@ -36,6 +36,7 @@
         <article class="stat-card"><span>Фрагментов</span><strong id="stat-nodes">—</strong><small>текстов и таблиц</small></article>
         <article class="stat-card"><span>Активных задач</span><strong id="stat-jobs">—</strong><small>в очереди и обработке</small></article>
         <article class="stat-card"><span>Уникальных тегов</span><strong id="stat-tags">—</strong><small>в коллекции</small></article>
+        <article class="stat-card"><span>Без территории</span><strong id="stat-pending">—</strong><small>требуют доработки</small></article>
       </div>
       <div class="panel-grid">
         <article class="panel"><div class="panel-head"><div><p class="eyebrow">АКТИВНОСТЬ</p><h2>Текущая обработка</h2></div><button class="text-button goto" data-target="jobs">Все задачи</button></div><div id="overview-jobs" class="empty">Активных задач нет</div></article>
@@ -45,8 +46,8 @@
 
     <section id="view-documents" class="view">
       <article class="panel">
-        <div class="toolbar"><div class="search-box">⌕ <input id="doc-search" placeholder="Название, версия или тег"></div><select id="tag-filter"><option value="">Все теги</option></select><button id="refresh-docs" class="button">Обновить</button></div>
-        <div class="table-wrap"><table><thead><tr><th>Документ</th><th>Версия</th><th>Теги</th><th>Фрагменты</th><th>Загружен</th><th></th></tr></thead><tbody id="documents-body"></tbody></table></div>
+        <div class="toolbar"><div class="search-box">⌕ <input id="doc-search" placeholder="Название, версия или тег"></div><select id="tag-filter"><option value="">Все теги</option></select><select id="level-filter"><option value="">Все уровни</option><option value="federal">Федеральный</option><option value="regional">Региональный</option><option value="municipal">Муниципальный</option></select><select id="territory-filter"><option value="">Все территории</option></select><label class="checkbox-label inline"><input id="pending-filter" type="checkbox"> Требуют доработки</label><button id="refresh-docs" class="button">Обновить</button></div>
+        <div class="table-wrap"><table><thead><tr><th>Документ</th><th>Версия</th><th>Территория</th><th>Теги</th><th>Фрагменты</th><th>Загружен</th><th></th></tr></thead><tbody id="documents-body"></tbody></table></div>
         <div id="documents-empty" class="empty hidden">Документы не найдены</div>
       </article>
     </section>
@@ -66,6 +67,8 @@
       <label>Операция<select id="upload-operation"><option value="upload">Новый документ</option><option value="update">Новая версия (PATCH)</option><option value="reload">Полная замена (PUT)</option></select></label>
       <label>Файл<input id="upload-file" type="file" required></label>
       <div class="two-col"><label>Название<input id="upload-name" placeholder="СП 1.13130.2020"></label><label>Версия<input id="upload-version" placeholder="2026"></label></div>
+      <label>Территория действия<input id="upload-territory" list="territory-options" placeholder="Начните вводить: Ленинградская область, Выборгский…" autocomplete="off"><small class="muted">Если не задать — уровень и территория определяются автоматически по тексту документа.</small></label>
+      <datalist id="territory-options"></datalist>
       <details><summary>Дополнительные метаданные</summary><div class="two-col details-grid"><label>Заголовок<input id="upload-doc-title"></label><label>Тип<input id="upload-doc-type" placeholder="regulation"></label><label>Корпус<input id="upload-corpus"></label><label>Язык<input id="upload-lang" placeholder="ru"></label></div></details>
       <section id="upload-live-progress" class="upload-live-progress hidden" aria-live="polite">
         <div class="progress-label"><span>Общий прогресс</span><span id="upload-overall-value">0%</span></div>

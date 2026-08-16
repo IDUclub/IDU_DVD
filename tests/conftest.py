@@ -64,8 +64,14 @@ def pipeline_chat_handler(system: str, user: str, schema: dict) -> dict:
         return {"nodes": out}
     if "items" in props:  # reference extraction — no references by default
         return {"items": [{"id": i, "references": []} for i in ids]}
-    if "name" in props and "version" in props:  # version detection
-        return {"name": "ТЕСТ 1", "version": "ТЕСТ 1 ред. 1"}
+    if "name" in props and "version" in props:  # document head: identity + scope hints
+        return {
+            "name": "ТЕСТ 1",
+            "version": "ТЕСТ 1 ред. 1",
+            "level": "federal",
+            "territory": "",
+            "region": "",
+        }
     raise AssertionError(f"unexpected schema: {schema}")
 
 

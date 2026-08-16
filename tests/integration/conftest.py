@@ -102,3 +102,21 @@ def reset_dependencies():
     Dependencies.reset()
     yield
     Dependencies.reset()
+
+
+@pytest.fixture
+def require_urban_api(live_settings):
+    """The real Urban API territory catalogue, or a clean skip.
+
+    Self-skipping like every other integration fixture here: the tagging degradation path is
+    covered by unit tests with a mocked client, so a stand that is down (or a machine without
+    network) must not turn `pytest` red for a reason that is not the code's fault.
+    """
+    from src.api_clients import UrbanApiClient
+
+    client = UrbanApiClient()
+    if not client.available():
+        client.close()
+        pytest.skip(f"Urban API unavailable at {live_settings.urban_api_url}")
+    yield client
+    client.close()

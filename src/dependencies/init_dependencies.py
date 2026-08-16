@@ -11,7 +11,7 @@ from pathlib import Path
 import structlog
 from minio import Minio
 
-from src.api_clients import probe_embedding_dim
+from src.api_clients import UrbanApiClient, probe_embedding_dim
 from src.broker.outbox import EventOutbox
 from src.broker.publisher import KafkaPublisher
 from src.common.config import Settings, settings
@@ -30,6 +30,7 @@ from src.dvd_service.modules.hierarchy import HierarchyBuilder
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import VersionDetector
+from src.dvd_service.modules.territory import TerritoryResolver
 from src.dvd_service.services.dvd_service import (
     DocumentEditorService,
     DocumentsService,
@@ -38,6 +39,7 @@ from src.dvd_service.services.dvd_service import (
     SearchService,
     TagsService,
 )
+from src.dvd_service.services.tagging_backfill import TaggingBackfillService
 from src.dvd_service.services.user_index_service import UserIndexService
 from src.system_service.controllers import SystemController
 
@@ -166,6 +168,13 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     version_detector = VersionDetector()
     reference_extractor = ReferenceExtractor(s)
     reference_resolver = ReferenceResolver(qdrant, registry, s)
+    # Urban API is a hard dependency of the configuration (an empty URL never gets here — the
+    # settings validator refuses to build), but not of the boot sequence: it is contacted
+    # lazily, so a stand that is down delays tagging instead of the service.
+    urban_api = UrbanApiClient(
+        base=s.urban_api_url, timeout=s.urban_api_timeout, token=s.urban_api_token
+    )
+    territory = TerritoryResolver(urban_api)
 
     # Kafka publishing (otteroad): events are queued in a Redis outbox and delivered
     # by the async publisher started in the lifespan. Without a configured broker the
@@ -186,12 +195,18 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         jobs,
         s,
         outbox=outbox if publisher.enabled else None,
+        territory=territory,
     )
-    search = SearchService(qdrant, s, user_index_registry)
-    documents = DocumentsService(qdrant)
-    editor = DocumentEditorService(qdrant, registry, s)
-    library = LibraryService(qdrant, registry)
+    search = SearchService(
+        qdrant, s, user_index_registry, territory=territory, urban_api=urban_api
+    )
+    documents = DocumentsService(qdrant, territory=territory)
+    editor = DocumentEditorService(qdrant, registry, s, territory=territory)
+    library = LibraryService(qdrant, registry, territory=territory)
     tags = TagsService(qdrant)
+    tagging_backfill = TaggingBackfillService(
+        qdrant, registry, territory, version_detector, jobs, s
+    )
     user_index_service = UserIndexService(
         qdrant,
         redis,
@@ -216,6 +231,8 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         structure=structure,
         hierarchy=hierarchy,
         version_detector=version_detector,
+        urban_api=urban_api,
+        territory=territory,
         reference_extractor=reference_extractor,
         reference_resolver=reference_resolver,
         outbox=outbox,
@@ -226,6 +243,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         editor=editor,
         library=library,
         tags=tags,
+        tagging_backfill=tagging_backfill,
         user_index_registry=user_index_registry,
         user_index_service=user_index_service,
         system=system,

@@ -113,7 +113,7 @@ class TestListIndices:
         )
         listing = service.list_indices("u1")
         counts = {i.scenario_id: i.document_count for i in listing.indices}
-        assert counts == {"s1": 1, "s2": 0}
+        assert counts == {"s1": 1, "s2": 1}
 
     def test_empty_for_unknown_user(self, service):
         assert service.list_indices("ghost").count == 0
@@ -145,9 +145,9 @@ class TestDeleteIndex:
 
         resp = service.delete_index("u1", "s1")
 
-        assert resp.points_deleted == 1
+        assert resp.points_deleted == 2
         assert "pt1" not in fake_qdrant.points
-        assert "pt2" in fake_qdrant.points  # a different scenario is untouched
+        assert "pt2" not in fake_qdrant.points  # the project is the deletion boundary
         assert index_registry.get("u1", "s1") is None
 
     def test_deletes_distinct_source_objects(
@@ -193,14 +193,14 @@ class TestDeleteIndex:
 
         service.delete_index("u1", "s1")
 
-        assert set(fake_document_storage.delete_calls) == {"key-a", "key-b"}
+        assert set(fake_document_storage.delete_calls) == {"key-a", "key-b", "key-c"}
 
     def test_wipes_the_scoped_document_registry(
         self, service, redis_client, index_registry, settings
     ):
         service.create_index("u1", "s1", "p1")
         scoped = DocumentRegistry(
-            redis_client, prefix=f"{settings.registry_prefix}:user:u1:s1"
+            redis_client, prefix=f"{settings.registry_prefix}:user:u1:project:p1"
         )
         scoped.register("h1", "Doc", "v1", "d1")
 
@@ -295,7 +295,7 @@ class TestDeleteIndex:
         entries = _drain(real_outbox)
         assert {e["model"] for e in entries} == {"DocumentDeleted"}
         by_name = {e["payload"]["document_name"]: e["payload"] for e in entries}
-        assert set(by_name) == {"Doc A", "Doc B"}
+        assert set(by_name) == {"Doc A", "Doc B", "Doc C"}
         assert sorted(by_name["Doc A"]["versions_removed"]) == ["v1", "v2"]
         assert by_name["Doc A"]["document_removed"] is True
         # ScopedEventOutbox stamps user_id/scenario_id on every enqueued event.
@@ -310,6 +310,35 @@ class TestDeleteIndex:
 
 
 class TestBuildUserIngestion:
+    def test_migrates_legacy_scenario_registry_into_project_scope(
+        self, settings, fake_qdrant, redis_client, fake_document_storage
+    ):
+        legacy = DocumentRegistry(
+            redis_client, prefix=f"{settings.registry_prefix}:user:u1:s1"
+        )
+        legacy.register("hash-1", "Doc", "v1", "doc-1")
+
+        ingestion = build_user_ingestion(
+            settings=settings,
+            qdrant=fake_qdrant,
+            redis=redis_client,
+            storage=fake_document_storage,
+            jobs=SimpleNamespace(),
+            parser=SimpleNamespace(),
+            structure=SimpleNamespace(),
+            hierarchy=SimpleNamespace(),
+            version_detector=SimpleNamespace(),
+            reference_extractor=SimpleNamespace(),
+            reference_resolver=SimpleNamespace(),
+            outbox=None,
+            user_id="u1",
+            project_id="p1",
+            scenario_id="s1",
+        )
+
+        assert ingestion.registry.has_hash("hash-1")
+        assert ingestion.registry.versions("Doc") == ["v1"]
+
     def test_scopes_registry_prefix(
         self, settings, fake_qdrant, redis_client, fake_document_storage
     ):
@@ -330,7 +359,9 @@ class TestBuildUserIngestion:
             project_id="p1",
             scenario_id="s1",
         )
-        assert ingestion.registry.prefix == f"{settings.registry_prefix}:user:u1:s1"
+        assert ingestion.registry.prefix == (
+            f"{settings.registry_prefix}:user:u1:project:p1"
+        )
 
     def test_wraps_qdrant_and_disables_reference_linking(
         self, settings, fake_qdrant, redis_client, fake_document_storage
@@ -400,4 +431,6 @@ class TestBuildUserIngestion:
         ingestion = build_user_ingestion_from_deps(
             deps, user_id="u1", project_id="p1", scenario_id="s1"
         )
-        assert ingestion.registry.prefix == f"{settings.registry_prefix}:user:u1:s1"
+        assert ingestion.registry.prefix == (
+            f"{settings.registry_prefix}:user:u1:project:p1"
+        )

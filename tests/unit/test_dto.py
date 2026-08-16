@@ -39,6 +39,38 @@ class TestNodePayload:
         with pytest.raises(ValidationError):
             NodePayload(doc_id="d")
 
+    def test_administrative_scope_defaults_to_untagged_and_pending(self):
+        """An old point (or a minimal caller) must keep validating — every field defaulted."""
+        p = NodePayload(
+            doc_id="d", name="n", version="v", content_hash="h", type="clause", text="t"
+        )
+        assert p.document_level is None and p.territory_id is None
+        assert p.territory_path == []
+        assert p.level_source == "unset" and p.territory_source == "unset"
+        assert p.tagging_status == "pending" and p.tagging_attempts == 0
+
+    def test_administrative_scope_round_trips(self):
+        p = NodePayload(
+            doc_id="d",
+            name="n",
+            version="v",
+            content_hash="h",
+            type="clause",
+            text="t",
+            document_level="municipal",
+            territory_id=54,
+            territory_name="Выборгский муниципальный район",
+            territory_type_id=2,
+            territory_type_name="Муниципальное образование",
+            territory_path=[12639, 1, 54],
+            level_source="auto",
+            territory_source="manual",
+            territory_confidence=0.9,
+            tagging_status="ok",
+        )
+        assert p.territory_path == [12639, 1, 54]
+        assert p.territory_source == "manual" and p.level_source == "auto"
+
 
 class TestResponses:
     def test_upload_response(self):
