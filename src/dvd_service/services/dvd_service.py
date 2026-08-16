@@ -19,7 +19,7 @@ from qdrant_client.models import (
     PointStruct,
 )
 
-from src.api_clients import OllamaClient, create_embedder
+from src.api_clients import OllamaClient, UrbanApiClient, create_embedder
 from src.broker.events import (
     DirectDocumentProcessed,
     DirectDocumentUpdated,
@@ -107,7 +107,7 @@ def build_source_url(payload: dict, name: str, version: str) -> str | None:
     """The proxied download link for a document's original file — never a raw MinIO URL.
 
     ``None`` when no source was stored (e.g. ingested before this feature existed). Branches on
-    the payload's own ``user_id``/``scenario_id`` (not the caller's request scope), so a single
+    the payload's own ``user_id``/``project_id`` (not the caller's request scope), so a single
     combined-search response can correctly link both shared and user-index hits.
     """
     if not payload.get("source_object_key"):
@@ -115,8 +115,15 @@ def build_source_url(payload: dict, name: str, version: str) -> str | None:
     q_name = quote(name, safe="")
     q_version = quote(version, safe="")
     user_id = payload.get("user_id")
+    project_id = payload.get("project_id")
     scenario_id = payload.get("scenario_id")
-    if user_id and scenario_id:
+    if user_id and project_id:
+        return (
+            f"/user-documents/{q_name}/source"
+            f"?user_id={quote(user_id, safe='')}&project_id={quote(str(project_id), safe='')}"
+            f"&version={q_version}"
+        )
+    if user_id and scenario_id:  # legacy points written before project scoping
         return (
             f"/user-documents/{q_name}/source"
             f"?user_id={quote(user_id, safe='')}&scenario_id={quote(scenario_id, safe='')}"
@@ -1345,11 +1352,13 @@ class SearchService:
         settings: Settings,
         user_index_registry: UserIndexRegistry,
         territory: TerritoryResolver | None = None,
+        urban_api: UrbanApiClient | None = None,
     ) -> None:
         self.qdrant = qdrant
         self.settings = settings
         self.user_index_registry = user_index_registry
         self.territory = territory
+        self.urban_api = urban_api
 
     def __repr__(self) -> str:
         return (
@@ -1402,18 +1411,28 @@ class SearchService:
             must.append(
                 FieldCondition(key="name", match=MatchAny(any=req.document_names))
             )
-        if req.project_id:
-            must.append(
-                FieldCondition(key="project_id", match=MatchValue(value=req.project_id))
+        if req.user_id and (req.project_id or req.scenario_id):
+            project_id = req.project_id
+            if req.scenario_id:
+                if self.urban_api is not None:
+                    resolved = self.urban_api.project_id_for_scenario(req.scenario_id)
+                else:
+                    # Compatibility for isolated/unit wiring. Production always injects the
+                    # Urban client; old registry records still make rolling upgrades readable.
+                    record = self.user_index_registry.get(req.user_id, req.scenario_id)
+                    resolved = record.get("project_id") if record else None
+                    if resolved is None:
+                        raise ValueError(
+                            "scenario_id cannot be resolved without Urban API"
+                        )
+                if project_id is not None and str(project_id) != str(resolved):
+                    raise ValueError(
+                        "project_id does not match the scenario's project in Urban API"
+                    )
+                project_id = str(resolved)
+            user_scope = Filter(
+                must=user_scope_conditions(req.user_id, [str(project_id)])
             )
-
-        if req.user_id and req.scenario_id:
-            chain = (
-                self.user_index_registry.ancestor_chain(req.user_id, req.scenario_id)
-                if req.include_inherited
-                else [req.scenario_id]
-            )
-            user_scope = Filter(must=user_scope_conditions(req.user_id, chain))
             if req.include_shared:
                 return Filter(
                     must=must,
@@ -1539,7 +1558,7 @@ class DocumentsService:
         block: str | None,
         tags: list[str] | None,
         user_id: str | None = None,
-        scenario_ids: list[str] | None = None,
+        project_ids: list[str] | None = None,
         document_level: str | None = None,
         territory_ids: list[int] | None = None,
         tagging_status: str | None = None,
@@ -1559,8 +1578,8 @@ class DocumentsService:
                 document_level, territory_ids, tagging_status, ancestor_ids
             )
         )
-        if user_id and scenario_ids:
-            must.extend(user_scope_conditions(user_id, scenario_ids))
+        if user_id and project_ids:
+            must.extend(user_scope_conditions(user_id, project_ids))
         else:
             # Default: exclude user-scoped documents — same backward-compat fix as search.
             must.append(shared_only_condition())
@@ -1576,7 +1595,7 @@ class DocumentsService:
         uploaded_to: str | None = None,
         *,
         user_id: str | None = None,
-        scenario_ids: list[str] | None = None,
+        project_ids: list[str] | None = None,
         document_level: str | None = None,
         territory_ids: list[int] | None = None,
         tagging_status: str | None = None,
@@ -1586,9 +1605,8 @@ class DocumentsService:
         ``uploaded_from``/``uploaded_to`` compare against the ISO 8601 ``uploaded_at`` timestamp
         as plain strings (lexicographic order matches chronological order for ISO 8601) and are
         applied after aggregation, since upload time is a per-document fact, not an indexed
-        per-fragment field. ``user_id``/``scenario_ids`` scope the listing to a user document
-        index (and, when ``scenario_ids`` holds more than one id, its inheritance chain); both
-        default to the shared/regular document corpus.
+        per-fragment field. ``user_id``/``project_ids`` scope the listing to one or more project
+        document indices; both default to the shared/regular document corpus.
         """
         payloads = self.qdrant.scroll_payloads(
             self._build_filter(
@@ -1597,7 +1615,7 @@ class DocumentsService:
                 block,
                 tags,
                 user_id,
-                scenario_ids,
+                project_ids,
                 document_level,
                 territory_ids,
                 tagging_status,

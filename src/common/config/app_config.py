@@ -77,13 +77,13 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     redis_job_ttl: int = 86400  # seconds, job status TTL
 
-    # --- Urban API (territory hierarchy behind document level/territory tagging) ---
-    # Only public, unauthenticated endpoints are used, so no token is configured or sent.
+    # --- Urban API (territories + scenario -> project compatibility lookup) ---
     # A mandatory dependency: an empty URL fails fast at startup (see _require_urban_api).
     # A *runtime* outage never blocks ingestion — the document is indexed with
     # ``tagging_status="pending"`` and the backfill job fills the tags in later.
     urban_api_url: str = "https://urban-api.testing.idulab.ru"
     urban_api_timeout: float = 10.0
+    urban_api_token: str | None = None  # Bearer token for private project scenarios
 
     # --- Tagging backfill (documents left pending by an outage or an unclear document) ---
     # The sweep runs shortly after startup (not during it — it makes LLM and HTTP calls),

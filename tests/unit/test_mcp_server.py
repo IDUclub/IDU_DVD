@@ -10,6 +10,7 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 import src.mcp_server.server as server
+from src.api_clients import ScenarioNotFound
 from src.dependencies import Dependencies
 from src.dvd_service.dto import (
     DeleteResponse,
@@ -254,14 +255,22 @@ class TestGetTagsTool:
         assert resp.pending_documents == 1
 
 
+class FakeUrbanApi:
+    def project_id_for_scenario(self, scenario_id):
+        if scenario_id == "ghost":
+            raise ScenarioNotFound("scenario not found: ghost")
+        return "p1"
+
+
 def _set_full_singleton(**overrides) -> None:
     fields = {n: object() for n in Dependencies._FIELDS}
+    fields["urban_api"] = FakeUrbanApi()
     fields.update(overrides)
     Dependencies().set(**fields)
 
 
 class TestListUserDocumentsTool:
-    def test_scopes_to_ancestor_chain_by_default(
+    def test_resolves_scenario_to_project(
         self, settings, fake_redis, fake_qdrant, user_index_registry
     ):
         user_index_registry.create("u1", "s1", "p1")
@@ -272,7 +281,7 @@ class TestListUserDocumentsTool:
 
         assert resp == DocumentListResponse(count=0, documents=[])
 
-    def test_include_inherited_false_limits_to_own_scenario(
+    def test_include_inherited_is_noop_for_project_scope(
         self, settings, fake_redis, fake_qdrant, user_index_registry, monkeypatch
     ):
         user_index_registry.create("u1", "s1", "p1")
@@ -290,7 +299,7 @@ class TestListUserDocumentsTool:
 
         monkeypatch.setattr(DocumentsService, "list_documents", _spy)
         server.list_user_documents("u1", "s2", include_inherited=False)
-        assert captured["scenario_ids"] == ["s2"]
+        assert captured["project_ids"] == ["p1"]
 
 
 class TestDeleteUserDocumentTool:

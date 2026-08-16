@@ -1,8 +1,8 @@
 """Urban API client — the territory tree behind document level/territory tagging.
 
-Only the public, unauthenticated part of the Urban API is used (``/api/v1/territory_types``,
-``/api/v1/territories_without_geometry``, ``/api/v1/territory/{id}``), so no JWT is passed:
-DVD tags documents with an administrative scope, it does not read anyone's project data.
+Besides the public territory catalogue, the client resolves a scenario to its project through
+``/api/v1/scenarios/{id}``.  That lookup is used only as a compatibility adapter: DVD stores
+user documents by project, while callers may still address the same documents by scenario.
 
 Synchronous, like :class:`OllamaClient` and the embeddings clients — ingestion runs in a
 threadpool. Lookups are memoized in-process with a long TTL: the territory tree changes on a
@@ -70,6 +70,10 @@ class TerritoryNotFound(UrbanApiError):
     """The requested territory id does not exist in the Urban API."""
 
 
+class ScenarioNotFound(UrbanApiError):
+    """The requested scenario id does not exist in the Urban API."""
+
+
 @dataclass(frozen=True)
 class Territory:
     """One node of the Urban API territory tree, reduced to what DVD stores."""
@@ -133,10 +137,17 @@ class _TTLCache:
 class UrbanApiClient:
     """Synchronous client for the Urban API territory catalogue."""
 
-    def __init__(self, base: str | None = None, timeout: float | None = None) -> None:
+    def __init__(
+        self,
+        base: str | None = None,
+        timeout: float | None = None,
+        token: str | None = None,
+    ) -> None:
         self.base = (base or settings.urban_api_url).rstrip("/")
         self.timeout = timeout or settings.urban_api_timeout
-        self._client = httpx.Client(timeout=self.timeout)
+        token = token or settings.urban_api_token
+        headers = {"Authorization": f"Bearer {token}"} if token else None
+        self._client = httpx.Client(timeout=self.timeout, headers=headers)
         self._cache = _TTLCache()
 
     def __repr__(self) -> str:
@@ -164,7 +175,13 @@ class UrbanApiClient:
 
     # --- transport ---------------------------------------------------------------------
 
-    def _get(self, path: str, params: dict | None = None):
+    def _get(
+        self,
+        path: str,
+        params: dict | None = None,
+        *,
+        not_found: type[UrbanApiError] = TerritoryNotFound,
+    ):
         last_error: Exception | None = None
         for attempt in range(_MAX_RETRIES):
             try:
@@ -173,7 +190,7 @@ class UrbanApiClient:
                 last_error = exc
             else:
                 if response.status_code == 404:
-                    raise TerritoryNotFound(f"Urban API 404: {path}")
+                    raise not_found(f"Urban API 404: {path}")
                 if response.status_code < 500:
                     response.raise_for_status()
                     return response.json()
@@ -205,6 +222,37 @@ class UrbanApiClient:
         return collected
 
     # --- catalogue ---------------------------------------------------------------------
+
+    def project_id_for_scenario(self, scenario_id: str | int) -> str:
+        """Return the project owning ``scenario_id`` according to Urban API.
+
+        The OpenAPI ``Scenario`` response embeds a short project object at
+        ``project.project_id``.  Cache the mapping because scenario ownership is immutable for
+        the lifetime of a scenario and this method sits on the document read path.
+        """
+        sid = str(scenario_id).strip()
+        if not sid or not sid.isdigit() or int(sid) <= 0:
+            raise ValueError("scenario_id must be a positive integer")
+        key = ("scenario_project", sid)
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            data = self._get(
+                f"/api/v1/scenarios/{int(sid)}", not_found=ScenarioNotFound
+            )
+        except httpx.HTTPStatusError as exc:
+            raise UrbanApiError(
+                f"Urban API denied scenario {sid}: HTTP {exc.response.status_code}"
+            ) from exc
+        project_id = (data.get("project") or {}).get("project_id")
+        if project_id is None:
+            raise UrbanApiError(
+                f"Urban API returned scenario {sid} without project.project_id"
+            )
+        resolved = str(project_id)
+        self._cache.set(key, resolved)
+        return resolved
 
     def territory(self, territory_id: int) -> Territory:
         """One territory by id (with its parent) — the entry point for path resolution."""

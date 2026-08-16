@@ -64,7 +64,17 @@ def wired(
         settings,
         outbox=outbox,
     )
-    search = SearchService(fake_qdrant, settings, user_index_registry)
+
+    class FakeUrbanApi:
+        def project_id_for_scenario(self, _scenario_id):
+            return "p1"
+
+    search = SearchService(
+        fake_qdrant,
+        settings,
+        user_index_registry,
+        urban_api=FakeUrbanApi(),
+    )
     documents = DocumentsService(fake_qdrant)
     library = LibraryService(fake_qdrant, registry)
     editor = DocumentEditorService(fake_qdrant, registry, settings)
@@ -927,12 +937,12 @@ class TestBuildSourceUrl:
 
     def test_user_document_link(self):
         url = svc.build_source_url(
-            {"source_object_key": "k", "user_id": "u1", "scenario_id": "s1"},
+            {"source_object_key": "k", "user_id": "u1", "project_id": "p1"},
             "СП 1",
             "v1",
         )
         assert url == (
-            "/user-documents/%D0%A1%D0%9F%201/source?user_id=u1&scenario_id=s1&version=v1"
+            "/user-documents/%D0%A1%D0%9F%201/source?user_id=u1&project_id=p1&version=v1"
         )
 
 
@@ -1201,7 +1211,7 @@ class TestSearch:
         names = {h.name for h in resp.hits}
         assert names == {"User doc"}
 
-    def test_search_inherits_from_parent_scenario(self, wired):
+    def test_scenarios_in_same_project_share_documents(self, wired):
         from qdrant_client.models import PointStruct
 
         wired.qdrant.upsert(
@@ -1249,7 +1259,7 @@ class TestSearch:
             ),
             None,
         )
-        assert resp_no_inherit.hits == []
+        assert {h.name for h in resp_no_inherit.hits} == {"Parent doc"}
 
     def test_build_filter_combines_conditions(self, wired):
         req = SearchRequest(query="q", name="СП 1", version="v1", tags=["a", "b"])
@@ -1288,11 +1298,14 @@ class TestSearch:
         flt = wired.search._build_filter(req, kind=None)
         assert flt.should is None
         keys = {c.key for c in flt.must}
-        assert keys == {"user_id", "scenario_id"}
+        assert keys == {"user_id", "project_id"}
 
-    def test_build_filter_requires_user_id_and_scenario_id_together(self):
+    def test_build_filter_requires_user_id_and_project_or_scenario(self):
         with pytest.raises(ValueError):
             SearchRequest(query="q", user_id="u1")
+
+        req = SearchRequest(query="q", user_id="u1", project_id="p1")
+        assert req.project_id == "p1"
 
     def test_repr(self, wired):
         assert repr(wired.search).startswith("SearchService(")
@@ -1404,11 +1417,11 @@ class TestDocumentsServiceUserScope:
                 ),
             ]
         )
-        resp = wired.documents.list_documents(user_id="u1", scenario_ids=["s1"])
+        resp = wired.documents.list_documents(user_id="u1", project_ids=["p1"])
         assert {d.name for d in resp.documents} == {"Own doc"}
         assert resp.documents[0].scenario_id == "s1"
 
-    def test_scoped_listing_includes_ancestor_chain(self, wired):
+    def test_scoped_listing_includes_all_documents_in_project(self, wired):
         from qdrant_client.models import PointStruct
 
         wired.qdrant.upsert(
@@ -1439,7 +1452,7 @@ class TestDocumentsServiceUserScope:
                 ),
             ]
         )
-        resp = wired.documents.list_documents(user_id="u1", scenario_ids=["s2", "s1"])
+        resp = wired.documents.list_documents(user_id="u1", project_ids=["p1"])
         assert {d.name for d in resp.documents} == {"Parent doc", "Child doc"}
 
 

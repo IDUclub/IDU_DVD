@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
+from src.api_clients import UrbanApiError
 from src.dependencies import Dependencies
 from src.dvd_service.dto import (
     DeleteResponse,
@@ -29,6 +30,13 @@ from src.dvd_service.services.dvd_service import DocumentsService
 from src.dvd_service.services.user_index_service import build_user_ingestion_from_deps
 
 mcp = FastMCP("dvd-idu")
+
+
+def _project_id_for_scenario(scenario_id: str) -> str:
+    try:
+        return Dependencies.get_urban_api().project_id_for_scenario(scenario_id)
+    except (UrbanApiError, ValueError) as exc:
+        raise ToolError(str(exc))
 
 
 def _search(
@@ -434,14 +442,12 @@ def list_user_documents(
     uploaded_from: str | None = None,
     uploaded_to: str | None = None,
 ) -> DocumentListResponse:
-    """Documents in a user index, aggregated by (name, version) — includes the scenario's
-    inheritance chain by default."""
-    index_registry = Dependencies.get_user_index_registry()
-    scenario_ids = (
-        index_registry.ancestor_chain(user_id, scenario_id)
-        if include_inherited
-        else [scenario_id]
-    )
+    """Documents in a scenario's project, aggregated by (name, version).
+
+    ``scenario_id`` is resolved through Urban API; ``include_inherited`` is retained as a
+    no-op compatibility parameter because project-scoped documents need no scenario chain.
+    """
+    project_id = _project_id_for_scenario(scenario_id)
     documents = DocumentsService(Dependencies.get_qdrant())
     return documents.list_documents(
         name,
@@ -451,7 +457,7 @@ def list_user_documents(
         uploaded_from,
         uploaded_to,
         user_id=user_id,
-        scenario_ids=scenario_ids,
+        project_ids=[project_id],
     )
 
 
@@ -461,11 +467,9 @@ def delete_user_document(
 ) -> DeleteResponse:
     """Delete a document (or one of its versions) from a user index."""
     deps = Dependencies.instance()
-    record = deps.user_index_registry.get(user_id, scenario_id)
-    if record is None:
-        raise ToolError(f"index not found: {user_id}/{scenario_id}")
+    project_id = _project_id_for_scenario(scenario_id)
     ingestion = build_user_ingestion_from_deps(
-        deps, user_id=user_id, project_id=record["project_id"], scenario_id=scenario_id
+        deps, user_id=user_id, project_id=project_id, scenario_id=scenario_id
     )
     try:
         result = ingestion.delete_document(name, version)

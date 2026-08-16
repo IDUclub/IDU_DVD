@@ -95,12 +95,12 @@ namespaced.
 | `DVD_REDIS_URL` | `redis://localhost:6379/0` | Redis address |
 | `DVD_REDIS_JOB_TTL` | `86400` | job status TTL, seconds |
 
-### Urban API (document level and territory)
+### Urban API (territories and scenario-to-project lookup)
 
 The territory tree behind the administrative scope of every document (see `docs/en/pipeline.md`).
-Only public, unauthenticated endpoints are used — `/api/v1/territory_types`,
-`/api/v1/territories_without_geometry`, `/api/v1/territory/{id}` — so no token is configured or
-sent, and DVD reads nothing but the catalogue.
+Territory tagging uses the public catalogue endpoints. User-document requests may additionally
+resolve `/api/v1/scenarios/{scenario_id}` to `project.project_id`; set
+`DVD_URBAN_API_TOKEN` to a Bearer token when private project scenarios must be accessible.
 
 **Mandatory in configuration, tolerant at runtime.** An empty `DVD_URBAN_API_URL` fails the
 settings validation and the service refuses to start: tagging has no offline mode, and booting

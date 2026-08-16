@@ -58,7 +58,6 @@ _PAYLOAD_INDEXES: dict[str, PayloadSchemaType] = {
     # user-scoped document index (None for the shared/regular corpus)
     "user_id": PayloadSchemaType.KEYWORD,
     "project_id": PayloadSchemaType.KEYWORD,
-    "scenario_id": PayloadSchemaType.KEYWORD,
 }
 
 
@@ -72,12 +71,12 @@ def shared_only_condition() -> IsEmptyCondition:
 
 
 def user_scope_conditions(
-    user_id: str, scenario_ids: Sequence[str]
+    user_id: str, project_ids: Sequence[str]
 ) -> list[FieldCondition]:
-    """``[user_id == user_id, scenario_id in scenario_ids]`` — a user index's isolation key."""
+    """``[user_id == user_id, project_id in project_ids]`` — a user index's isolation key."""
     return [
         FieldCondition(key="user_id", match=MatchValue(value=user_id)),
-        FieldCondition(key="scenario_id", match=MatchAny(any=list(scenario_ids))),
+        FieldCondition(key="project_id", match=MatchAny(any=list(project_ids))),
     ]
 
 
@@ -473,9 +472,8 @@ class QdrantRepository:
 class ScopedQdrantRepository:
     """Write-path wrapper restricting ``IngestionService`` to one user document index.
 
-    Stamps ``user_id``/``project_id``/``scenario_id`` onto every upserted point and narrows every
-    name/doc_id-based lookup or mutation to that exact ``(user_id, scenario_id)`` pair — never the
-    inheritance chain, so a write can never touch a parent scenario's data. Implements exactly the
+    Stamps ``user_id``/``project_id`` onto every upserted point and narrows every name/doc_id-based
+    lookup or mutation to that exact ``(user_id, project_id)`` pair. Implements exactly the
     subset of :class:`QdrantRepository`'s interface that :class:`IngestionService` calls, so it can
     be swapped in without any change to the ingestion pipeline itself.
     """
@@ -486,7 +484,7 @@ class ScopedQdrantRepository:
         *,
         user_id: str,
         project_id: str,
-        scenario_id: str,
+        scenario_id: str | None = None,
     ) -> None:
         self._inner = inner
         self.collection = inner.collection
@@ -494,9 +492,8 @@ class ScopedQdrantRepository:
         self._stamp = {
             "user_id": user_id,
             "project_id": project_id,
-            "scenario_id": scenario_id,
         }
-        self._scope_must = user_scope_conditions(user_id, [scenario_id])
+        self._scope_must = user_scope_conditions(user_id, [project_id])
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(inner={self._inner!r}, scope={self._stamp})"

@@ -16,7 +16,7 @@ a fallback provider — `DVD_EMBEDDINGS_PROVIDER`).
 | Qdrant | vector database; one collection per embedding space (namespaced), payload indexes |
 | Redis | parsing job statuses, document and version registry (namespaced per collection), Kafka event outbox |
 | Ollama | LLM (markup, merge, tags, document head); fallback embeddings provider |
-| Urban API | territory tree for the document level/territory tagging; public endpoints only, no token. Mandatory in configuration (an empty URL fails startup), tolerant at runtime (an outage leaves documents `pending` for the backfill) |
+| Urban API | territory tree for document tagging plus scenario-to-project resolution for user documents. A token is optional for private projects. Mandatory in configuration (an empty URL fails startup) |
 | giga-vectorizer | embeddings (Giga-Embeddings-instruct, 2048-d) via OpenAI-compatible `/v1/embeddings`; CUDA-only, separate repository |
 | Kafka (otteroad) | optional publishing of document lifecycle events (`DocumentProcessed` / `DocumentUpdated` / `DocumentDeleted`, plus `DirectDocumentProcessed` / `DirectDocumentUpdated` for direct ingestion) for downstream services |
 | unstructured (python-docx) | text and table extraction from `.docx` |

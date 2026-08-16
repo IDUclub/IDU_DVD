@@ -38,23 +38,26 @@ class SearchRequest(BaseModel):
     limit: int = 10
     context_height: int = 0  # how many neighbour fragments to attach before/after
 
-    # --- user-scoped index search (both user_id and scenario_id, or neither) ---
+    # --- user-scoped index search (user_id plus project_id or scenario_id) ---
     user_id: str | None = None  # owner of the user document index to search
-    project_id: str | None = None  # filter tag only, not an isolation boundary
+    project_id: str | None = None  # canonical user-document isolation boundary
     scenario_id: str | None = (
-        None  # scenario whose index (+ inheritance chain) to search
+        None  # compatibility lookup: Urban API resolves it to project_id
     )
     include_shared: bool = (
         True  # also match the shared/regular document corpus (combined search)
     )
     include_inherited: bool = (
-        True  # also match the scenario's ancestor chain (live inheritance)
+        True  # deprecated compatibility flag; projects contain all scenario documents
     )
 
     @model_validator(mode="after")
-    def _user_scope_requires_both(self) -> "SearchRequest":
-        if bool(self.user_id) != bool(self.scenario_id):
-            raise ValueError("user_id and scenario_id must be given together")
+    def _user_scope_requires_owner_and_target(self) -> "SearchRequest":
+        has_target = bool(self.project_id or self.scenario_id)
+        if bool(self.user_id) != has_target:
+            raise ValueError(
+                "user_id and one of project_id or scenario_id must be given together"
+            )
         return self
 
 

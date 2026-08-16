@@ -82,9 +82,11 @@ class NodePayload(BaseModel):
     tagging_error: str | None = None  # why the last attempt failed
 
     # --- user-scoped index (None for the shared/regular document corpus) ---
-    user_id: str | None = None  # root of the isolation key (user_id, scenario_id)
-    project_id: str | None = None  # filter-only tag, not an isolation boundary
-    scenario_id: str | None = None  # scenario this document was uploaded into
+    user_id: str | None = None  # owner side of the (user_id, project_id) isolation key
+    project_id: str | None = None  # project side of the isolation key
+    scenario_id: str | None = (
+        None  # legacy payload compatibility; new writes leave it empty
+    )
 
     # --- version lifecycle (general-purpose) ---
     status: str = "active"  # active | archived

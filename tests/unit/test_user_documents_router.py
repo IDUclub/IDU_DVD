@@ -39,6 +39,11 @@ class FakeJobs:
         return self.store.get(jid)
 
 
+class FakeUrbanApi:
+    def project_id_for_scenario(self, _scenario_id):
+        return "p1"
+
+
 class FakeScopedQdrant:
     """Minimal stand-in for the user-scoped repository: only dedup touches it here."""
 
@@ -133,6 +138,7 @@ def client(
         lambda: fake_document_storage
     )
     app.dependency_overrides[Dependencies.get_jobs] = lambda: FakeJobs()
+    app.dependency_overrides[Dependencies.get_urban_api] = lambda: FakeUrbanApi()
     with TestClient(app) as c:
         yield c, fake_ingestion, index_registry, fake_document_storage
 
@@ -187,6 +193,17 @@ class TestIndexLifecycle:
 
 
 class TestUploadDocument:
+    def test_project_id_is_the_only_required_document_scope(self, client):
+        c, fake_ingestion, index_registry, _ = client
+        resp = c.post(
+            "/user-documents",
+            files={"file": ("doc.docx", b"data")},
+            data={"user_id": "u1", "project_id": "p1"},
+        )
+        assert resp.status_code == 202
+        assert index_registry.list_for_user("u1") == []
+        assert fake_ingestion.ingest_calls
+
     def test_auto_creates_index_and_queues_ingest(self, client):
         c, fake_ingestion, index_registry, _ = client
         resp = c.post(
@@ -272,14 +289,14 @@ class TestUpdateReloadDeleteDocument:
         )
         assert resp.status_code == 404
 
-    def test_reload_unknown_index_returns_404(self, client):
+    def test_reload_does_not_require_scenario_index_registry(self, client):
         c, _, _, _ = client
         resp = c.put(
             "/user-documents/doc",
             files={"file": ("doc.docx", b"data")},
             params={"user_id": "u1", "scenario_id": "ghost"},
         )
-        assert resp.status_code == 404
+        assert resp.status_code == 202
 
     def test_reload_queues_background_reload(self, client):
         c, fake_ingestion, _, _ = client
@@ -292,12 +309,12 @@ class TestUpdateReloadDeleteDocument:
         assert resp.status_code == 202
         assert fake_ingestion.reload_calls
 
-    def test_delete_unknown_index_returns_404(self, client):
+    def test_delete_does_not_require_scenario_index_registry(self, client):
         c, _, _, _ = client
         resp = c.delete(
             "/user-documents/doc", params={"user_id": "u1", "scenario_id": "ghost"}
         )
-        assert resp.status_code == 404
+        assert resp.status_code == 200
 
     def test_delete_document_success(self, client):
         c, fake_ingestion, _, _ = client
@@ -321,6 +338,12 @@ class TestListUserDocuments:
     def test_empty_index_returns_no_documents(self, client):
         c, _, _, _ = client
         resp = c.get("/user-documents", params={"user_id": "u1", "scenario_id": "s1"})
+        assert resp.status_code == 200
+        assert resp.json() == {"count": 0, "documents": []}
+
+    def test_accepts_project_id_directly(self, client):
+        c, _, _, _ = client
+        resp = c.get("/user-documents", params={"user_id": "u1", "project_id": "p1"})
         assert resp.status_code == 200
         assert resp.json() == {"count": 0, "documents": []}
 
@@ -351,6 +374,7 @@ class TestDownloadUserSource:
                         "name": "doc",
                         "version": "v1",
                         "user_id": user_id,
+                        "project_id": "p1",
                         "scenario_id": scenario_id,
                         "source_object_key": key,
                     },
@@ -398,9 +422,7 @@ class TestDownloadUserSource:
         assert resp.status_code == 200
         assert resp.content == b"hi"
 
-    def test_include_inherited_false_excludes_parent_scenario(
-        self, client, fake_qdrant
-    ):
+    def test_include_inherited_is_noop_for_project_scope(self, client, fake_qdrant):
         c, _, _, storage = client
         self._create_index(c, "u1", "s1")
         self._create_index(c, "u1", "s2", parent_scenario_id="s1")
@@ -412,4 +434,5 @@ class TestDownloadUserSource:
             "/user-documents/doc/source",
             params={"user_id": "u1", "scenario_id": "s2", "include_inherited": False},
         )
-        assert resp.status_code == 404
+        assert resp.status_code == 200
+        assert resp.content == b"hi"
