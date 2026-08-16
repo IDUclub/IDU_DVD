@@ -171,7 +171,9 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     # Urban API is a hard dependency of the configuration (an empty URL never gets here — the
     # settings validator refuses to build), but not of the boot sequence: it is contacted
     # lazily, so a stand that is down delays tagging instead of the service.
-    urban_api = UrbanApiClient()
+    urban_api = UrbanApiClient(
+        base=s.urban_api_url, timeout=s.urban_api_timeout, token=s.urban_api_token
+    )
     territory = TerritoryResolver(urban_api)
 
     # Kafka publishing (otteroad): events are queued in a Redis outbox and delivered
@@ -195,7 +197,9 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         outbox=outbox if publisher.enabled else None,
         territory=territory,
     )
-    search = SearchService(qdrant, s, user_index_registry, territory=territory)
+    search = SearchService(
+        qdrant, s, user_index_registry, territory=territory, urban_api=urban_api
+    )
     documents = DocumentsService(qdrant, territory=territory)
     editor = DocumentEditorService(qdrant, registry, s, territory=territory)
     library = LibraryService(qdrant, registry, territory=territory)

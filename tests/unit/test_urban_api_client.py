@@ -16,6 +16,7 @@ from src.api_clients.urban_api_client import (
     LEVEL_FEDERAL,
     LEVEL_MUNICIPAL,
     LEVEL_REGIONAL,
+    ScenarioNotFound,
     Territory,
     TerritoryNotFound,
     UrbanApiClient,
@@ -263,6 +264,34 @@ class TestErrorsAndRetries:
     def test_available_reflects_reachability(self):
         assert _client_with(_catalogue_handler).available() is True
         assert _client_with(lambda r: httpx.Response(500)).available() is False
+
+
+class TestScenarioProjectLookup:
+    def test_resolves_and_caches_project_id(self):
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request.url.path)
+            return httpx.Response(
+                200,
+                json={"scenario_id": 12, "project": {"project_id": 34}},
+            )
+
+        client = _client_with(handler)
+        assert client.project_id_for_scenario("12") == "34"
+        assert client.project_id_for_scenario(12) == "34"
+        assert calls == ["/api/v1/scenarios/12"]
+
+    def test_scenario_404_has_a_specific_error(self):
+        client = _client_with(lambda _request: httpx.Response(404))
+        with pytest.raises(ScenarioNotFound):
+            client.project_id_for_scenario("12")
+
+    @pytest.mark.parametrize("scenario_id", ["", "abc", "0", "-1"])
+    def test_rejects_invalid_scenario_id(self, scenario_id):
+        client = _client_with(lambda _request: httpx.Response(500))
+        with pytest.raises(ValueError):
+            client.project_id_for_scenario(scenario_id)
 
 
 class TestCaching:

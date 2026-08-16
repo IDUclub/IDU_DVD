@@ -28,8 +28,7 @@ class DocumentInfo(AdministrativeScope):
     node_count: int = 0
     uploaded_at: str | None = None
     source: str | None = None
-    # populated only via the user-index listing path — the scenario a listed document actually
-    # belongs to (own vs. inherited from a parent scenario)
+    # legacy metadata from scenario-scoped points; new project-scoped writes leave this empty
     scenario_id: str | None = None
     # proxied download link (this service, not a raw MinIO URL) — None if no source was stored
     source_file_url: str | None = None

@@ -69,25 +69,35 @@ class EventOutbox:
 
 
 class ScopedEventOutbox:
-    """Stamps ``user_id``/``scenario_id`` onto every event before forwarding to a real outbox.
+    """Stamp user/project scope onto every event before forwarding to a real outbox.
 
     Lets the per-request user-scoped ``IngestionService`` announce lifecycle events without any
     change to its own ``self.outbox.enqueue(...)`` call sites.
     """
 
-    def __init__(self, inner: EventOutbox, *, user_id: str, scenario_id: str) -> None:
+    def __init__(
+        self,
+        inner: EventOutbox,
+        *,
+        user_id: str,
+        project_id: str | None = None,
+        scenario_id: str | None = None,
+    ) -> None:
         self._inner = inner
         self._user_id = user_id
+        self._project_id = project_id
         self._scenario_id = scenario_id
 
     def __repr__(self) -> str:
         return (
             f"{type(self).__name__}(inner={self._inner!r}, "
-            f"user_id={self._user_id}, scenario_id={self._scenario_id})"
+            f"user_id={self._user_id}, project_id={self._project_id}, "
+            f"scenario_id={self._scenario_id})"
         )
 
     def enqueue(self, event: AvroEventModel) -> None:
-        event = event.model_copy(
-            update={"user_id": self._user_id, "scenario_id": self._scenario_id}
-        )
+        update = {"user_id": self._user_id, "scenario_id": self._scenario_id}
+        if "project_id" in type(event).model_fields:
+            update["project_id"] = self._project_id
+        event = event.model_copy(update=update)
         self._inner.enqueue(event)

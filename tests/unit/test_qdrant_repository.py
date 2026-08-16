@@ -296,9 +296,9 @@ class TestScopeHelpers:
         assert shared_only_condition().is_empty.key == "user_id"
 
     def test_user_scope_conditions_shape(self):
-        conds = user_scope_conditions("u1", ["s1", "s2"])
+        conds = user_scope_conditions("u1", ["p1", "p2"])
         assert conds[0].key == "user_id" and conds[0].match.value == "u1"
-        assert conds[1].key == "scenario_id" and set(conds[1].match.any) == {"s1", "s2"}
+        assert conds[1].key == "project_id" and set(conds[1].match.any) == {"p1", "p2"}
 
 
 class TestScopedQdrantRepository:
@@ -317,7 +317,7 @@ class TestScopedQdrantRepository:
         for p in points:
             assert p.payload["user_id"] == "u1"
             assert p.payload["project_id"] == "p1"
-            assert p.payload["scenario_id"] == "s1"
+            assert "scenario_id" not in p.payload
         client.upsert.assert_called_once()
 
     def test_points_by_name_passes_scope(self, scoped):
@@ -326,14 +326,14 @@ class TestScopedQdrantRepository:
         scoped_repo.points_by_name("СП 1")
         flt = client.scroll.call_args.kwargs["scroll_filter"]
         keys = {c.key for c in flt.must}
-        assert keys == {"name", "user_id", "scenario_id"}
+        assert keys == {"name", "user_id", "project_id"}
 
-    def test_delete_by_name_scoped_to_exact_scenario(self, scoped):
+    def test_delete_by_name_scoped_to_exact_project(self, scoped):
         scoped_repo, client = scoped
         scoped_repo.delete_by_name("СП 1")
         flt = client.delete.call_args.kwargs["points_selector"]
-        scenario_cond = next(c for c in flt.must if c.key == "scenario_id")
-        assert scenario_cond.match.any == ["s1"]  # exact scenario, never the chain
+        project_cond = next(c for c in flt.must if c.key == "project_id")
+        assert project_cond.match.any == ["p1"]
 
     def test_find_node_passes_scope(self, scoped):
         scoped_repo, client = scoped

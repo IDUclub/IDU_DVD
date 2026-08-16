@@ -1,9 +1,8 @@
 """User-scoped document index endpoints: index lifecycle + document upload/update/reload/delete.
 
-Mirrors ``/documents`` (see ``routers/documents.py``) but scoped to a ``(user_id, scenario_id)``
-index, with a mandatory ``project_id`` tag and optional live inheritance from a
-``parent_scenario_id``. No auth layer — ``user_id``/``project_id``/``scenario_id`` are explicit
-caller-supplied params, matching the MCP server's existing unauthenticated model.
+Mirrors ``/documents`` (see ``routers/documents.py``) but scoped to a ``(user_id, project_id)``
+index. ``scenario_id`` remains a read/write compatibility selector and is resolved to its project
+through Urban API.
 """
 
 from __future__ import annotations
@@ -26,6 +25,7 @@ from fastapi import (
 from fastapi.concurrency import run_in_threadpool
 from minio.error import S3Error
 
+from src.api_clients import ScenarioNotFound, UrbanApiClient, UrbanApiError
 from src.common.config import Settings
 from src.common.db.minio_client import DocumentStorage
 from src.common.db.qdrant_client import QdrantRepository, user_scope_conditions
@@ -66,7 +66,7 @@ log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/user-documents", tags=["user-documents"])
 
 
-def _build_ingestion(user_id: str, project_id: str, scenario_id: str):
+def _build_ingestion(user_id: str, project_id: str, scenario_id: str | None = None):
     return build_user_ingestion_from_deps(
         Dependencies.instance(),
         user_id=user_id,
@@ -76,11 +76,39 @@ def _build_ingestion(user_id: str, project_id: str, scenario_id: str):
 
 
 def _scoped_registry(
-    redis: RedisClient, settings: Settings, user_id: str, scenario_id: str
+    redis: RedisClient, settings: Settings, user_id: str, project_id: str
 ) -> DocumentRegistry:
     return DocumentRegistry(
-        redis, prefix=f"{settings.registry_prefix}:user:{user_id}:{scenario_id}"
+        redis, prefix=f"{settings.registry_prefix}:user:{user_id}:project:{project_id}"
     )
+
+
+def _project_for_scenario(urban_api: UrbanApiClient, scenario_id: str) -> str:
+    try:
+        return urban_api.project_id_for_scenario(scenario_id)
+    except ScenarioNotFound as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except UrbanApiError as exc:
+        raise HTTPException(502, str(exc))
+
+
+def _resolve_project(
+    urban_api: UrbanApiClient,
+    project_id: str | None,
+    scenario_id: str | None,
+) -> str:
+    if not project_id and not scenario_id:
+        raise HTTPException(400, "project_id or scenario_id is required")
+    if scenario_id:
+        resolved = _project_for_scenario(urban_api, scenario_id)
+        if project_id and str(project_id) != resolved:
+            raise HTTPException(
+                400, "project_id does not match the scenario's project in Urban API"
+            )
+        return resolved
+    return str(project_id)
 
 
 # --- index lifecycle ---
@@ -136,8 +164,8 @@ async def upload_user_document(
     background: BackgroundTasks,
     file: UploadFile = File(...),
     user_id: str = Form(...),
-    scenario_id: str = Form(...),
     project_id: str = Form(...),
+    scenario_id: str | None = Form(None),
     parent_scenario_id: str | None = Form(
         None, description="Only honored the first time this index is created"
     ),
@@ -150,13 +178,20 @@ async def upload_user_document(
     storage: DocumentStorage = Depends(Dependencies.get_user_document_storage),
     index_registry: UserIndexRegistry = Depends(Dependencies.get_user_index_registry),
     jobs: JobStore = Depends(Dependencies.get_jobs),
+    urban_api: UrbanApiClient = Depends(Dependencies.get_urban_api),
 ):
     """Upload a document into a user index (auto-created on first upload if it doesn't exist).
 
     The original file is saved to MinIO before indexing starts (fail-closed).
     """
-    index_registry.get_or_create(user_id, scenario_id, project_id, parent_scenario_id)
-    registry = _scoped_registry(redis, settings, user_id, scenario_id)
+    project_id = await run_in_threadpool(
+        _resolve_project, urban_api, project_id, scenario_id
+    )
+    if scenario_id:
+        index_registry.get_or_create(
+            user_id, scenario_id, project_id, parent_scenario_id
+        )
+    registry = _scoped_registry(redis, settings, user_id, project_id)
     ingestion = _build_ingestion(user_id, project_id, scenario_id)
 
     job_id = str(uuid.uuid4())
@@ -193,27 +228,28 @@ async def update_user_document(
     background: BackgroundTasks,
     file: UploadFile = File(...),
     user_id: str = Query(...),
-    scenario_id: str = Query(...),
+    project_id: str | None = Query(None),
+    scenario_id: str | None = Query(None),
     version: str | None = Form(None),
     meta: dict = Depends(document_meta),
     settings: Settings = Depends(Dependencies.get_settings),
     parser: DocumentParser = Depends(Dependencies.get_parser),
     redis: RedisClient = Depends(Dependencies.get_redis),
     storage: DocumentStorage = Depends(Dependencies.get_user_document_storage),
-    index_registry: UserIndexRegistry = Depends(Dependencies.get_user_index_registry),
+    urban_api: UrbanApiClient = Depends(Dependencies.get_urban_api),
     jobs: JobStore = Depends(Dependencies.get_jobs),
 ):
     """Delta update of a document already in a user index.
 
     The original file is saved to MinIO before indexing starts (fail-closed).
     """
-    record = index_registry.get(user_id, scenario_id)
-    if record is None:
-        raise HTTPException(404, f"индекс не найден: {user_id}/{scenario_id}")
-    registry = _scoped_registry(redis, settings, user_id, scenario_id)
+    project_id = await run_in_threadpool(
+        _resolve_project, urban_api, project_id, scenario_id
+    )
+    registry = _scoped_registry(redis, settings, user_id, project_id)
     if not registry.has_name(name):
         raise HTTPException(404, f"Документ не найден: {name}")
-    ingestion = _build_ingestion(user_id, record["project_id"], scenario_id)
+    ingestion = _build_ingestion(user_id, project_id, scenario_id)
 
     job_id = str(uuid.uuid4())
     path, raw, content_hash = await receive_file(file, settings, parser, job_id)
@@ -249,23 +285,24 @@ async def reload_user_document(
     background: BackgroundTasks,
     file: UploadFile = File(...),
     user_id: str = Query(...),
-    scenario_id: str = Query(...),
+    project_id: str | None = Query(None),
+    scenario_id: str | None = Query(None),
     version: str | None = Form(None),
     meta: dict = Depends(document_meta),
     settings: Settings = Depends(Dependencies.get_settings),
     parser: DocumentParser = Depends(Dependencies.get_parser),
     storage: DocumentStorage = Depends(Dependencies.get_user_document_storage),
-    index_registry: UserIndexRegistry = Depends(Dependencies.get_user_index_registry),
+    urban_api: UrbanApiClient = Depends(Dependencies.get_urban_api),
     jobs: JobStore = Depends(Dependencies.get_jobs),
 ):
     """Full reload (create-or-replace) of a document in a user index.
 
     The original file is saved to MinIO before indexing starts (fail-closed).
     """
-    record = index_registry.get(user_id, scenario_id)
-    if record is None:
-        raise HTTPException(404, f"индекс не найден: {user_id}/{scenario_id}")
-    ingestion = _build_ingestion(user_id, record["project_id"], scenario_id)
+    project_id = await run_in_threadpool(
+        _resolve_project, urban_api, project_id, scenario_id
+    )
+    ingestion = _build_ingestion(user_id, project_id, scenario_id)
 
     job_id = str(uuid.uuid4())
     path, raw, content_hash = await receive_file(file, settings, parser, job_id)
@@ -298,17 +335,18 @@ async def reload_user_document(
 async def delete_user_document(
     name: str,
     user_id: str = Query(...),
-    scenario_id: str = Query(...),
+    project_id: str | None = Query(None),
+    scenario_id: str | None = Query(None),
     version: str | None = Query(
         None, description="Удалить только эту версию; без параметра — все версии"
     ),
-    index_registry: UserIndexRegistry = Depends(Dependencies.get_user_index_registry),
+    urban_api: UrbanApiClient = Depends(Dependencies.get_urban_api),
 ):
     """Delete a document (or one of its versions) from a user index."""
-    record = index_registry.get(user_id, scenario_id)
-    if record is None:
-        raise HTTPException(404, f"индекс не найден: {user_id}/{scenario_id}")
-    ingestion = _build_ingestion(user_id, record["project_id"], scenario_id)
+    project_id = await run_in_threadpool(
+        _resolve_project, urban_api, project_id, scenario_id
+    )
+    ingestion = _build_ingestion(user_id, project_id, scenario_id)
     try:
         result = await run_in_threadpool(ingestion.delete_document, name, version)
     except KeyError as exc:
@@ -319,7 +357,8 @@ async def delete_user_document(
 @router.get("", response_model=DocumentListResponse)
 async def list_user_documents(
     user_id: str,
-    scenario_id: str,
+    project_id: str | None = None,
+    scenario_id: str | None = None,
     include_inherited: bool = True,
     name: str | None = None,
     version: str | None = None,
@@ -328,14 +367,14 @@ async def list_user_documents(
     uploaded_from: str | None = None,
     uploaded_to: str | None = None,
     qdrant: QdrantRepository = Depends(Dependencies.get_qdrant),
-    index_registry: UserIndexRegistry = Depends(Dependencies.get_user_index_registry),
+    urban_api: UrbanApiClient = Depends(Dependencies.get_urban_api),
 ):
-    """Documents in a user index, aggregated by (name, version) — includes the scenario's
-    inheritance chain by default."""
-    scenario_ids = (
-        index_registry.ancestor_chain(user_id, scenario_id)
-        if include_inherited
-        else [scenario_id]
+    """Documents in a project, addressed directly or through a scenario.
+
+    ``include_inherited`` is a deprecated no-op retained for request compatibility.
+    """
+    project_id = await run_in_threadpool(
+        _resolve_project, urban_api, project_id, scenario_id
     )
     documents = DocumentsService(qdrant)
     return await run_in_threadpool(
@@ -347,7 +386,7 @@ async def list_user_documents(
         uploaded_from,
         uploaded_to,
         user_id=user_id,
-        scenario_ids=scenario_ids,
+        project_ids=[project_id],
     )
 
 
@@ -355,23 +394,24 @@ async def list_user_documents(
 async def download_user_source(
     name: str,
     user_id: str = Query(...),
-    scenario_id: str = Query(...),
+    project_id: str | None = Query(None),
+    scenario_id: str | None = Query(None),
     version: str | None = Query(
         None, description="Версия документа; без параметра — последняя"
     ),
     include_inherited: bool = True,
     qdrant: QdrantRepository = Depends(Dependencies.get_qdrant),
     storage: DocumentStorage = Depends(Dependencies.get_user_document_storage),
-    index_registry: UserIndexRegistry = Depends(Dependencies.get_user_index_registry),
+    urban_api: UrbanApiClient = Depends(Dependencies.get_urban_api),
 ):
-    """Proxy the original source file from MinIO, scoped to a user index (+ inheritance chain
-    by default) — never a direct link to the closed contour."""
-    scenario_ids = (
-        index_registry.ancestor_chain(user_id, scenario_id)
-        if include_inherited
-        else [scenario_id]
+    """Proxy a project document source from MinIO.
+
+    ``include_inherited`` is a deprecated no-op retained for request compatibility.
+    """
+    project_id = await run_in_threadpool(
+        _resolve_project, urban_api, project_id, scenario_id
     )
-    extra_must = user_scope_conditions(user_id, scenario_ids)
+    extra_must = user_scope_conditions(user_id, [project_id])
     points = await run_in_threadpool(qdrant.points_by_name, name, extra_must)
     target = pick_source_point(points, version)
     key = target.get("source_object_key")
