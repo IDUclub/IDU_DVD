@@ -28,12 +28,19 @@ log = structlog.get_logger(__name__)
 _PRIMARY_KEYS = (TIMESTAMP_KEY, "level", "logger", "request_id", "event")
 
 # Values never returned in clear text by the read endpoint (nor echoed back on write).
-_SENSITIVE_FIELDS: frozenset[str] = frozenset({"qdrant_api_key", "admin_password"})
+_SENSITIVE_FIELDS: frozenset[str] = frozenset(
+    {"qdrant_api_key", "admin_password", "llm_api_key"}
+)
 
 # Settings captured at startup (service wiring, Qdrant collection/dimension, logging sinks,
 # the GPU semaphore). Persisting them updates ``.env`` but they only fully take effect after a
 # restart, so the live settings object is intentionally *not* mutated for these — that would
 # pretend a change applied when the running wiring still uses the old value.
+#
+# ``llm_provider`` and the other ``llm_*`` fields are deliberately absent: unlike
+# ``embeddings_provider`` — which is baked into the Qdrant collection and its dimension at
+# startup — the chat client is built per operation by ``create_llm()``, so a change here is
+# picked up by the next ingest or backfill job without a restart.
 _RESTART_REQUIRED_FIELDS: frozenset[str] = frozenset(
     {
         "qdrant_url",

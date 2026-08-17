@@ -19,7 +19,7 @@ from qdrant_client.models import (
     PointStruct,
 )
 
-from src.api_clients import OllamaClient, UrbanApiClient, create_embedder
+from src.api_clients import ChatClient, UrbanApiClient, create_embedder, create_llm
 from src.broker.events import (
     DirectDocumentProcessed,
     DirectDocumentUpdated,
@@ -211,7 +211,7 @@ class IngestionService:
     def _resolve_head(
         self,
         parts: list[dict],
-        client: OllamaClient,
+        client: ChatClient,
         name_override: str | None,
         version_override: str | None,
         *,
@@ -469,7 +469,7 @@ class IngestionService:
         if job_id:
             self.jobs.update(job_id, status="queued")
         self._gpu_gate.acquire()
-        client = OllamaClient()
+        client = create_llm()
         try:
             if job_id:
                 self.jobs.update(job_id, status="processing")
@@ -681,7 +681,7 @@ class IngestionService:
         if job_id:
             self.jobs.update(job_id, status="queued")
         self._gpu_gate.acquire()
-        client = OllamaClient()
+        client = create_llm()
         try:
             if job_id:
                 self.jobs.update(job_id, status="processing")

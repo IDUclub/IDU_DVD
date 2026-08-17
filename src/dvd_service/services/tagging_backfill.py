@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 import structlog
 from qdrant_client.models import Filter
 
-from src.api_clients import OllamaClient
+from src.api_clients import ChatClient, create_llm
 from src.common.config import Settings
 from src.common.db.qdrant_client import QdrantRepository, scope_conditions
 from src.common.db.redis_client import DocumentRegistry, JobStore
@@ -105,7 +105,7 @@ class TaggingBackfillService:
 
     # --- resolving one document ---------------------------------------------------------
 
-    def _resolve(self, document: dict, client: OllamaClient) -> dict:
+    def _resolve(self, document: dict, client: ChatClient) -> dict:
         """The scope slice for one pending document (never raises).
 
         A territory a human already chose is only *completed* here, never reconsidered: the
@@ -144,7 +144,7 @@ class TaggingBackfillService:
         tagged = 0
         failed = 0
         outcomes: list[dict] = []
-        client = OllamaClient()
+        client = create_llm()
         try:
             documents = self.pending_documents(limit)
             total = len(documents)

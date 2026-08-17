@@ -28,7 +28,7 @@ from src.dvd_service.services.tagging_backfill import TaggingBackfillService
 @pytest.fixture
 def backfill(settings, fake_qdrant, fake_redis, fake_ollama, monkeypatch):
     """The service over faked boundaries, with the head pass answering "federal"."""
-    monkeypatch.setattr(backfill_module, "OllamaClient", lambda *a, **k: fake_ollama)
+    monkeypatch.setattr(backfill_module, "create_llm", lambda *a, **k: fake_ollama)
     redis_client = RedisClient(settings)
     return TaggingBackfillService(
         fake_qdrant,
@@ -140,9 +140,7 @@ class TestSweep:
         self, settings, fake_qdrant, fake_redis, fake_ollama, monkeypatch
     ):
         """Urban API still down: the document stays pending, but visibly so."""
-        monkeypatch.setattr(
-            backfill_module, "OllamaClient", lambda *a, **k: fake_ollama
-        )
+        monkeypatch.setattr(backfill_module, "create_llm", lambda *a, **k: fake_ollama)
         redis_client = RedisClient(settings)
         service = TaggingBackfillService(
             fake_qdrant,

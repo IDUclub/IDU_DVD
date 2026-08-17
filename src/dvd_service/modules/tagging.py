@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 import structlog
 
-from src.api_clients import OllamaClient, OllamaError
+from src.api_clients import ChatClient, OllamaError
 
 log = structlog.get_logger(__name__)
 
@@ -68,7 +68,7 @@ class VersionDetector:
     def __repr__(self) -> str:
         return f"{type(self).__name__}()"
 
-    def detect_head(self, parts, client: OllamaClient, head: int = 14) -> DocumentHead:
+    def detect_head(self, parts, client: ChatClient, head: int = 14) -> DocumentHead:
         """Name, version and administrative-scope hints from the document head — one LLM call.
 
         A failure is never fatal: the caller falls back to "unknown" identity and leaves the
@@ -90,7 +90,7 @@ class VersionDetector:
             log.warning("version_detect_failed", error=str(exc))
             return DocumentHead(name="unknown", version="unknown")
 
-    def detect(self, parts, client: OllamaClient, head: int = 14) -> tuple[str, str]:
+    def detect(self, parts, client: ChatClient, head: int = 14) -> tuple[str, str]:
         """Name + version only — the identity half of :meth:`detect_head`."""
         detected = self.detect_head(parts, client, head)
         return detected.name, detected.version

@@ -35,6 +35,22 @@ class Settings(BaseSettings):
     ollama_num_predict: int = 8192
     ollama_timeout: float = 600.0
 
+    # --- LLM provider (structure markup, merge, tags, version/head, references) ---
+    # "ollama" — native /api/chat (the historical default, keeps existing deployments
+    # working off DVD_OLLAMA_* alone); "openai" — any OpenAI-compatible /v1 endpoint
+    # (vLLM, LM Studio, llama.cpp, Ollama's own /v1 shim, the OpenAI API), configured by
+    # the llm_* settings below. Structured output is requested per provider protocol
+    # (Ollama `format`, OpenAI `response_format=json_schema`) — the schemas are unchanged.
+    llm_provider: str = "ollama"
+    llm_base_url: str = "http://localhost:8001/v1"  # must be the /v1 root
+    llm_model: str = "gpt-oss-20b"
+    llm_api_key: str | None = None  # optional: local servers ignore it
+    # Response budget, the OpenAI counterpart of ollama_num_predict. There is no
+    # OpenAI equivalent of num_ctx: the context window is whatever the server was
+    # started with (vLLM --max-model-len), so size it there, not here.
+    llm_max_tokens: int = 8192
+    llm_timeout: float = 600.0
+
     # --- Embeddings provider (vectorizer) ---
     # "giga" — the GPU giga-vectorizer service (OpenAI-compatible /v1/embeddings,
     # Giga-Embeddings-instruct, 2048-d); "ollama" — legacy fallback via /api/embed.
