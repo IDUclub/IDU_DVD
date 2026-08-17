@@ -1,3 +1,9 @@
+## v0.12.0 (2026-08-17)
+
+### Feat
+
+- **llm**: support any OpenAI-compatible chat endpoint (#46)
+
 ## v0.11.1 (2026-08-16)
 
 ### Refactor
