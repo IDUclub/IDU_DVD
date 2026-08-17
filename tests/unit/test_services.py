@@ -44,7 +44,7 @@ def wired(
     monkeypatch,
 ):
     """Build IngestionService + SearchService with real modules and faked boundaries."""
-    monkeypatch.setattr(svc, "OllamaClient", lambda *a, **k: fake_ollama)
+    monkeypatch.setattr(svc, "create_llm", lambda *a, **k: fake_ollama)
     monkeypatch.setattr(svc, "create_embedder", lambda *a, **k: fake_ollama)
     redis_client = RedisClient(settings)
     jobs = JobStore(redis_client)
@@ -515,7 +515,7 @@ class TestIngest:
         fake_document_storage,
         monkeypatch,
     ):
-        monkeypatch.setattr(svc, "OllamaClient", lambda *a, **k: fake_ollama)
+        monkeypatch.setattr(svc, "create_llm", lambda *a, **k: fake_ollama)
         monkeypatch.setattr(svc, "create_embedder", lambda *a, **k: fake_ollama)
         s = settings.model_copy(update={"enable_reference_linking": False})
         redis_client = RedisClient(s)

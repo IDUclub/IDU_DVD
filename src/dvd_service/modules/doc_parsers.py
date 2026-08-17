@@ -11,7 +11,7 @@ import re
 
 import structlog
 
-from src.api_clients import OllamaClient, OllamaError
+from src.api_clients import ChatClient, OllamaError
 from src.common.config import Settings
 from src.dvd_service.modules.windowing import make_windows, reconcile
 
@@ -299,7 +299,7 @@ class DocumentParser:
         return blocks
 
     # --- boundary stitching (Stage 1) ---
-    def _llm_boundaries(self, client: OllamaClient, window_texts):
+    def _llm_boundaries(self, client: ChatClient, window_texts):
         user = "\n".join("[%d] %s" % (i, t) for i, t in enumerate(window_texts))
         data = client.chat(BOUNDARY_SYSTEM, user, BOUNDARY_SCHEMA)
         return {item["id"]: item["boundary"] for item in data["blocks"]}
@@ -422,7 +422,7 @@ class DocumentParser:
         return parts
 
     def to_logical_parts(
-        self, raw: list[dict], client: OllamaClient | None, on_progress=None
+        self, raw: list[dict], client: ChatClient | None, on_progress=None
     ) -> list[dict]:
         blocks = self._split_into_segments(raw)
         log.info("stage1_split", blocks=len(raw), segments=len(blocks))

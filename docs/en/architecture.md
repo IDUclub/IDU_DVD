@@ -15,7 +15,8 @@ a fallback provider — `DVD_EMBEDDINGS_PROVIDER`).
 | FastAPI | HTTP API, background tasks |
 | Qdrant | vector database; one collection per embedding space (namespaced), payload indexes |
 | Redis | parsing job statuses, document and version registry (namespaced per collection), Kafka event outbox |
-| Ollama | LLM (markup, merge, tags, document head); fallback embeddings provider |
+| LLM backend | markup, merge, tags, document head, references. Native **Ollama** `/api/chat` or any **OpenAI-compatible** `/v1/chat/completions` server (vLLM, LM Studio, llama.cpp, OpenAI) — selected by `DVD_LLM_PROVIDER` |
+| Ollama | the LLM when `DVD_LLM_PROVIDER=ollama`; fallback embeddings provider |
 | Urban API | territory tree for document tagging plus scenario-to-project resolution for user documents. A token is optional for private projects. Mandatory in configuration (an empty URL fails startup) |
 | giga-vectorizer | embeddings (Giga-Embeddings-instruct, 2048-d) via OpenAI-compatible `/v1/embeddings`; CUDA-only, separate repository |
 | Kafka (otteroad) | optional publishing of document lifecycle events (`DocumentProcessed` / `DocumentUpdated` / `DocumentDeleted`, plus `DirectDocumentProcessed` / `DirectDocumentUpdated` for direct ingestion) for downstream services |
@@ -52,7 +53,9 @@ Dependencies(
 | Path | Contents |
 |------|----------|
 | `src/common/config/app_config.py` | `Settings` — configuration (pydantic-settings) |
+| `src/api_clients/base.py` | `ChatClient` (the LLM surface the pipeline depends on), `LlmError` |
 | `src/api_clients/ollama_client.py` | `OllamaClient`, `OllamaError` |
+| `src/api_clients/llm_client.py` | `OpenAICompatibleClient`, `create_llm` (provider selection) |
 | `src/api_clients/urban_api_client.py` | `UrbanApiClient`, `Territory`, the level mapping |
 | `src/api_clients/embeddings_client.py` | `GigaEmbeddingsClient`, `EmbeddingsError`, `create_embedder` (provider selection) |
 | `src/common/db/qdrant_client.py` | `QdrantRepository` |

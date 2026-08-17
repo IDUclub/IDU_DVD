@@ -15,7 +15,8 @@
 | FastAPI | HTTP API, фоновые задачи |
 | Qdrant | векторная база; отдельная коллекция под каждое векторное пространство (namespacing), payload-индексы |
 | Redis | статусы задач парсинга, реестр документов и версий (неймспейсится по коллекции), outbox Kafka-событий |
-| Ollama | LLM (разметка, мердж, теги, «голова» документа); резервный провайдер эмбеддингов |
+| Бэкенд LLM | разметка, мердж, теги, «голова» документа, ссылки. Нативная **Ollama** `/api/chat` либо любой **OpenAI-совместимый** сервер `/v1/chat/completions` (vLLM, LM Studio, llama.cpp, OpenAI) — выбор через `DVD_LLM_PROVIDER` |
+| Ollama | LLM при `DVD_LLM_PROVIDER=ollama`; резервный провайдер эмбеддингов |
 | Urban API | дерево территорий для тегирования и разрешение сценария в проект для пользовательских документов. Для приватных проектов поддержан опциональный токен. URL обязателен в конфигурации |
 | giga-vectorizer | эмбеддинги (Giga-Embeddings-instruct, 2048-d) через OpenAI-совместимый `/v1/embeddings`; только CUDA, отдельный репозиторий |
 | Kafka (otteroad) | опциональная публикация событий жизненного цикла документов (`DocumentProcessed` / `DocumentUpdated` / `DocumentDeleted`, плюс `DirectDocumentProcessed` / `DirectDocumentUpdated` для прямой загрузки) для смежных сервисов |
@@ -53,7 +54,9 @@ Dependencies(
 | Путь | Содержимое |
 |------|------------|
 | `src/common/config/app_config.py` | `Settings` — конфигурация (pydantic-settings) |
+| `src/api_clients/base.py` | `ChatClient` (интерфейс LLM, от которого зависит конвейер), `LlmError` |
 | `src/api_clients/ollama_client.py` | `OllamaClient`, `OllamaError` |
+| `src/api_clients/llm_client.py` | `OpenAICompatibleClient`, `create_llm` (выбор провайдера) |
 | `src/api_clients/urban_api_client.py` | `UrbanApiClient`, `Territory`, маппинг уровня |
 | `src/api_clients/embeddings_client.py` | `GigaEmbeddingsClient`, `EmbeddingsError`, `create_embedder` (выбор провайдера) |
 | `src/common/db/qdrant_client.py` | `QdrantRepository` |
