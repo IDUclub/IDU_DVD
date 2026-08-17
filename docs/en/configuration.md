@@ -16,7 +16,28 @@ the table here and `.env.full.example` together.
 
 ## Variables
 
+### LLM provider
+
+The pipeline asks the model for one thing: a JSON answer matching a given schema. Both providers
+deliver that, each through its own protocol — Ollama's `format`, OpenAI's
+`response_format={"type": "json_schema"}` — so the stage schemas are identical either way.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DVD_LLM_PROVIDER` | `ollama` | `ollama` — native `/api/chat`; `openai` — any OpenAI-compatible `/v1` endpoint (vLLM, LM Studio, llama.cpp, Ollama's own `/v1` shim, the OpenAI API) |
+| `DVD_LLM_BASE_URL` | `http://localhost:8001/v1` | `provider=openai`: the `/v1` root |
+| `DVD_LLM_MODEL` | `gpt-oss-20b` | `provider=openai`: model id as the server reports it in `GET /v1/models` |
+| `DVD_LLM_API_KEY` | empty | `provider=openai`: sent as `Authorization: Bearer`. Local servers ignore it; masked in `GET /system/settings` |
+| `DVD_LLM_MAX_TOKENS` | `8192` | `provider=openai`: response budget (the counterpart of `DVD_OLLAMA_NUM_PREDICT`). There is **no** OpenAI equivalent of `num_ctx` — the context window is whatever the server was started with (`--max-model-len` in vLLM) |
+| `DVD_LLM_TIMEOUT` | `600.0` | `provider=openai`: request timeout, seconds |
+
+Unlike `DVD_EMBEDDINGS_PROVIDER`, these are **not** restart-required: the chat client is built per
+operation, so a change through `PUT /system/settings` is picked up by the next ingest or backfill job.
+
 ### Ollama
+
+Used as the LLM when `DVD_LLM_PROVIDER=ollama`, and as the fallback vectorizer when
+`DVD_EMBEDDINGS_PROVIDER=ollama`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|

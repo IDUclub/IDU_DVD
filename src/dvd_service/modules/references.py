@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import structlog
 
-from src.api_clients import OllamaClient, OllamaError
+from src.api_clients import ChatClient, OllamaError
 from src.common.config import Settings
 from src.common.db.qdrant_client import QdrantRepository
 from src.common.db.redis_client import DocumentRegistry
@@ -88,7 +88,7 @@ class ReferenceExtractor:
             f"{type(self).__name__}(window_max_items={self.settings.window_max_items})"
         )
 
-    def _llm_refs(self, client: OllamaClient, window_texts) -> dict[int, list[dict]]:
+    def _llm_refs(self, client: ChatClient, window_texts) -> dict[int, list[dict]]:
         user = "\n".join("[%d] %s" % (i, t[:800]) for i, t in enumerate(window_texts))
         data = client.chat(REF_SYSTEM, user, REF_SCHEMA)
         out: dict[int, list[dict]] = {}
@@ -109,7 +109,7 @@ class ReferenceExtractor:
         return out
 
     def extract(
-        self, nodes, client: OllamaClient, on_progress=None
+        self, nodes, client: ChatClient, on_progress=None
     ) -> dict[str, list[dict]]:
         """Return ``{node_id -> [raw reference dicts]}`` for nodes that mention other documents."""
         result: dict[str, list[dict]] = {}

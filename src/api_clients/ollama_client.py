@@ -7,12 +7,13 @@ import json
 import httpx
 import structlog
 
+from src.api_clients.base import LlmError
 from src.common.config import settings
 
 log = structlog.get_logger(__name__)
 
 
-class OllamaError(RuntimeError):
+class OllamaError(LlmError):
     pass
 
 

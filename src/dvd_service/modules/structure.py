@@ -11,7 +11,7 @@ import re
 
 import structlog
 
-from src.api_clients import OllamaClient, OllamaError
+from src.api_clients import ChatClient, OllamaError
 from src.common.config import Settings
 from src.dvd_service.modules.windowing import make_windows, reconcile
 
@@ -135,7 +135,7 @@ class StructureTagger:
     def _clean_tags(raw) -> list[str]:
         return [str(x).strip().lower() for x in (raw or []) if str(x).strip()]
 
-    def _llm_structure(self, client: OllamaClient, window_texts):
+    def _llm_structure(self, client: ChatClient, window_texts):
         user = "\n".join("[%d] %s" % (i, t) for i, t in enumerate(window_texts))
         data = client.chat(STRUCT_SYSTEM, user, STRUCT_SCHEMA)
         return {
@@ -149,7 +149,7 @@ class StructureTagger:
             for it in data["nodes"]
         }
 
-    def tag(self, parts, client: OllamaClient, on_progress=None) -> list[dict]:
+    def tag(self, parts, client: ChatClient, on_progress=None) -> list[dict]:
         decisions = []
         windows = list(make_windows(parts, max_items=self.settings.window_max_items))
         for done, (s, e) in enumerate(windows, 1):

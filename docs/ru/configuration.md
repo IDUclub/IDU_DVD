@@ -16,7 +16,29 @@ pydantic-settings. Значения переопределяются перем�
 
 ## Переменные
 
+### Провайдер LLM
+
+Конвейер просит у модели одно: JSON-ответ по заданной схеме. Оба провайдера это обеспечивают,
+каждый своим протоколом — `format` у Ollama, `response_format={"type": "json_schema"}` у OpenAI, —
+поэтому схемы стадий в обоих случаях одинаковы.
+
+| Переменная | По умолчанию | Описание |
+|------------|--------------|----------|
+| `DVD_LLM_PROVIDER` | `ollama` | `ollama` — нативный `/api/chat`; `openai` — любой OpenAI-совместимый `/v1`-эндпоинт (vLLM, LM Studio, llama.cpp, шим `/v1` самой Ollama, OpenAI API) |
+| `DVD_LLM_BASE_URL` | `http://localhost:8001/v1` | при `provider=openai`: корень `/v1` |
+| `DVD_LLM_MODEL` | `gpt-oss-20b` | при `provider=openai`: идентификатор модели так, как его отдаёт сервер в `GET /v1/models` |
+| `DVD_LLM_API_KEY` | пусто | при `provider=openai`: уходит в `Authorization: Bearer`. Локальные серверы его игнорируют; маскируется в `GET /system/settings` |
+| `DVD_LLM_MAX_TOKENS` | `8192` | при `provider=openai`: бюджет ответа (аналог `DVD_OLLAMA_NUM_PREDICT`). Аналога `num_ctx` у OpenAI **нет** — размер контекста тот, с которым запущен сервер (`--max-model-len` в vLLM) |
+| `DVD_LLM_TIMEOUT` | `600.0` | при `provider=openai`: таймаут запроса, сек |
+
+В отличие от `DVD_EMBEDDINGS_PROVIDER`, перезапуск для них **не нужен**: клиент чата создаётся
+на каждую операцию, поэтому правка через `PUT /system/settings` подхватится следующей задачей
+индексации или бэкфилла.
+
 ### Ollama
+
+Используется как LLM при `DVD_LLM_PROVIDER=ollama` и как резервный векторизатор при
+`DVD_EMBEDDINGS_PROVIDER=ollama`.
 
 | Переменная | По умолчанию | Описание |
 |------------|--------------|----------|
