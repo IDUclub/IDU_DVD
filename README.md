@@ -52,9 +52,10 @@ entities.
 - [uv](https://docs.astral.sh/uv/) for dependency management.
 - Qdrant (vector database).
 - Redis (job statuses and the document/version registry).
-- Ollama with two models:
-  - an LLM for markup, merging, tagging and version detection;
-  - an embedding model (default `bge-m3`, vector size 1024).
+- An LLM endpoint for markup, merging, tagging and version detection (Ollama or an
+  OpenAI-compatible server).
+- The giga-vectorizer service with `Giga-Embeddings-instruct` (the default, vector size 2048).
+  Ollama `bge-m3` remains available as the 1024-dimensional fallback provider.
 - Docker and Docker Compose — optional, to run the infrastructure and the app in containers.
 
 OCR system libraries (poppler, tesseract) are not required for `.docx`: parsing goes through
@@ -70,14 +71,16 @@ docker compose up -d qdrant redis
 
 Brings up Qdrant (`:6333`) and Redis (`:6379`) with data volumes.
 
-### 2. Ollama models
+### 2. Models and vectorizer
 
-The embedding model is mandatory; the LLM is your choice (see `docs/en/configuration.md`):
+Start giga-vectorizer with `Giga-Embeddings-instruct`. The LLM is your choice (see
+`docs/en/configuration.md`); for example, with Ollama:
 
 ```
-ollama pull bge-m3
 ollama pull qwen2.5:7b-instruct
 ```
+
+For the CPU-friendly fallback, set `DVD_EMBEDDINGS_PROVIDER=ollama` and pull `bge-m3`.
 
 ### 3. Configuration
 
@@ -91,7 +94,8 @@ Every setting has a sane default in code (`src/common/config/app_config.py`), so
 without a `.env` at all; the example covers the service's network links (Ollama, Qdrant, Redis,
 Kafka addresses) — what is usually overridden. The full variable
 reference is `.env.full.example` and `docs/en/configuration.md`. Variables are prefixed with
-`DVD_`. `DVD_VECTOR_SIZE` must match the embedding model's dimension (`bge-m3` = 1024).
+`DVD_`. The default vector space is Giga/2048; the service probes the active vectorizer at startup
+and uses `DVD_VECTOR_SIZE` only as a fallback when that probe is unavailable.
 
 ### 4. Running the application
 
