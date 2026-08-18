@@ -135,7 +135,7 @@ class TestUserIndexSearchTools:
     def test_forces_index_only_scope(self, tool, expected_kind):
         fake = FakeSearch()
         _set_singleton_with_search(fake)
-        tool("u1", "s1", "q")
+        tool(scenario_id="s1", query="q", user_id="u1")
         req, kind = fake.calls[-1]
         assert kind == expected_kind
         assert req.user_id == "u1" and req.scenario_id == "s1"
@@ -201,7 +201,9 @@ class TestUserIndexManagementTools:
     def test_create_user_index_delegates(self):
         fake = FakeUserIndexService()
         _set_singleton_with_user_index_service(fake)
-        info = server.create_user_index("u1", "s1", "p1", parent_scenario_id="s0")
+        info = server.create_user_index(
+            "s1", "p1", parent_scenario_id="s0", user_id="u1"
+        )
         assert info.scenario_id == "s1"
         assert fake.create_calls[-1] == ("u1", "s1", "p1", "s0")
 
@@ -209,18 +211,20 @@ class TestUserIndexManagementTools:
         fake = FakeUserIndexService()
         _set_singleton_with_user_index_service(fake)
         with pytest.raises(ToolError):
-            server.create_user_index("u1", "s1", "p1", parent_scenario_id="boom")
+            server.create_user_index(
+                "s1", "p1", parent_scenario_id="boom", user_id="u1"
+            )
 
     def test_list_user_indices_delegates(self):
         fake = FakeUserIndexService()
         _set_singleton_with_user_index_service(fake)
-        resp = server.list_user_indices("u1")
+        resp = server.list_user_indices(user_id="u1")
         assert resp.count == 0
 
     def test_delete_user_index_delegates(self):
         fake = FakeUserIndexService()
         _set_singleton_with_user_index_service(fake)
-        resp = server.delete_user_index("u1", "s1")
+        resp = server.delete_user_index("s1", user_id="u1")
         assert resp.points_deleted == 1
         assert fake.delete_calls[-1] == ("u1", "s1")
 
@@ -228,7 +232,7 @@ class TestUserIndexManagementTools:
         fake = FakeUserIndexService()
         _set_singleton_with_user_index_service(fake)
         with pytest.raises(ToolError):
-            server.delete_user_index("u1", "ghost")
+            server.delete_user_index("ghost", user_id="u1")
 
 
 class TestListDocumentsTool:
@@ -256,7 +260,8 @@ class TestGetTagsTool:
 
 
 class FakeUrbanApi:
-    def project_id_for_scenario(self, scenario_id):
+    def project_id_for_scenario(self, scenario_id, user_id):
+        assert user_id == "u1"
         if scenario_id == "ghost":
             raise ScenarioNotFound("scenario not found: ghost")
         return "p1"
@@ -277,7 +282,7 @@ class TestListUserDocumentsTool:
         user_index_registry.create("u1", "s2", "p1", parent_scenario_id="s1")
         _set_full_singleton(qdrant=fake_qdrant, user_index_registry=user_index_registry)
 
-        resp = server.list_user_documents("u1", "s2")
+        resp = server.list_user_documents("s2", user_id="u1")
 
         assert resp == DocumentListResponse(count=0, documents=[])
 
@@ -298,7 +303,7 @@ class TestListUserDocumentsTool:
             return real_list_documents(self, *a, **k)
 
         monkeypatch.setattr(DocumentsService, "list_documents", _spy)
-        server.list_user_documents("u1", "s2", include_inherited=False)
+        server.list_user_documents("s2", include_inherited=False, user_id="u1")
         assert captured["project_ids"] == ["p1"]
 
 
@@ -308,7 +313,7 @@ class TestDeleteUserDocumentTool:
     ):
         _set_full_singleton(user_index_registry=user_index_registry)
         with pytest.raises(ToolError):
-            server.delete_user_document("u1", "ghost", "doc")
+            server.delete_user_document("ghost", "doc", user_id="u1")
 
     def test_delegates_to_scoped_ingestion(
         self, settings, fake_redis, fake_qdrant, user_index_registry, monkeypatch
@@ -329,7 +334,7 @@ class TestDeleteUserDocumentTool:
         monkeypatch.setattr(
             server, "build_user_ingestion_from_deps", lambda *a, **k: FakeIngestion()
         )
-        resp = server.delete_user_document("u1", "s1", "doc")
+        resp = server.delete_user_document("s1", "doc", user_id="u1")
         assert resp == DeleteResponse(
             name="doc", versions_removed=["v1"], points_deleted=1, points_updated=0
         )
@@ -348,7 +353,7 @@ class TestDeleteUserDocumentTool:
             server, "build_user_ingestion_from_deps", lambda *a, **k: FakeIngestion()
         )
         with pytest.raises(ToolError):
-            server.delete_user_document("u1", "s1", "doc")
+            server.delete_user_document("s1", "doc", user_id="u1")
 
 
 class TestServerObject:
@@ -382,20 +387,37 @@ class TestScopeFilterForwarding:
     """The scope filters exist on every search tool, not only the shared-corpus ones."""
 
     @pytest.mark.parametrize(
-        "tool,args",
+        "tool,args,kwargs",
         [
-            (server.search_texts, ("q",)),
-            (server.search_tables, ("q",)),
-            (server.search_all, ("q",)),
-            (server.search_user_index_texts, ("u1", "s1", "q")),
-            (server.search_user_index_tables, ("u1", "s1", "q")),
-            (server.search_user_index_all, ("u1", "s1", "q")),
+            (server.search_texts, ("q",), {}),
+            (server.search_tables, ("q",), {}),
+            (server.search_all, ("q",), {}),
+            (
+                server.search_user_index_texts,
+                (),
+                {"scenario_id": "s1", "query": "q", "user_id": "u1"},
+            ),
+            (
+                server.search_user_index_tables,
+                (),
+                {"scenario_id": "s1", "query": "q", "user_id": "u1"},
+            ),
+            (
+                server.search_user_index_all,
+                (),
+                {"scenario_id": "s1", "query": "q", "user_id": "u1"},
+            ),
         ],
     )
-    def test_level_and_territories_reach_the_request(self, tool, args):
+    def test_level_and_territories_reach_the_request(self, tool, args, kwargs):
         fake = FakeSearch()
         _set_singleton_with_search(fake)
-        tool(*args, document_level="municipal", territory_ids=[54])
+        tool(
+            *args,
+            **kwargs,
+            document_level="municipal",
+            territory_ids=[54],
+        )
         req, _kind = fake.calls[-1]
         assert req.document_level == "municipal"
         assert req.territory_ids == [54]

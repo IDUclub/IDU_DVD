@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
 import hmac
-import time
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Request
@@ -18,39 +16,21 @@ from fastapi.responses import (
 
 from src.__version__ import VERSION
 from src.api_clients import UrbanApiError
+from src.common.auth import (
+    ADMIN_SESSION_COOKIE,
+    create_admin_session_token,
+    is_admin_session_authenticated,
+)
 from src.common.config import Settings
 from src.dependencies import Dependencies
 
 router = APIRouter(prefix="/admin/ui", tags=["admin-ui"], include_in_schema=False)
 
-_COOKIE = "dvd_admin_session"
 _ROOT = Path(__file__).resolve().parent
 _CSP = (
     "default-src 'self'; img-src 'self' data:; style-src 'self'; "
     "script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
 )
-
-
-def _key(password: str) -> bytes:
-    return hashlib.sha256(("idu-dvd-admin:" + password).encode()).digest()
-
-
-def _token(password: str, hours: int) -> str:
-    expires = str(int(time.time()) + max(1, hours) * 3600)
-    signature = hmac.new(_key(password), expires.encode(), hashlib.sha256).hexdigest()
-    return f"{expires}.{signature}"
-
-
-def _authenticated(request: Request, settings: Settings) -> bool:
-    password = settings.admin_password
-    token = request.cookies.get(_COOKIE, "")
-    if not password or "." not in token:
-        return False
-    expires, signature = token.split(".", 1)
-    if not expires.isdigit() or int(expires) < int(time.time()):
-        return False
-    expected = hmac.new(_key(password), expires.encode(), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(signature, expected)
 
 
 def _html(name: str, **values: str) -> HTMLResponse:
@@ -68,7 +48,7 @@ async def login_page(
     request: Request,
     settings: Settings = Depends(Dependencies.get_settings),
 ):
-    if _authenticated(request, settings):
+    if is_admin_session_authenticated(request, settings):
         return RedirectResponse("/admin/ui", status_code=303)
     configured = (
         ""
@@ -95,13 +75,13 @@ async def login(
         return _html("login.html", error="Неверный пароль", configured="")
     response = RedirectResponse("/admin/ui", status_code=303)
     response.set_cookie(
-        _COOKIE,
-        _token(expected, settings.admin_session_hours),
+        ADMIN_SESSION_COOKIE,
+        create_admin_session_token(expected, settings.admin_session_hours),
         max_age=max(1, settings.admin_session_hours) * 3600,
         httponly=True,
         secure=request.url.scheme == "https",
         samesite="strict",
-        path="/admin/ui",
+        path="/",
     )
     return response
 
@@ -109,7 +89,7 @@ async def login(
 @router.post("/logout")
 async def logout():
     response = RedirectResponse("/admin/ui/login", status_code=303)
-    response.delete_cookie(_COOKIE, path="/admin/ui")
+    response.delete_cookie(ADMIN_SESSION_COOKIE, path="/")
     return response
 
 
@@ -126,7 +106,7 @@ async def territories(
     tree has ~100k nodes, so the search has to happen server-side anyway. The parent name comes
     along because it is the only thing that tells two identically named districts apart.
     """
-    if not _authenticated(request, settings):
+    if not is_admin_session_authenticated(request, settings):
         return JSONResponse({"detail": "unauthorized"}, status_code=401)
     try:
         found = await run_in_threadpool(
@@ -170,6 +150,6 @@ async def admin_ui(
     request: Request,
     settings: Settings = Depends(Dependencies.get_settings),
 ):
-    if not _authenticated(request, settings):
+    if not is_admin_session_authenticated(request, settings):
         return RedirectResponse("/admin/ui/login", status_code=303)
     return _html("admin.html", version=VERSION)

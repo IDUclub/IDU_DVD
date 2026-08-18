@@ -6,7 +6,6 @@ from pydantic import BaseModel
 
 
 class UserIndexCreateRequest(BaseModel):
-    user_id: str
     scenario_id: str
     project_id: str
     parent_scenario_id: str | None = (

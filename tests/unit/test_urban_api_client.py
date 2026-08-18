@@ -278,20 +278,20 @@ class TestScenarioProjectLookup:
             )
 
         client = _client_with(handler)
-        assert client.project_id_for_scenario("12") == "34"
-        assert client.project_id_for_scenario(12) == "34"
+        assert client.project_id_for_scenario("12", "u1") == "34"
+        assert client.project_id_for_scenario(12, "u1") == "34"
         assert calls == ["/api/v1/scenarios/12"]
 
     def test_scenario_404_has_a_specific_error(self):
         client = _client_with(lambda _request: httpx.Response(404))
         with pytest.raises(ScenarioNotFound):
-            client.project_id_for_scenario("12")
+            client.project_id_for_scenario("12", "u1")
 
     @pytest.mark.parametrize("scenario_id", ["", "abc", "0", "-1"])
     def test_rejects_invalid_scenario_id(self, scenario_id):
         client = _client_with(lambda _request: httpx.Response(500))
         with pytest.raises(ValueError):
-            client.project_id_for_scenario(scenario_id)
+            client.project_id_for_scenario(scenario_id, "u1")
 
 
 class TestCaching:

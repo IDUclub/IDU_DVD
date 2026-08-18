@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 
-from pydantic import model_validator
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="DVD_", env_file=".env", extra="ignore"
     )
+
+    service_auth_server_url: str
+    service_auth_realm: str
+    service_auth_client_id: str
+    service_auth_client_secret: SecretStr
 
     # --- Ollama (LLM for markup/tags; embeddings fallback provider) ---
     ollama_base: str = "http://a.dgx:11434"
@@ -139,6 +144,10 @@ class Settings(BaseSettings):
     semantic_merge_max_passes: int = 1
     split_sentences: bool = True
     sent_min_len: int = 300
+
+    # Independent LLM windows inside one document. The contour vLLM handles concurrent
+    # requests efficiently; result order is preserved before overlap reconciliation.
+    llm_concurrency: int = 8
 
     # --- Ingestion concurrency ---
     # How many documents may run the GPU-bound pipeline (LLM markup/tags/refs + embeddings)

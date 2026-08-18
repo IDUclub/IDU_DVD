@@ -2,7 +2,28 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from typing import TypeVar
+
 from src.common.config import settings
+
+_T = TypeVar("_T")
+_R = TypeVar("_R")
+
+
+def map_concurrent(
+    worker: Callable[[_T], _R], items: Iterable[_T], *, max_workers: int
+) -> Iterator[_R]:
+    """Run independent LLM windows concurrently while yielding results in input order."""
+    values = list(items)
+    workers = max(1, int(max_workers))
+    if workers == 1:
+        for item in values:
+            yield worker(item)
+        return
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="dvd-llm") as pool:
+        yield from pool.map(worker, values)
 
 
 def make_windows(items, max_chars=None, overlap=None, max_items=10**9):

@@ -66,7 +66,7 @@ def wired(
     )
 
     class FakeUrbanApi:
-        def project_id_for_scenario(self, _scenario_id):
+        def project_id_for_scenario(self, _scenario_id, _user_id):
             return "p1"
 
     search = SearchService(
