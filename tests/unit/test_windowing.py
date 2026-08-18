@@ -6,7 +6,9 @@ with the most left context across overlapping windows.
 
 from __future__ import annotations
 
-from src.dvd_service.modules.windowing import make_windows, reconcile
+import threading
+
+from src.dvd_service.modules.windowing import make_windows, map_concurrent, reconcile
 
 
 def _items(*lengths):
@@ -60,3 +62,21 @@ class TestReconcile:
     def test_later_window_wins_when_it_has_more_context(self):
         decisions = [(2, {0: "low_ctx"}), (0, {2: "high_ctx"})]
         assert reconcile(decisions)[2] == "high_ctx"
+
+
+class TestConcurrentMap:
+    def test_runs_workers_in_parallel_and_preserves_order(self):
+        lock = threading.Lock()
+        all_started = threading.Event()
+        started = 0
+
+        def worker(value):
+            nonlocal started
+            with lock:
+                started += 1
+                if started == 4:
+                    all_started.set()
+            assert all_started.wait(timeout=1)
+            return value * 2
+
+        assert list(map_concurrent(worker, range(4), max_workers=4)) == [0, 2, 4, 6]

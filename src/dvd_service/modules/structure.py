@@ -13,7 +13,7 @@ import structlog
 
 from src.api_clients import ChatClient, OllamaError
 from src.common.config import Settings
-from src.dvd_service.modules.windowing import make_windows, reconcile
+from src.dvd_service.modules.windowing import make_windows, map_concurrent, reconcile
 
 log = structlog.get_logger(__name__)
 
@@ -152,12 +152,22 @@ class StructureTagger:
     def tag(self, parts, client: ChatClient, on_progress=None) -> list[dict]:
         decisions = []
         windows = list(make_windows(parts, max_items=self.settings.window_max_items))
-        for done, (s, e) in enumerate(windows, 1):
+
+        def process(window):
+            s, e = window
             texts = [parts[k]["text"] for k in range(s, e)]
             try:
-                decisions.append((s, self._llm_structure(client, texts)))
+                return s, self._llm_structure(client, texts)
             except (OllamaError, Exception) as exc:  # noqa: BLE001
                 log.warning("stage2_window_skipped", start=s, end=e, error=str(exc))
+                return None
+
+        results = map_concurrent(
+            process, windows, max_workers=self.settings.llm_concurrency
+        )
+        for done, decision in enumerate(results, 1):
+            if decision is not None:
+                decisions.append(decision)
             if on_progress:
                 on_progress(done, len(windows))
         tags = reconcile(decisions)
