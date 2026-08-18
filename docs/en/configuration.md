@@ -241,6 +241,7 @@ the ingestion path apart; deletion of a directly-ingested document still emits t
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `DVD_LLM_CONCURRENCY` | `8` | independent LLM windows processed concurrently inside one document; results are reconciled in source order |
 | `DVD_INGEST_CONCURRENCY` | `1` | how many documents may run the GPU-bound pipeline (LLM markup/tags/refs + embeddings) at once; extra documents wait in status `queued`. Keep `1` for a single GPU; raise only with more GPU capacity |
 | `DVD_UPLOAD_DIR` | `./_uploads` | directory for temporary upload files |
 | `DVD_ALLOWED_EXTENSIONS` | `[".docx",".txt",".md",".html",".htm"]` | allowed extensions (OCR-free formats handled by `unstructured`; scanned PDF/OCR is deferred — add `".pdf"` once the heavy backends are provisioned) |

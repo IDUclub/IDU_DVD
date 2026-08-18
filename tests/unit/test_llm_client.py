@@ -113,7 +113,9 @@ class TestChat:
         def handler(request):
             return httpx.Response(
                 200,
-                json={"choices": [{"finish_reason": "stop", "message": {"content": ""}}]},
+                json={
+                    "choices": [{"finish_reason": "stop", "message": {"content": ""}}]
+                },
             )
 
         oc = _client_with(handler)

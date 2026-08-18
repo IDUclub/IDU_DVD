@@ -31,7 +31,7 @@ from src.dvd_service.modules.reference_patterns import (
     normalize_designation,
     normalize_numbering,
 )
-from src.dvd_service.modules.windowing import make_windows
+from src.dvd_service.modules.windowing import make_windows, map_concurrent
 
 log = structlog.get_logger(__name__)
 
@@ -116,15 +116,26 @@ class ReferenceExtractor:
         windows = list(
             make_windows(nodes, overlap=0, max_items=self.settings.window_max_items)
         )
-        for done, (s, e) in enumerate(windows, 1):
+
+        def process(window):
+            s, e = window
             window = nodes[s:e]
             try:
                 local = self._llm_refs(client, [n["text"] for n in window])
             except (OllamaError, Exception) as exc:  # noqa: BLE001
                 log.warning("reference_window_skipped", start=s, end=e, error=str(exc))
+                return None
+            return window, local
+
+        results = map_concurrent(
+            process, windows, max_workers=self.settings.llm_concurrency
+        )
+        for done, window_result in enumerate(results, 1):
+            if window_result is None:
                 if on_progress:
                     on_progress(done, len(windows))
                 continue
+            window, local = window_result
             for pos, n in enumerate(window):
                 refs = local.get(pos, [])
                 if refs:
