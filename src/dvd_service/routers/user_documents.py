@@ -26,6 +26,7 @@ from fastapi.concurrency import run_in_threadpool
 from minio.error import S3Error
 
 from src.api_clients import ScenarioNotFound, UrbanApiClient, UrbanApiError
+from src.common.auth import get_current_user_id
 from src.common.config import Settings
 from src.common.db.minio_client import DocumentStorage
 from src.common.db.qdrant_client import QdrantRepository, user_scope_conditions
@@ -83,9 +84,11 @@ def _scoped_registry(
     )
 
 
-def _project_for_scenario(urban_api: UrbanApiClient, scenario_id: str) -> str:
+def _project_for_scenario(
+    urban_api: UrbanApiClient, scenario_id: str, user_id: str
+) -> str:
     try:
-        return urban_api.project_id_for_scenario(scenario_id)
+        return urban_api.project_id_for_scenario(scenario_id, user_id)
     except ScenarioNotFound as exc:
         raise HTTPException(404, str(exc))
     except ValueError as exc:
@@ -98,11 +101,12 @@ def _resolve_project(
     urban_api: UrbanApiClient,
     project_id: str | None,
     scenario_id: str | None,
+    user_id: str,
 ) -> str:
     if not project_id and not scenario_id:
         raise HTTPException(400, "project_id or scenario_id is required")
     if scenario_id:
-        resolved = _project_for_scenario(urban_api, scenario_id)
+        resolved = _project_for_scenario(urban_api, scenario_id, user_id)
         if project_id and str(project_id) != resolved:
             raise HTTPException(
                 400, "project_id does not match the scenario's project in Urban API"
@@ -117,6 +121,7 @@ def _resolve_project(
 @router.post("/index", response_model=UserIndexInfo, status_code=201)
 async def create_index(
     body: UserIndexCreateRequest,
+    user_id: str = Depends(get_current_user_id),
     service: UserIndexService = Depends(Dependencies.get_user_index_service),
 ):
     """Create a user document index — a ``(user_id, scenario_id)`` bucket, optionally inheriting
@@ -124,7 +129,7 @@ async def create_index(
     try:
         return await run_in_threadpool(
             service.create_index,
-            body.user_id,
+            user_id,
             body.scenario_id,
             body.project_id,
             body.parent_scenario_id,
@@ -135,7 +140,7 @@ async def create_index(
 
 @router.get("/index", response_model=UserIndexListResponse)
 async def list_indices(
-    user_id: str,
+    user_id: str = Depends(get_current_user_id),
     service: UserIndexService = Depends(Dependencies.get_user_index_service),
 ):
     """All document indices belonging to a user."""
@@ -144,8 +149,8 @@ async def list_indices(
 
 @router.delete("/index", response_model=UserIndexDeleteResponse)
 async def delete_index(
-    user_id: str,
     scenario_id: str,
+    user_id: str = Depends(get_current_user_id),
     service: UserIndexService = Depends(Dependencies.get_user_index_service),
 ):
     """Wipe a user document index entirely (all its own documents; inherited ones are untouched
@@ -163,7 +168,6 @@ async def delete_index(
 async def upload_user_document(
     background: BackgroundTasks,
     file: UploadFile = File(...),
-    user_id: str = Form(...),
     project_id: str = Form(...),
     scenario_id: str | None = Form(None),
     parent_scenario_id: str | None = Form(
@@ -179,13 +183,14 @@ async def upload_user_document(
     index_registry: UserIndexRegistry = Depends(Dependencies.get_user_index_registry),
     jobs: JobStore = Depends(Dependencies.get_jobs),
     urban_api: UrbanApiClient = Depends(Dependencies.get_urban_api),
+    user_id: str = Depends(get_current_user_id),
 ):
     """Upload a document into a user index (auto-created on first upload if it doesn't exist).
 
     The original file is saved to MinIO before indexing starts (fail-closed).
     """
     project_id = await run_in_threadpool(
-        _resolve_project, urban_api, project_id, scenario_id
+        _resolve_project, urban_api, project_id, scenario_id, user_id
     )
     if scenario_id:
         index_registry.get_or_create(
@@ -227,7 +232,6 @@ async def update_user_document(
     name: str,
     background: BackgroundTasks,
     file: UploadFile = File(...),
-    user_id: str = Query(...),
     project_id: str | None = Query(None),
     scenario_id: str | None = Query(None),
     version: str | None = Form(None),
@@ -238,13 +242,14 @@ async def update_user_document(
     storage: DocumentStorage = Depends(Dependencies.get_user_document_storage),
     urban_api: UrbanApiClient = Depends(Dependencies.get_urban_api),
     jobs: JobStore = Depends(Dependencies.get_jobs),
+    user_id: str = Depends(get_current_user_id),
 ):
     """Delta update of a document already in a user index.
 
     The original file is saved to MinIO before indexing starts (fail-closed).
     """
     project_id = await run_in_threadpool(
-        _resolve_project, urban_api, project_id, scenario_id
+        _resolve_project, urban_api, project_id, scenario_id, user_id
     )
     registry = _scoped_registry(redis, settings, user_id, project_id)
     if not registry.has_name(name):
@@ -284,7 +289,6 @@ async def reload_user_document(
     name: str,
     background: BackgroundTasks,
     file: UploadFile = File(...),
-    user_id: str = Query(...),
     project_id: str | None = Query(None),
     scenario_id: str | None = Query(None),
     version: str | None = Form(None),
@@ -294,13 +298,14 @@ async def reload_user_document(
     storage: DocumentStorage = Depends(Dependencies.get_user_document_storage),
     urban_api: UrbanApiClient = Depends(Dependencies.get_urban_api),
     jobs: JobStore = Depends(Dependencies.get_jobs),
+    user_id: str = Depends(get_current_user_id),
 ):
     """Full reload (create-or-replace) of a document in a user index.
 
     The original file is saved to MinIO before indexing starts (fail-closed).
     """
     project_id = await run_in_threadpool(
-        _resolve_project, urban_api, project_id, scenario_id
+        _resolve_project, urban_api, project_id, scenario_id, user_id
     )
     ingestion = _build_ingestion(user_id, project_id, scenario_id)
 
@@ -334,17 +339,17 @@ async def reload_user_document(
 @router.delete("/{name}", response_model=DeleteResponse)
 async def delete_user_document(
     name: str,
-    user_id: str = Query(...),
     project_id: str | None = Query(None),
     scenario_id: str | None = Query(None),
     version: str | None = Query(
         None, description="Удалить только эту версию; без параметра — все версии"
     ),
     urban_api: UrbanApiClient = Depends(Dependencies.get_urban_api),
+    user_id: str = Depends(get_current_user_id),
 ):
     """Delete a document (or one of its versions) from a user index."""
     project_id = await run_in_threadpool(
-        _resolve_project, urban_api, project_id, scenario_id
+        _resolve_project, urban_api, project_id, scenario_id, user_id
     )
     ingestion = _build_ingestion(user_id, project_id, scenario_id)
     try:
@@ -356,7 +361,6 @@ async def delete_user_document(
 
 @router.get("", response_model=DocumentListResponse)
 async def list_user_documents(
-    user_id: str,
     project_id: str | None = None,
     scenario_id: str | None = None,
     include_inherited: bool = True,
@@ -368,13 +372,14 @@ async def list_user_documents(
     uploaded_to: str | None = None,
     qdrant: QdrantRepository = Depends(Dependencies.get_qdrant),
     urban_api: UrbanApiClient = Depends(Dependencies.get_urban_api),
+    user_id: str = Depends(get_current_user_id),
 ):
     """Documents in a project, addressed directly or through a scenario.
 
     ``include_inherited`` is a deprecated no-op retained for request compatibility.
     """
     project_id = await run_in_threadpool(
-        _resolve_project, urban_api, project_id, scenario_id
+        _resolve_project, urban_api, project_id, scenario_id, user_id
     )
     documents = DocumentsService(qdrant)
     return await run_in_threadpool(
@@ -393,7 +398,6 @@ async def list_user_documents(
 @router.get("/{name}/source")
 async def download_user_source(
     name: str,
-    user_id: str = Query(...),
     project_id: str | None = Query(None),
     scenario_id: str | None = Query(None),
     version: str | None = Query(
@@ -403,13 +407,14 @@ async def download_user_source(
     qdrant: QdrantRepository = Depends(Dependencies.get_qdrant),
     storage: DocumentStorage = Depends(Dependencies.get_user_document_storage),
     urban_api: UrbanApiClient = Depends(Dependencies.get_urban_api),
+    user_id: str = Depends(get_current_user_id),
 ):
     """Proxy a project document source from MinIO.
 
     ``include_inherited`` is a deprecated no-op retained for request compatibility.
     """
     project_id = await run_in_threadpool(
-        _resolve_project, urban_api, project_id, scenario_id
+        _resolve_project, urban_api, project_id, scenario_id, user_id
     )
     extra_must = user_scope_conditions(user_id, [project_id])
     points = await run_in_threadpool(qdrant.points_by_name, name, extra_must)

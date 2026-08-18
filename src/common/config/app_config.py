@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 
-from pydantic import model_validator
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="DVD_", env_file=".env", extra="ignore"
     )
+
+    service_auth_server_url: str
+    service_auth_realm: str
+    service_auth_client_id: str
+    service_auth_client_secret: SecretStr
 
     # --- Ollama (LLM for markup/tags; embeddings fallback provider) ---
     ollama_base: str = "http://a.dgx:11434"

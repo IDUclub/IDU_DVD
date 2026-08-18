@@ -624,8 +624,8 @@ curl -X PUT http://localhost:8000/system/settings \
   -d '{"updates": {"DVD_VECTOR_SIZE": 2048}}'
 ```
 
-> The settings endpoints are unauthenticated, like the rest of the service — keep them on a trusted
-> network, since a write can change where the app points (Qdrant/Redis/Ollama) and toggle stages.
+> The settings endpoints require a bearer service token. Keep them on a trusted network as well,
+> since a write can change where the app points (Qdrant/Redis/Ollama) and toggle stages.
 
 ## MCP tools
 

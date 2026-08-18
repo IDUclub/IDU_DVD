@@ -103,6 +103,10 @@ jobs:
           DVD_MINIO_SECRET_KEY: ${{ secrets.DVD_MINIO_SECRET_KEY }}
           DVD_MINIO_SECURE: ${{ vars.DVD_MINIO_SECURE }}
           DVD_ADMIN_PASSWORD: ${{ secrets.DVD_ADMIN_PASSWORD }}
+          DVD_SERVICE_AUTH_SERVER_URL: ${{ vars.DVD_SERVICE_AUTH_SERVER_URL }}
+          DVD_SERVICE_AUTH_REALM: ${{ vars.DVD_SERVICE_AUTH_REALM }}
+          DVD_SERVICE_AUTH_CLIENT_ID: ${{ vars.DVD_SERVICE_AUTH_CLIENT_ID }}
+          DVD_SERVICE_AUTH_CLIENT_SECRET: ${{ secrets.DVD_SERVICE_AUTH_CLIENT_SECRET }}
         run: |
           : > .env.overrides
           env | grep '^DVD_' | grep -vE '^(DVD_IMAGE|DVD_HOST_PORT)=' | grep -v '=$' >> .env.overrides || true

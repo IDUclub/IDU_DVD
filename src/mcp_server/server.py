@@ -7,9 +7,11 @@ Mounted into the main FastAPI application (`src/main.py`) at the `/mcp` path and
 from __future__ import annotations
 
 from fastmcp import FastMCP
+from fastmcp.dependencies import Depends
 from fastmcp.exceptions import ToolError
 
 from src.api_clients import UrbanApiError
+from src.common.auth import get_mcp_user_id, service_token_verifier
 from src.dependencies import Dependencies
 from src.dvd_service.dto import (
     DeleteResponse,
@@ -29,12 +31,14 @@ from src.dvd_service.modules.reference_patterns import normalize_designation
 from src.dvd_service.services.dvd_service import DocumentsService
 from src.dvd_service.services.user_index_service import build_user_ingestion_from_deps
 
-mcp = FastMCP("dvd-idu")
+mcp = FastMCP("dvd-idu", auth=service_token_verifier)
 
 
-def _project_id_for_scenario(scenario_id: str) -> str:
+def _project_id_for_scenario(scenario_id: str, user_id: str) -> str:
     try:
-        return Dependencies.get_urban_api().project_id_for_scenario(scenario_id)
+        return Dependencies.get_urban_api().project_id_for_scenario(
+            scenario_id, user_id
+        )
     except (UrbanApiError, ValueError) as exc:
         raise ToolError(str(exc))
 
@@ -92,7 +96,6 @@ def search_texts(
     tags: list[str] | None = None,
     limit: int = 10,
     context_height: int = 0,
-    user_id: str | None = None,
     project_id: str | None = None,
     scenario_id: str | None = None,
     include_shared: bool = True,
@@ -100,6 +103,7 @@ def search_texts(
     parent_id: str | None = None,
     document_level: str | None = None,
     territory_ids: list[int] | None = None,
+    user_id: str = Depends(get_mcp_user_id),
 ) -> SearchResponse:
     """Vector search over text fragments (kind=text) with filters and context height.
 
@@ -126,7 +130,7 @@ def search_texts(
         block,
         types,
         document_names,
-        user_id,
+        user_id if (project_id or scenario_id) else None,
         project_id,
         scenario_id,
         include_shared,
@@ -148,7 +152,6 @@ def search_tables(
     tags: list[str] | None = None,
     limit: int = 10,
     context_height: int = 0,
-    user_id: str | None = None,
     project_id: str | None = None,
     scenario_id: str | None = None,
     include_shared: bool = True,
@@ -156,6 +159,7 @@ def search_tables(
     parent_id: str | None = None,
     document_level: str | None = None,
     territory_ids: list[int] | None = None,
+    user_id: str = Depends(get_mcp_user_id),
 ) -> SearchResponse:
     """Vector search over tables (kind=table) with filters and context height.
 
@@ -177,7 +181,7 @@ def search_tables(
         block,
         types,
         document_names,
-        user_id,
+        user_id if (project_id or scenario_id) else None,
         project_id,
         scenario_id,
         include_shared,
@@ -199,7 +203,6 @@ def search_all(
     tags: list[str] | None = None,
     limit: int = 10,
     context_height: int = 0,
-    user_id: str | None = None,
     project_id: str | None = None,
     scenario_id: str | None = None,
     include_shared: bool = True,
@@ -207,6 +210,7 @@ def search_all(
     parent_id: str | None = None,
     document_level: str | None = None,
     territory_ids: list[int] | None = None,
+    user_id: str = Depends(get_mcp_user_id),
 ) -> SearchResponse:
     """Vector search across all entities (texts and tables) with filters and context height.
 
@@ -230,7 +234,7 @@ def search_all(
         block,
         types,
         document_names,
-        user_id,
+        user_id if (project_id or scenario_id) else None,
         project_id,
         scenario_id,
         include_shared,
@@ -243,7 +247,6 @@ def search_all(
 
 @mcp.tool()
 def search_user_index_texts(
-    user_id: str,
     scenario_id: str,
     query: str,
     project_id: str | None = None,
@@ -259,6 +262,7 @@ def search_user_index_texts(
     parent_id: str | None = None,
     document_level: str | None = None,
     territory_ids: list[int] | None = None,
+    user_id: str = Depends(get_mcp_user_id),
 ) -> SearchResponse:
     """Vector search restricted to a user document index (text fragments) — never the shared corpus."""
     return _search(
@@ -285,7 +289,6 @@ def search_user_index_texts(
 
 @mcp.tool()
 def search_user_index_tables(
-    user_id: str,
     scenario_id: str,
     query: str,
     project_id: str | None = None,
@@ -301,6 +304,7 @@ def search_user_index_tables(
     parent_id: str | None = None,
     document_level: str | None = None,
     territory_ids: list[int] | None = None,
+    user_id: str = Depends(get_mcp_user_id),
 ) -> SearchResponse:
     """Vector search restricted to a user document index (tables) — never the shared corpus."""
     return _search(
@@ -327,7 +331,6 @@ def search_user_index_tables(
 
 @mcp.tool()
 def search_user_index_all(
-    user_id: str,
     scenario_id: str,
     query: str,
     project_id: str | None = None,
@@ -343,6 +346,7 @@ def search_user_index_all(
     parent_id: str | None = None,
     document_level: str | None = None,
     territory_ids: list[int] | None = None,
+    user_id: str = Depends(get_mcp_user_id),
 ) -> SearchResponse:
     """Vector search restricted to a user document index (all entities) — never the shared corpus."""
     return _search(
@@ -400,10 +404,10 @@ def list_documents(
 
 @mcp.tool()
 def create_user_index(
-    user_id: str,
     scenario_id: str,
     project_id: str,
     parent_scenario_id: str | None = None,
+    user_id: str = Depends(get_mcp_user_id),
 ) -> UserIndexInfo:
     """Create a user document index — a (user_id, scenario_id) bucket, optionally inheriting
     (live, recursively) from another scenario's index."""
@@ -416,13 +420,18 @@ def create_user_index(
 
 
 @mcp.tool()
-def list_user_indices(user_id: str) -> UserIndexListResponse:
+def list_user_indices(
+    user_id: str = Depends(get_mcp_user_id),
+) -> UserIndexListResponse:
     """All document indices belonging to a user."""
     return Dependencies.get_user_index_service().list_indices(user_id)
 
 
 @mcp.tool()
-def delete_user_index(user_id: str, scenario_id: str) -> UserIndexDeleteResponse:
+def delete_user_index(
+    scenario_id: str,
+    user_id: str = Depends(get_mcp_user_id),
+) -> UserIndexDeleteResponse:
     """Wipe a user document index entirely (inherited documents are untouched)."""
     try:
         return Dependencies.get_user_index_service().delete_index(user_id, scenario_id)
@@ -432,7 +441,6 @@ def delete_user_index(user_id: str, scenario_id: str) -> UserIndexDeleteResponse
 
 @mcp.tool()
 def list_user_documents(
-    user_id: str,
     scenario_id: str,
     include_inherited: bool = True,
     name: str | None = None,
@@ -441,13 +449,14 @@ def list_user_documents(
     tags: list[str] | None = None,
     uploaded_from: str | None = None,
     uploaded_to: str | None = None,
+    user_id: str = Depends(get_mcp_user_id),
 ) -> DocumentListResponse:
     """Documents in a scenario's project, aggregated by (name, version).
 
     ``scenario_id`` is resolved through Urban API; ``include_inherited`` is retained as a
     no-op compatibility parameter because project-scoped documents need no scenario chain.
     """
-    project_id = _project_id_for_scenario(scenario_id)
+    project_id = _project_id_for_scenario(scenario_id, user_id)
     documents = DocumentsService(Dependencies.get_qdrant())
     return documents.list_documents(
         name,
@@ -463,11 +472,14 @@ def list_user_documents(
 
 @mcp.tool()
 def delete_user_document(
-    user_id: str, scenario_id: str, name: str, version: str | None = None
+    scenario_id: str,
+    name: str,
+    version: str | None = None,
+    user_id: str = Depends(get_mcp_user_id),
 ) -> DeleteResponse:
     """Delete a document (or one of its versions) from a user index."""
     deps = Dependencies.instance()
-    project_id = _project_id_for_scenario(scenario_id)
+    project_id = _project_id_for_scenario(scenario_id, user_id)
     ingestion = build_user_ingestion_from_deps(
         deps, user_id=user_id, project_id=project_id, scenario_id=scenario_id
     )
