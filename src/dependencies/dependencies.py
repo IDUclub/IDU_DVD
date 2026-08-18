@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from idu_service_auth import KeycloakTokenClient
+
 from src.api_clients import UrbanApiClient
 from src.broker.outbox import EventOutbox
 from src.broker.publisher import KafkaPublisher
@@ -52,6 +54,7 @@ class Dependencies:
     # Field order = initialization order; used by as_dict/__repr__.
     _FIELDS: tuple[str, ...] = (
         "settings",
+        "service_auth",
         "logger",
         "qdrant",
         "redis",
@@ -84,6 +87,7 @@ class Dependencies:
     _instance: "Dependencies | None" = None
 
     settings: Settings
+    service_auth: KeycloakTokenClient
     logger: Any
     qdrant: QdrantRepository
     redis: RedisClient
@@ -122,6 +126,7 @@ class Dependencies:
         self,
         *,
         settings: Settings,
+        service_auth: KeycloakTokenClient,
         logger: Any,
         qdrant: QdrantRepository,
         redis: RedisClient,
@@ -152,6 +157,7 @@ class Dependencies:
     ) -> "Dependencies":
         """Set all dependencies once (called from ``init_dependencies``)."""
         self.settings = settings
+        self.service_auth = service_auth
         self.logger = logger
         self.qdrant = qdrant
         self.redis = redis
@@ -200,6 +206,10 @@ class Dependencies:
     @classmethod
     def get_settings(cls) -> Settings:
         return cls.instance().settings
+
+    @classmethod
+    def get_service_auth(cls) -> KeycloakTokenClient:
+        return cls.instance().service_auth
 
     @classmethod
     def get_logger(cls) -> Any:

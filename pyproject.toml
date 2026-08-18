@@ -6,6 +6,7 @@ dependencies = [
     "fastapi>=0.141.1",
     "fastmcp>=3.4.5",
     "httpx>=0.28.1",
+    "idu-service-auth @ https://github.com/IDUclub/idu-service-auth/archive/1b8a418d9b1ab702860eb7289a3b75244666a8d8.tar.gz",
     "ipykernel>=7.3.0",
     "minio>=7.2.20",
     "otteroad>=0.3.0",

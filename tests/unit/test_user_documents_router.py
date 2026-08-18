@@ -13,6 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from src.common.auth import require_service_token
 from src.common.config import Settings
 from src.common.db.redis_client import RedisClient, UserIndexRegistry
 from src.dependencies import Dependencies
@@ -40,7 +41,8 @@ class FakeJobs:
 
 
 class FakeUrbanApi:
-    def project_id_for_scenario(self, _scenario_id):
+    def project_id_for_scenario(self, _scenario_id, user_id):
+        assert user_id
         return "p1"
 
 
@@ -124,6 +126,7 @@ def client(
     upload_settings = Settings(upload_dir=str(tmp_path))
     app = FastAPI()
     app.include_router(user_documents_router)
+    app.dependency_overrides[require_service_token] = lambda: None
     app.dependency_overrides[Dependencies.get_settings] = lambda: upload_settings
     app.dependency_overrides[Dependencies.get_parser] = lambda: FakeParser()
     app.dependency_overrides[Dependencies.get_redis] = lambda: redis_client
@@ -139,7 +142,10 @@ def client(
     )
     app.dependency_overrides[Dependencies.get_jobs] = lambda: FakeJobs()
     app.dependency_overrides[Dependencies.get_urban_api] = lambda: FakeUrbanApi()
-    with TestClient(app) as c:
+    with TestClient(
+        app,
+        headers={"Authorization": "Bearer service", "X-User-Id": "u1"},
+    ) as c:
         yield c, fake_ingestion, index_registry, fake_document_storage
 
 
@@ -404,7 +410,12 @@ class TestDownloadUserSource:
         )
 
         resp = c.get(
-            "/user-documents/doc/source", params={"user_id": "u2", "scenario_id": "s1"}
+            "/user-documents/doc/source",
+            params={"scenario_id": "s1"},
+            headers={
+                "Authorization": "Bearer service",
+                "X-User-Id": "u2",
+            },
         )
         assert resp.status_code == 404
 

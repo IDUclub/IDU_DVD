@@ -9,11 +9,19 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
+from idu_service_auth import KeycloakTokenClient
 
 pytestmark = pytest.mark.integration
 
 
-def test_app_boots_and_responds(require_qdrant, require_redis, reset_dependencies):
+def test_app_boots_and_responds(
+    require_qdrant, require_redis, reset_dependencies, monkeypatch
+):
+    async def fake_access_token(_self):
+        return "service-token"
+
+    monkeypatch.setattr(KeycloakTokenClient, "get_access_token", fake_access_token)
+
     from src.main import app
 
     with TestClient(app) as client:  # entering runs the lifespan (init_dependencies)

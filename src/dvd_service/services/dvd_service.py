@@ -1415,7 +1415,9 @@ class SearchService:
             project_id = req.project_id
             if req.scenario_id:
                 if self.urban_api is not None:
-                    resolved = self.urban_api.project_id_for_scenario(req.scenario_id)
+                    resolved = self.urban_api.project_id_for_scenario(
+                        req.scenario_id, req.user_id
+                    )
                 else:
                     # Compatibility for isolated/unit wiring. Production always injects the
                     # Urban client; old registry records still make rolling upgrades readable.

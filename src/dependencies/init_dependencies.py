@@ -14,6 +14,7 @@ from minio import Minio
 from src.api_clients import UrbanApiClient, probe_embedding_dim
 from src.broker.outbox import EventOutbox
 from src.broker.publisher import KafkaPublisher
+from src.common.auth import SyncServiceTokenAuth, build_service_auth
 from src.common.config import Settings, settings
 from src.common.db.minio_client import DocumentStorage
 from src.common.db.qdrant_client import QdrantRepository
@@ -124,6 +125,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     # by the file + console sinks.
     configure_logging(s)
     app_logger = structlog.get_logger("app")
+    service_auth = build_service_auth(s)
 
     # Pin the Qdrant vector size to whatever the active vectorizer actually returns, so the
     # collection dimension can never drift from the embedding model. Falls back to the
@@ -172,7 +174,9 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     # settings validator refuses to build), but not of the boot sequence: it is contacted
     # lazily, so a stand that is down delays tagging instead of the service.
     urban_api = UrbanApiClient(
-        base=s.urban_api_url, timeout=s.urban_api_timeout, token=s.urban_api_token
+        base=s.urban_api_url,
+        timeout=s.urban_api_timeout,
+        service_auth=SyncServiceTokenAuth(service_auth, s.urban_api_timeout),
     )
     territory = TerritoryResolver(urban_api)
 
@@ -220,6 +224,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
 
     deps = Dependencies().set(
         settings=s,
+        service_auth=service_auth,
         logger=app_logger,
         qdrant=qdrant,
         redis=redis,

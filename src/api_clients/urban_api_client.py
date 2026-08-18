@@ -13,6 +13,7 @@ other API client has.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from dataclasses import dataclass
 import httpx
 import structlog
 
+from src.common.auth import SyncServiceTokenAuth
 from src.common.config import settings
 
 log = structlog.get_logger(__name__)
@@ -141,13 +143,12 @@ class UrbanApiClient:
         self,
         base: str | None = None,
         timeout: float | None = None,
-        token: str | None = None,
+        service_auth: SyncServiceTokenAuth | None = None,
     ) -> None:
         self.base = (base or settings.urban_api_url).rstrip("/")
         self.timeout = timeout or settings.urban_api_timeout
-        token = token or settings.urban_api_token
-        headers = {"Authorization": f"Bearer {token}"} if token else None
-        self._client = httpx.Client(timeout=self.timeout, headers=headers)
+        self.service_auth = service_auth
+        self._client = httpx.Client(timeout=self.timeout, auth=service_auth)
         self._cache = _TTLCache()
 
     def __repr__(self) -> str:
@@ -155,6 +156,11 @@ class UrbanApiClient:
 
     def close(self) -> None:
         self._client.close()
+
+    def bind_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        if self.service_auth is None:
+            raise RuntimeError("service auth is not configured")
+        self.service_auth.bind_event_loop(loop)
 
     def __enter__(self) -> "UrbanApiClient":
         return self
@@ -181,11 +187,15 @@ class UrbanApiClient:
         params: dict | None = None,
         *,
         not_found: type[UrbanApiError] = TerritoryNotFound,
+        user_id: str | None = None,
     ):
         last_error: Exception | None = None
         for attempt in range(_MAX_RETRIES):
             try:
-                response = self._client.get(self.base + path, params=params)
+                headers = {"X-User-Id": user_id} if user_id else None
+                response = self._client.get(
+                    self.base + path, params=params, headers=headers
+                )
             except httpx.HTTPError as exc:
                 last_error = exc
             else:
@@ -223,7 +233,7 @@ class UrbanApiClient:
 
     # --- catalogue ---------------------------------------------------------------------
 
-    def project_id_for_scenario(self, scenario_id: str | int) -> str:
+    def project_id_for_scenario(self, scenario_id: str | int, user_id: str) -> str:
         """Return the project owning ``scenario_id`` according to Urban API.
 
         The OpenAPI ``Scenario`` response embeds a short project object at
@@ -233,13 +243,15 @@ class UrbanApiClient:
         sid = str(scenario_id).strip()
         if not sid or not sid.isdigit() or int(sid) <= 0:
             raise ValueError("scenario_id must be a positive integer")
-        key = ("scenario_project", sid)
+        key = ("scenario_project", user_id, sid)
         cached = self._cache.get(key)
         if cached is not None:
             return cached
         try:
             data = self._get(
-                f"/api/v1/scenarios/{int(sid)}", not_found=ScenarioNotFound
+                f"/api/v1/scenarios/{int(sid)}",
+                not_found=ScenarioNotFound,
+                user_id=user_id,
             )
         except httpx.HTTPStatusError as exc:
             raise UrbanApiError(
