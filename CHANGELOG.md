@@ -1,3 +1,10 @@
+## v0.13.0 (2026-08-18)
+
+### Feat
+
+- **auth**: require service tokens (#49)
+- use Giga 2048 with parallel document LLM windows (#48)
+
 ## v0.12.0 (2026-08-17)
 
 ### Feat
