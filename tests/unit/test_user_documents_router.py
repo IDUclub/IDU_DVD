@@ -12,8 +12,9 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from fastmcp.server.auth import AccessToken
 
-from src.common.auth import require_service_token
+from src.common.auth import keycloak_token_verifier
 from src.common.config import Settings
 from src.common.db.redis_client import RedisClient, UserIndexRegistry
 from src.dependencies import Dependencies
@@ -100,6 +101,28 @@ def _reset_singleton():
 def client(
     tmp_path, settings, fake_redis, fake_qdrant, fake_document_storage, monkeypatch
 ):
+    async def fake_verify_token(token):
+        if token == "user":
+            return AccessToken(
+                token=token,
+                client_id="frontend",
+                scopes=[],
+                claims={"sub": "u1", "preferred_username": "user"},
+            )
+        if token == "service":
+            return AccessToken(
+                token=token,
+                client_id="service",
+                scopes=[],
+                claims={
+                    "sub": "service-subject",
+                    "preferred_username": "service-account-test",
+                },
+            )
+        return None
+
+    monkeypatch.setattr(keycloak_token_verifier, "verify_token", fake_verify_token)
+
     redis_client = RedisClient(settings)
     index_registry = UserIndexRegistry(redis_client, prefix=settings.registry_prefix)
     user_index_service = UserIndexService(
@@ -124,9 +147,10 @@ def client(
     )
 
     upload_settings = Settings(upload_dir=str(tmp_path))
+    fake_jobs = FakeJobs()
     app = FastAPI()
+    app.state.fake_jobs = fake_jobs
     app.include_router(user_documents_router)
-    app.dependency_overrides[require_service_token] = lambda: None
     app.dependency_overrides[Dependencies.get_settings] = lambda: upload_settings
     app.dependency_overrides[Dependencies.get_parser] = lambda: FakeParser()
     app.dependency_overrides[Dependencies.get_redis] = lambda: redis_client
@@ -140,11 +164,11 @@ def client(
     app.dependency_overrides[Dependencies.get_user_document_storage] = (
         lambda: fake_document_storage
     )
-    app.dependency_overrides[Dependencies.get_jobs] = lambda: FakeJobs()
+    app.dependency_overrides[Dependencies.get_jobs] = lambda: fake_jobs
     app.dependency_overrides[Dependencies.get_urban_api] = lambda: FakeUrbanApi()
     with TestClient(
         app,
-        headers={"Authorization": "Bearer service", "X-User-Id": "u1"},
+        headers={"Authorization": "Bearer user"},
     ) as c:
         yield c, fake_ingestion, index_registry, fake_document_storage
 
@@ -222,6 +246,19 @@ class TestUploadDocument:
         assert index_registry.get("u1", "s1") is not None
         assert fake_ingestion.ingest_calls
 
+    def test_job_records_user_and_project_ownership(self, client):
+        c, _, _, _ = client
+        resp = c.post(
+            "/user-documents",
+            files={"file": ("doc.docx", b"data")},
+            data={"scenario_id": "s1", "project_id": "p1"},
+        )
+
+        job = c.app.state.fake_jobs.get(resp.json()["job_id"])
+        assert job["user_id"] == "u1"
+        assert job["project_id"] == "p1"
+        assert job["scenario_id"] == "s1"
+
     def test_honors_parent_scenario_id_on_first_upload(self, client):
         c, _, index_registry, _ = client
         c.post(
@@ -267,6 +304,44 @@ class TestUploadDocument:
         )
         assert resp.status_code == 502
         assert not fake_ingestion.ingest_calls
+
+
+class TestUserDocumentJobStatus:
+    def test_returns_owned_job_snapshot(self, client):
+        c, _, _, _ = client
+        c.app.state.fake_jobs.set(
+            "job-1",
+            {
+                "job_id": "job-1",
+                "user_id": "u1",
+                "status": "processing",
+                "stage": "embeddings",
+                "stage_index": 6,
+                "stage_total": 7,
+                "task_progress": 50,
+                "overall_progress": 72,
+            },
+        )
+
+        resp = c.get("/user-documents/jobs/job-1")
+
+        assert resp.status_code == 200
+        assert resp.json()["overall_progress"] == 72
+        assert "user_id" not in resp.json()
+
+    def test_hides_another_users_job(self, client):
+        c, _, _, _ = client
+        c.app.state.fake_jobs.set(
+            "job-1",
+            {"job_id": "job-1", "user_id": "u1", "status": "queued"},
+        )
+
+        resp = c.get(
+            "/user-documents/jobs/job-1",
+            headers={"Authorization": "Bearer service", "X-User-Id": "u2"},
+        )
+
+        assert resp.status_code == 404
 
 
 class TestUpdateReloadDeleteDocument:

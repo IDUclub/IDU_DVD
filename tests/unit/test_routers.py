@@ -11,7 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from src.common.auth import require_service_token
+from src.common.auth import get_current_user_id, require_service_token
 from src.common.config import Settings
 from src.dependencies import Dependencies
 from src.dvd_service.dto import (
@@ -192,6 +192,7 @@ def client(tmp_path, fake_qdrant, fake_document_storage):
     app.include_router(documents_router)
     app.include_router(search_router)
     app.dependency_overrides[require_service_token] = lambda: None
+    app.dependency_overrides[get_current_user_id] = lambda: "u1"
     app.dependency_overrides[Dependencies.get_settings] = lambda: fakes["settings"]
     app.dependency_overrides[Dependencies.get_parser] = lambda: fakes["parser"]
     app.dependency_overrides[Dependencies.get_registry] = lambda: fakes["registry"]
