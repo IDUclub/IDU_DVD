@@ -12,8 +12,9 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from fastmcp.server.auth import AccessToken
 
-from src.common.auth import require_service_token
+from src.common.auth import keycloak_token_verifier
 from src.common.config import Settings
 from src.common.db.redis_client import RedisClient, UserIndexRegistry
 from src.dependencies import Dependencies
@@ -100,6 +101,28 @@ def _reset_singleton():
 def client(
     tmp_path, settings, fake_redis, fake_qdrant, fake_document_storage, monkeypatch
 ):
+    async def fake_verify_token(token):
+        if token == "user":
+            return AccessToken(
+                token=token,
+                client_id="frontend",
+                scopes=[],
+                claims={"sub": "u1", "preferred_username": "user"},
+            )
+        if token == "service":
+            return AccessToken(
+                token=token,
+                client_id="service",
+                scopes=[],
+                claims={
+                    "sub": "service-subject",
+                    "preferred_username": "service-account-test",
+                },
+            )
+        return None
+
+    monkeypatch.setattr(keycloak_token_verifier, "verify_token", fake_verify_token)
+
     redis_client = RedisClient(settings)
     index_registry = UserIndexRegistry(redis_client, prefix=settings.registry_prefix)
     user_index_service = UserIndexService(
@@ -126,7 +149,6 @@ def client(
     upload_settings = Settings(upload_dir=str(tmp_path))
     app = FastAPI()
     app.include_router(user_documents_router)
-    app.dependency_overrides[require_service_token] = lambda: None
     app.dependency_overrides[Dependencies.get_settings] = lambda: upload_settings
     app.dependency_overrides[Dependencies.get_parser] = lambda: FakeParser()
     app.dependency_overrides[Dependencies.get_redis] = lambda: redis_client
@@ -144,7 +166,7 @@ def client(
     app.dependency_overrides[Dependencies.get_urban_api] = lambda: FakeUrbanApi()
     with TestClient(
         app,
-        headers={"Authorization": "Bearer service", "X-User-Id": "u1"},
+        headers={"Authorization": "Bearer user"},
     ) as c:
         yield c, fake_ingestion, index_registry, fake_document_storage
 

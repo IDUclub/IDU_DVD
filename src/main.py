@@ -82,7 +82,7 @@ app.include_router(
 app.include_router(search_router)
 app.include_router(library_router, dependencies=[Depends(require_service_token)])
 app.include_router(tagging_router, dependencies=[Depends(require_service_token)])
-app.include_router(user_documents_router, dependencies=[Depends(require_service_token)])
+app.include_router(user_documents_router)
 app.include_router(system_router, dependencies=[Depends(require_service_token)])
 app.include_router(admin_router)
 app.mount("/mcp", mcp_app)
