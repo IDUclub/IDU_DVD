@@ -10,7 +10,7 @@ import httpx
 from fastapi import Header, HTTPException, Request, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastmcp.exceptions import AuthorizationError, ToolError
-from fastmcp.server.auth import AccessToken
+from fastmcp.server.auth import AccessToken, TokenVerifier
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from fastmcp.server.dependencies import get_http_headers
 from idu_service_auth import KeycloakTokenClient, KeycloakTokenConfig
@@ -64,15 +64,43 @@ def build_service_auth(settings: Settings) -> KeycloakTokenClient:
 
 
 async def get_current_user_id(
-    _credentials: HTTPAuthorizationCredentials = Security(bearer_scheme),
+    credentials: HTTPAuthorizationCredentials = Security(bearer_scheme),
     x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
 ) -> str:
-    if not x_user_id or not x_user_id.strip():
+    try:
+        access_token = await keycloak_token_verifier.verify_token(
+            credentials.credentials
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid bearer token",
+        ) from exc
+    if access_token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid bearer token",
+        )
+
+    username = access_token.claims.get("preferred_username", "")
+    is_service = isinstance(username, str) and username.startswith(
+        SERVICE_ACCOUNT_PREFIX
+    )
+    if is_service:
+        if x_user_id and x_user_id.strip():
+            return x_user_id.strip()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"{USER_ID_HEADER} header is required",
         )
-    return x_user_id.strip()
+
+    user_id = access_token.claims.get("sub")
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token does not contain user id",
+        )
+    return user_id.strip()
 
 
 async def require_service_token(
@@ -135,22 +163,15 @@ class SyncServiceTokenAuth(httpx.Auth):
         yield request
 
 
-class ServiceTokenVerifier(JWTVerifier):
+class ServiceTokenVerifier(TokenVerifier):
     """Verify Keycloak JWTs and accept only client-credentials accounts."""
 
-    def __init__(self, settings: Settings) -> None:
-        issuer = (
-            f"{settings.service_auth_server_url.rstrip('/')}/realms/"
-            f"{settings.service_auth_realm}"
-        )
-        super().__init__(
-            jwks_uri=f"{issuer}/protocol/openid-connect/certs",
-            issuer=issuer,
-            algorithm="RS256",
-        )
+    def __init__(self, verifier: JWTVerifier) -> None:
+        super().__init__()
+        self.verifier = verifier
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        access_token = await super().verify_token(token)
+        access_token = await self.verifier.verify_token(token)
         if access_token is None:
             return None
         username = access_token.claims.get("preferred_username", "")
@@ -161,4 +182,13 @@ class ServiceTokenVerifier(JWTVerifier):
         return access_token
 
 
-service_token_verifier = ServiceTokenVerifier(app_settings)
+_issuer = (
+    f"{app_settings.service_auth_server_url.rstrip('/')}/realms/"
+    f"{app_settings.service_auth_realm}"
+)
+keycloak_token_verifier = JWTVerifier(
+    jwks_uri=f"{_issuer}/protocol/openid-connect/certs",
+    issuer=_issuer,
+    algorithm="RS256",
+)
+service_token_verifier = ServiceTokenVerifier(keycloak_token_verifier)
