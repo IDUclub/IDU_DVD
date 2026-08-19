@@ -40,6 +40,7 @@ from src.dependencies import Dependencies
 from src.dvd_service.dto import (
     DeleteResponse,
     DocumentListResponse,
+    JobStatusDTO,
     UploadResponse,
     UserIndexCreateRequest,
     UserIndexDeleteResponse,
@@ -82,6 +83,26 @@ def _scoped_registry(
     return DocumentRegistry(
         redis, prefix=f"{settings.registry_prefix}:user:{user_id}:project:{project_id}"
     )
+
+
+def _queued_user_job(
+    job_id: str,
+    filename: str | None,
+    operation: str,
+    name: str | None,
+    *,
+    user_id: str,
+    project_id: str,
+    scenario_id: str | None,
+) -> dict:
+    """Create a progress job whose ownership can be verified by user-facing routes."""
+    job = queued_job(job_id, filename, operation, name)
+    job.update(
+        user_id=user_id,
+        project_id=project_id,
+        scenario_id=scenario_id,
+    )
+    return job
 
 
 def _project_for_scenario(
@@ -208,7 +229,18 @@ async def upload_user_document(
         os.remove(path)
         raise HTTPException(502, f"Не удалось сохранить исходник в хранилище: {exc}")
 
-    jobs.set(job_id, queued_job(job_id, file.filename, "upload", name))
+    jobs.set(
+        job_id,
+        _queued_user_job(
+            job_id,
+            file.filename,
+            "upload",
+            name,
+            user_id=user_id,
+            project_id=project_id,
+            scenario_id=scenario_id,
+        ),
+    )
     background.add_task(
         run_job,
         job_id,
@@ -225,6 +257,19 @@ async def upload_user_document(
         ),
     )
     return UploadResponse(job_id=job_id, status="queued")
+
+
+@router.get("/jobs/{job_id}", response_model=JobStatusDTO)
+async def user_document_job_status(
+    job_id: str,
+    jobs: JobStore = Depends(Dependencies.get_jobs),
+    user_id: str = Depends(get_current_user_id),
+):
+    """Return a live ingestion snapshot only to the user who created the job."""
+    job = await run_in_threadpool(jobs.get, job_id)
+    if not job or job.get("user_id") != user_id:
+        raise HTTPException(404, "job not found")
+    return JobStatusDTO(**job)
 
 
 @router.patch("/{name}", response_model=UploadResponse, status_code=202)
@@ -265,7 +310,18 @@ async def update_user_document(
         os.remove(path)
         raise HTTPException(502, f"Не удалось сохранить исходник в хранилище: {exc}")
 
-    jobs.set(job_id, queued_job(job_id, file.filename, "update", name))
+    jobs.set(
+        job_id,
+        _queued_user_job(
+            job_id,
+            file.filename,
+            "update",
+            name,
+            user_id=user_id,
+            project_id=project_id,
+            scenario_id=scenario_id,
+        ),
+    )
     background.add_task(
         run_job,
         job_id,
@@ -317,7 +373,18 @@ async def reload_user_document(
         os.remove(path)
         raise HTTPException(502, f"Не удалось сохранить исходник в хранилище: {exc}")
 
-    jobs.set(job_id, queued_job(job_id, file.filename, "reload", name))
+    jobs.set(
+        job_id,
+        _queued_user_job(
+            job_id,
+            file.filename,
+            "reload",
+            name,
+            user_id=user_id,
+            project_id=project_id,
+            scenario_id=scenario_id,
+        ),
+    )
     background.add_task(
         run_job,
         job_id,
