@@ -1,3 +1,10 @@
+## v0.13.1 (2026-08-19)
+
+### Fix
+
+- **auth**: secure user documents and expose ingestion progress (#51) (#52)
+- **auth**: secure user documents and expose ingestion progress (#51)
+
 ## v0.13.0 (2026-08-18)
 
 ### Feat
