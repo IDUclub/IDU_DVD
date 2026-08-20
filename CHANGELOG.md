@@ -1,3 +1,10 @@
+## v0.15.0 (2026-08-20)
+
+### Feat
+
+- **auth**: log into the admin panel with Keycloak, not a shared password (#57)
+- **auth**: require the ADMIN realm role to change the shared corpus (#56)
+
 ## v0.14.0 (2026-08-20)
 
 ### Feat
