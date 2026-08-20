@@ -27,9 +27,10 @@ pydantic-settings. Значения переопределяются перем�
 | `DVD_SERVICE_AUTH_REALM` | — | реалм. Вместе с URL образует issuer и адрес JWKS, по которым проверяется каждый входящий токен |
 | `DVD_SERVICE_AUTH_CLIENT_ID` | — | собственный клиент сервиса (client credentials) |
 | `DVD_SERVICE_AUTH_CLIENT_SECRET` | — | его секрет; маскируется в `GET /system/settings` |
-| `DVD_ADMIN_ROLE` | `ADMIN` | realm-роль, которую должен иметь **пользователь**, чтобы менять общий корпус. С сервис-аккаунтов она не спрашивается — авторизацией служит владение client credentials |
-| `DVD_ADMIN_PASSWORD` | пусто | пароль для `/admin/ui`; без него в панель нельзя войти. Из него же выводится HMAC-ключ сессионной куки |
-| `DVD_ADMIN_SESSION_HOURS` | `12` | время жизни этой куки |
+| `DVD_ADMIN_ROLE` | `ADMIN` | realm-роль, которую должен иметь **пользователь**, чтобы менять общий корпус и войти в `/admin/ui`. С сервис-аккаунтов она не спрашивается — авторизацией служит владение client credentials |
+| `DVD_AUTH_HELPER_URL` | пусто | IDU auth helper: форма входа панели отправляет учётные данные сюда (`POST /api/token`) — тот же сервис, что gMART проксирует за своим `/auth/token` |
+| `DVD_AUTH_HELPER_API_KEY` | пусто | ключ в заголовке `X-Auth-Helper-Api-Key`; в браузер не попадает, маскируется в `GET /system/settings`. **Без обеих переменных войти в панель невозможно** — локального пароля больше нет |
+| `DVD_AUTH_HELPER_TIMEOUT` | `15.0` | сколько секунд ждать ответа helper'а |
 
 ### Провайдер LLM
 

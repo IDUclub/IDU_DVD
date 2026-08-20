@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import time
 from collections.abc import Generator
 
@@ -26,32 +24,6 @@ bearer_scheme = HTTPBearer(auto_error=True)
 optional_bearer_scheme = HTTPBearer(auto_error=False)
 
 _MISSING = object()
-
-
-def _admin_key(password: str) -> bytes:
-    return hashlib.sha256(("idu-dvd-admin:" + password).encode()).digest()
-
-
-def create_admin_session_token(password: str, hours: int) -> str:
-    expires = str(int(time.time()) + max(1, hours) * 3600)
-    signature = hmac.new(
-        _admin_key(password), expires.encode(), hashlib.sha256
-    ).hexdigest()
-    return f"{expires}.{signature}"
-
-
-def is_admin_session_authenticated(request: Request, settings: Settings) -> bool:
-    password = settings.admin_password
-    token = request.cookies.get(ADMIN_SESSION_COOKIE, "")
-    if not password or "." not in token:
-        return False
-    expires, signature = token.split(".", 1)
-    if not expires.isdigit() or int(expires) < int(time.time()):
-        return False
-    expected = hmac.new(
-        _admin_key(password), expires.encode(), hashlib.sha256
-    ).hexdigest()
-    return hmac.compare_digest(signature, expected)
 
 
 def build_service_auth(settings: Settings) -> KeycloakTokenClient:
@@ -103,31 +75,38 @@ async def _verify_bearer(
     return _reject_expired(access_token)
 
 
+def _presented_token(
+    request: Request, credentials: HTTPAuthorizationCredentials | None
+) -> str | None:
+    """The caller's token, from the Authorization header or the admin panel's cookie.
+
+    The panel stores the very token the auth helper issued, so a browser session is not a
+    second kind of credential — it is the same bearer token arriving by another route.
+    """
+
+    if credentials:
+        return credentials.credentials
+    return request.cookies.get(ADMIN_SESSION_COOKIE) or None
+
+
 async def _authenticate(
     request: Request, credentials: HTTPAuthorizationCredentials | None
-) -> AccessToken | None:
-    """Authenticate the request once and cache the result on ``request.state``.
-
-    ``None`` means the caller proved itself with the admin-UI session cookie instead of a
-    bearer token — authenticated, but without any Keycloak identity to act as.
-    """
+) -> AccessToken:
+    """Authenticate the request once and cache the result on ``request.state``."""
 
     cached = getattr(request.state, REQUEST_TOKEN_ATTR, _MISSING)
     if cached is not _MISSING:
         return cached  # type: ignore[return-value]
 
-    if credentials:
-        access_token = await _verify_bearer(
-            credentials.credentials, keycloak_token_verifier, "Invalid bearer token"
-        )
-    elif is_admin_session_authenticated(request, app_settings):
-        access_token = None
-    else:
+    token = _presented_token(request, credentials)
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Bearer token is required",
         )
-
+    access_token = await _verify_bearer(
+        token, keycloak_token_verifier, "Invalid bearer token"
+    )
     setattr(request.state, REQUEST_TOKEN_ATTR, access_token)
     return access_token
 
@@ -136,10 +115,10 @@ async def require_authenticated(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Security(optional_bearer_scheme),
 ) -> None:
-    """Require any live Keycloak token — a user's or a service's — or the admin session.
+    """Require any live Keycloak token — a user's, a service's, or the panel's session.
 
-    Read-only access to the shared corpus is gated on this; writing to it still needs
-    :func:`require_service_token`.
+    Read-only access to the shared corpus is gated on this; changing it needs
+    :func:`require_admin`.
     """
 
     await _authenticate(request, credentials)
@@ -153,48 +132,56 @@ def _realm_roles(access_token: AccessToken) -> set[str]:
     return {role for role in roles if isinstance(role, str)}
 
 
-async def require_admin(
-    request: Request,
-    credentials: HTTPAuthorizationCredentials | None = Security(optional_bearer_scheme),
-) -> None:
-    """Guard the shared corpus against edits by people who were merely let in.
+def assert_admin(access_token: AccessToken) -> AccessToken:
+    """Entitle the token to change the shared corpus, or refuse it with 403.
 
-    Three ways through: the password-protected admin panel, a service account (its client
-    credentials are the authorisation), and a user carrying the ``DVD_ADMIN_ROLE`` realm role.
-    An authenticated user without that role is refused with 403, not 401 — the token is fine,
-    the person is not entitled.
+    A service account passes on its client credentials alone; a person has to carry the
+    ``DVD_ADMIN_ROLE`` realm role. 403 rather than 401 is the honest answer here — the token
+    is valid, the human behind it simply is not entitled, and the two need different fixes.
     """
 
-    if is_admin_session_authenticated(request, app_settings):
-        return
-    access_token = await _authenticate(request, credentials)
-    if access_token is None or _is_service_account(access_token):
-        return
+    if _is_service_account(access_token):
+        return access_token
     role = app_settings.admin_role
     if role not in _realm_roles(access_token):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"realm role {role} is required to change the shared corpus",
+            detail=f"realm role {role} is required",
         )
+    return access_token
 
 
-async def require_service_token(
+async def verify_admin_token(token: str) -> AccessToken:
+    """Verify a freshly issued token and check it entitles its holder to the panel."""
+
+    return assert_admin(
+        await _verify_bearer(token, keycloak_token_verifier, "Invalid bearer token")
+    )
+
+
+async def admin_session(request: Request) -> AccessToken | None:
+    """The admin behind the panel's session cookie, or ``None`` if there is not one.
+
+    Used by the server-rendered pages, which redirect to the login form rather than answer
+    401 — an expired token and a revoked role both land the visitor back at the login page.
+    """
+
+    token = request.cookies.get(ADMIN_SESSION_COOKIE)
+    if not token:
+        return None
+    try:
+        return await verify_admin_token(token)
+    except HTTPException:
+        return None
+
+
+async def require_admin(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Security(optional_bearer_scheme),
 ) -> None:
-    """Require bearer authentication, preserving the password-protected admin UI."""
+    """Guard the shared corpus — and the service's own controls — against mere visitors."""
 
-    if is_admin_session_authenticated(request, app_settings):
-        return
-    if credentials:
-        await _verify_bearer(
-            credentials.credentials, service_token_verifier, "Invalid service token"
-        )
-        return
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Bearer service token is required",
-    )
+    assert_admin(await _authenticate(request, credentials))
 
 
 def _subject_of(access_token: AccessToken) -> str:
@@ -239,8 +226,6 @@ async def get_effective_user_id(
     """
 
     access_token = await _authenticate(request, credentials)
-    if access_token is None:
-        return None
     if _is_service_account(access_token):
         return x_user_id.strip() if x_user_id and x_user_id.strip() else None
     return _subject_of(access_token)

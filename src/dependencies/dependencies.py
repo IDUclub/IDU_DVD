@@ -11,7 +11,7 @@ from typing import Any
 
 from idu_service_auth import KeycloakTokenClient
 
-from src.api_clients import UrbanApiClient
+from src.api_clients import AuthHelperClient, UrbanApiClient
 from src.broker.outbox import EventOutbox
 from src.broker.publisher import KafkaPublisher
 from src.common.config import Settings
@@ -55,6 +55,7 @@ class Dependencies:
     _FIELDS: tuple[str, ...] = (
         "settings",
         "service_auth",
+        "auth_helper",
         "logger",
         "qdrant",
         "redis",
@@ -88,6 +89,7 @@ class Dependencies:
 
     settings: Settings
     service_auth: KeycloakTokenClient
+    auth_helper: AuthHelperClient
     logger: Any
     qdrant: QdrantRepository
     redis: RedisClient
@@ -127,6 +129,7 @@ class Dependencies:
         *,
         settings: Settings,
         service_auth: KeycloakTokenClient,
+        auth_helper: AuthHelperClient,
         logger: Any,
         qdrant: QdrantRepository,
         redis: RedisClient,
@@ -158,6 +161,7 @@ class Dependencies:
         """Set all dependencies once (called from ``init_dependencies``)."""
         self.settings = settings
         self.service_auth = service_auth
+        self.auth_helper = auth_helper
         self.logger = logger
         self.qdrant = qdrant
         self.redis = redis
@@ -206,6 +210,10 @@ class Dependencies:
     @classmethod
     def get_settings(cls) -> Settings:
         return cls.instance().settings
+
+    @classmethod
+    def get_auth_helper(cls) -> AuthHelperClient:
+        return cls.instance().auth_helper
 
     @classmethod
     def get_service_auth(cls) -> KeycloakTokenClient:

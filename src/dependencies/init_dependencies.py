@@ -11,7 +11,7 @@ from pathlib import Path
 import structlog
 from minio import Minio
 
-from src.api_clients import UrbanApiClient, probe_embedding_dim
+from src.api_clients import AuthHelperClient, UrbanApiClient, probe_embedding_dim
 from src.broker.outbox import EventOutbox
 from src.broker.publisher import KafkaPublisher
 from src.common.auth import SyncServiceTokenAuth, build_service_auth
@@ -126,6 +126,11 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     configure_logging(s)
     app_logger = structlog.get_logger("app")
     service_auth = build_service_auth(s)
+    auth_helper = AuthHelperClient(
+        s.auth_helper_url,
+        s.auth_helper_api_key.get_secret_value() if s.auth_helper_api_key else None,
+        timeout=s.auth_helper_timeout,
+    )
 
     # Pin the Qdrant vector size to whatever the active vectorizer actually returns, so the
     # collection dimension can never drift from the embedding model. Falls back to the
@@ -225,6 +230,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     deps = Dependencies().set(
         settings=s,
         service_auth=service_auth,
+        auth_helper=auth_helper,
         logger=app_logger,
         qdrant=qdrant,
         redis=redis,
