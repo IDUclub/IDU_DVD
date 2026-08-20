@@ -3,6 +3,30 @@
 The default base URL is `http://localhost:8000`. Interactive docs (Swagger) are at `/docs`. All
 request and response models are pydantic-based and defined under `src/dvd_service/dto/`.
 
+## Authentication
+
+Every endpoint needs a Keycloak bearer token, verified locally against the realm's JWKS —
+signature, issuer and `exp`. An expired token is answered with `401 Bearer token has expired`.
+There are two gates:
+
+| Gate | Accepts | Applies to |
+|------|---------|------------|
+| authenticated | any live token — a user's or a service account's (plus the admin-UI session cookie) | reading the shared corpus: `GET /documents`, `GET /documents/{name}/source`, all of `/library` except its `PATCH`es, all of `/search`, `GET /tags`, `GET /scopes` |
+| service-only | a Keycloak client-credentials token (`preferred_username` starting with `service-account-`), or the admin-UI session cookie | everything that writes to the shared corpus or runs the service: `POST`/`PATCH`/`PUT`/`DELETE /documents`, `/documents/direct`, the `/documents/jobs/*` views, `PATCH /library/...`, `/tagging`, `/system` |
+
+The MCP server at `/mcp` is service-only as a whole.
+
+### Who the request acts as
+
+Endpoints that can reach a private user index resolve the acting user themselves, and never
+from the request body:
+
+- **A user token acts as itself.** The user id is the token's `sub`; an `X-User-Id` header is
+  ignored, and a `user_id` in a search body may only repeat the caller's own id — naming
+  anybody else is answered with `403`.
+- **A service token may act for a user** by naming them in `X-User-Id`. Without that header a
+  service token still reads the shared corpus, but no private index.
+
 ## Endpoint list
 
 | Method and path | Purpose |

@@ -21,8 +21,11 @@ from src.common.config import settings as app_settings
 USER_ID_HEADER = "X-User-Id"
 SERVICE_ACCOUNT_PREFIX = "service-account-"
 ADMIN_SESSION_COOKIE = "dvd_admin_session"
+REQUEST_TOKEN_ATTR = "dvd_access_token"
 bearer_scheme = HTTPBearer(auto_error=True)
 optional_bearer_scheme = HTTPBearer(auto_error=False)
+
+_MISSING = object()
 
 
 def _admin_key(password: str) -> bytes:
@@ -63,44 +66,83 @@ def build_service_auth(settings: Settings) -> KeycloakTokenClient:
     )
 
 
-async def get_current_user_id(
-    credentials: HTTPAuthorizationCredentials = Security(bearer_scheme),
-    x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
-) -> str:
-    try:
-        access_token = await keycloak_token_verifier.verify_token(
-            credentials.credentials
+def _is_service_account(access_token: AccessToken) -> bool:
+    username = access_token.claims.get("preferred_username", "")
+    return isinstance(username, str) and username.startswith(SERVICE_ACCOUNT_PREFIX)
+
+
+def _reject_expired(access_token: AccessToken) -> AccessToken:
+    """Refuse a token that is past its ``exp``, whatever the verifier made of it."""
+
+    expires_at = access_token.expires_at
+    if expires_at is not None and int(expires_at) <= int(time.time()):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Bearer token has expired",
         )
+    return access_token
+
+
+async def _verify_bearer(
+    token: str, verifier: TokenVerifier, detail: str
+) -> AccessToken:
+    """Verify signature, issuer and freshness, or answer 401 with ``detail``."""
+
+    try:
+        access_token = await verifier.verify_token(token)
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid bearer token",
+            detail=detail,
         ) from exc
     if access_token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid bearer token",
+            detail=detail,
         )
+    return _reject_expired(access_token)
 
-    username = access_token.claims.get("preferred_username", "")
-    is_service = isinstance(username, str) and username.startswith(
-        SERVICE_ACCOUNT_PREFIX
-    )
-    if is_service:
-        if x_user_id and x_user_id.strip():
-            return x_user_id.strip()
+
+async def _authenticate(
+    request: Request, credentials: HTTPAuthorizationCredentials | None
+) -> AccessToken | None:
+    """Authenticate the request once and cache the result on ``request.state``.
+
+    ``None`` means the caller proved itself with the admin-UI session cookie instead of a
+    bearer token — authenticated, but without any Keycloak identity to act as.
+    """
+
+    cached = getattr(request.state, REQUEST_TOKEN_ATTR, _MISSING)
+    if cached is not _MISSING:
+        return cached  # type: ignore[return-value]
+
+    if credentials:
+        access_token = await _verify_bearer(
+            credentials.credentials, keycloak_token_verifier, "Invalid bearer token"
+        )
+    elif is_admin_session_authenticated(request, app_settings):
+        access_token = None
+    else:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"{USER_ID_HEADER} header is required",
+            detail="Bearer token is required",
         )
 
-    user_id = access_token.claims.get("sub")
-    if not isinstance(user_id, str) or not user_id.strip():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token does not contain user id",
-        )
-    return user_id.strip()
+    setattr(request.state, REQUEST_TOKEN_ATTR, access_token)
+    return access_token
+
+
+async def require_authenticated(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Security(optional_bearer_scheme),
+) -> None:
+    """Require any live Keycloak token — a user's or a service's — or the admin session.
+
+    Read-only access to the shared corpus is gated on this; writing to it still needs
+    :func:`require_service_token`.
+    """
+
+    await _authenticate(request, credentials)
 
 
 async def require_service_token(
@@ -112,27 +154,63 @@ async def require_service_token(
     if is_admin_session_authenticated(request, app_settings):
         return
     if credentials:
-        try:
-            access_token = await service_token_verifier.verify_token(
-                credentials.credentials
-            )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid service token",
-            ) from exc
-        if access_token is not None:
-            return
+        await _verify_bearer(
+            credentials.credentials, service_token_verifier, "Invalid service token"
+        )
+        return
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Bearer service token is required",
     )
 
 
-async def get_optional_user_id(
+def _subject_of(access_token: AccessToken) -> str:
+    user_id = access_token.claims.get("sub")
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token does not contain user id",
+        )
+    return user_id.strip()
+
+
+async def get_current_user_id(
+    credentials: HTTPAuthorizationCredentials = Security(bearer_scheme),
+    x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
+) -> str:
+    """The user the caller acts as — mandatory, for endpoints that only touch user data."""
+
+    access_token = await _verify_bearer(
+        credentials.credentials, keycloak_token_verifier, "Invalid bearer token"
+    )
+    if _is_service_account(access_token):
+        if x_user_id and x_user_id.strip():
+            return x_user_id.strip()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"{USER_ID_HEADER} header is required",
+        )
+    return _subject_of(access_token)
+
+
+async def get_effective_user_id(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Security(optional_bearer_scheme),
     x_user_id: str | None = Header(default=None, alias=USER_ID_HEADER),
 ) -> str | None:
-    return x_user_id.strip() if x_user_id and x_user_id.strip() else None
+    """The user whose private index the caller may reach, or ``None`` for shared-only access.
+
+    A user token owns itself: its ``sub`` decides and ``X-User-Id`` is ignored, so no
+    authenticated user can aim a search at somebody else's index. Only a service account may
+    act on behalf of a user, and only by naming them in ``X-User-Id``.
+    """
+
+    access_token = await _authenticate(request, credentials)
+    if access_token is None:
+        return None
+    if _is_service_account(access_token):
+        return x_user_id.strip() if x_user_id and x_user_id.strip() else None
+    return _subject_of(access_token)
 
 
 def get_mcp_user_id() -> str:
@@ -174,10 +252,7 @@ class ServiceTokenVerifier(TokenVerifier):
         access_token = await self.verifier.verify_token(token)
         if access_token is None:
             return None
-        username = access_token.claims.get("preferred_username", "")
-        if not isinstance(username, str) or not username.startswith(
-            SERVICE_ACCOUNT_PREFIX
-        ):
+        if not _is_service_account(access_token):
             raise AuthorizationError("A service-account token is required")
         return access_token
 

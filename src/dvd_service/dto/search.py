@@ -38,8 +38,10 @@ class SearchRequest(BaseModel):
     limit: int = 10
     context_height: int = 0  # how many neighbour fragments to attach before/after
 
-    # --- user-scoped index search (user_id plus project_id or scenario_id) ---
-    user_id: str | None = None  # owner of the user document index to search
+    # --- user-scoped index search (project_id or scenario_id; owner comes from the token) ---
+    user_id: str | None = (
+        None  # owner of the index; endpoints overwrite it with the authenticated caller
+    )
     project_id: str | None = None  # canonical user-document isolation boundary
     scenario_id: str | None = (
         None  # compatibility lookup: Urban API resolves it to project_id
@@ -52,12 +54,15 @@ class SearchRequest(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _user_scope_requires_owner_and_target(self) -> "SearchRequest":
-        has_target = bool(self.project_id or self.scenario_id)
-        if bool(self.user_id) != has_target:
-            raise ValueError(
-                "user_id and one of project_id or scenario_id must be given together"
-            )
+    def _user_scope_requires_target(self) -> "SearchRequest":
+        """An index needs a target; its owner does not have to be spelled out.
+
+        ``user_id`` is resolved from the caller's token by the search endpoints, so a request
+        may name only ``project_id``/``scenario_id`` — but naming an owner without a target
+        still says nothing about which index to read.
+        """
+        if self.user_id and not (self.project_id or self.scenario_id):
+            raise ValueError("user_id needs one of project_id or scenario_id")
         return self
 
 
