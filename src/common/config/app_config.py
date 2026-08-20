@@ -6,6 +6,7 @@ Every value can be overridden via environment variables with the ``DVD_`` prefix
 from __future__ import annotations
 
 import re
+from urllib.parse import urlparse
 
 from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -18,6 +19,18 @@ def _slug(value: str) -> str:
     """
     tail = value.rsplit("/", 1)[-1].lower()
     return re.sub(r"[^a-z0-9]+", "_", tail).strip("_")
+
+
+_LOCAL_OLLAMA_HOSTS = frozenset(
+    {"localhost", "127.0.0.1", "::1", "host.docker.internal", "ollama"}
+)
+
+
+def _url_host(url: str, variable: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError(f"{variable} must be an absolute http(s) URL")
+    return parsed.hostname.rstrip(".").lower()
 
 
 class Settings(BaseSettings):
@@ -43,7 +56,7 @@ class Settings(BaseSettings):
     auth_helper_timeout: float = 15.0
 
     # --- Ollama (LLM for markup/tags; embeddings fallback provider) ---
-    ollama_base: str = "http://a.dgx:11434"
+    ollama_base: str = "http://localhost:11434"
     ollama_model: str = "gpt-oss:20b"  # structure markup, merge, tags, version
     ollama_embed_model: str = "bge-m3"  # vectorizer for provider="ollama" (1024-d)
     ollama_num_ctx: int = 16384
@@ -263,6 +276,22 @@ class Settings(BaseSettings):
                 "DVD_URBAN_API_URL: обязательный параметр — Urban API поставляет иерархию "
                 "территорий для тегирования документов (например "
                 "https://urban-api.testing.idulab.ru)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_llm_endpoint_policy(self) -> "Settings":
+        """Keep generative LLM traffic off a.dgx and remote native Ollama hosts."""
+        if self.llm_provider == "ollama":
+            host = _url_host(self.ollama_base, "DVD_OLLAMA_BASE")
+            if host not in _LOCAL_OLLAMA_HOSTS:
+                raise ValueError(
+                    "DVD_OLLAMA_BASE must point to local Ollama when "
+                    f"DVD_LLM_PROVIDER=ollama; host {host!r} is not allowed"
+                )
+        elif _url_host(self.llm_base_url, "DVD_LLM_BASE_URL") == "a.dgx":
+            raise ValueError(
+                "DVD_LLM_BASE_URL must not target 'a.dgx' for language-model requests"
             )
         return self
 

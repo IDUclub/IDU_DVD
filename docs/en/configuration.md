@@ -57,7 +57,7 @@ Used as the LLM when `DVD_LLM_PROVIDER=ollama`, and as the fallback vectorizer w
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DVD_OLLAMA_BASE` | `http://a.dgx:11434` | Ollama address |
+| `DVD_OLLAMA_BASE` | `http://localhost:11434` | Local Ollama address; remote hosts are rejected for LLM traffic |
 | `DVD_OLLAMA_MODEL` | `gpt-oss:20b` | LLM for markup, merge, tags, version |
 | `DVD_OLLAMA_EMBED_MODEL` | `bge-m3` | embedding model for `DVD_EMBEDDINGS_PROVIDER=ollama` |
 | `DVD_OLLAMA_NUM_CTX` | `16384` | model context size |
@@ -283,7 +283,7 @@ consumers (e.g. MSI-TSIM) override these per upload via form fields / `external_
   re-index the existing collection (or switch it on).
 - `DVD_PARTITION_STRATEGY` affects only the parsing of formats other than `.docx`; `.docx` is parsed
   through `partition_docx` regardless of the strategy.
-- By default the Ollama address and the LLM point at a shared stand (`a.dgx`, `gpt-oss:20b`). For a
+- By default the Ollama address points at the local host (`localhost`, `gpt-oss:20b`). For a
   local run, override them in `.env`.
 
 ## Model recommendations

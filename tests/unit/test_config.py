@@ -136,6 +136,28 @@ class TestUrbanApi:
         assert Settings().urban_api_url == "http://urban-api.local"
 
 
+class TestLlmEndpointPolicy:
+    def test_default_ollama_is_local(self):
+        assert Settings().ollama_base == "http://localhost:11434"
+
+    def test_remote_native_ollama_is_rejected_for_llm(self):
+        with pytest.raises(ValueError, match="must point to local Ollama"):
+            Settings(llm_provider="ollama", ollama_base="http://a.dgx:11434")
+
+    def test_a_dgx_is_rejected_as_openai_compatible_llm(self):
+        with pytest.raises(ValueError, match="must not target 'a.dgx'"):
+            Settings(llm_provider="openai", llm_base_url="http://a.dgx:8001/v1")
+
+    def test_remote_embeddings_on_a_dgx_remain_allowed(self):
+        settings = Settings(
+            llm_provider="openai",
+            llm_base_url="http://a6k4.dgx:8001/v1",
+            embeddings_url="http://a.dgx:8010",
+        )
+
+        assert settings.embeddings_url == "http://a.dgx:8010"
+
+
 class TestRepr:
     def test_repr_is_concise_and_mentions_key_endpoints(self):
         r = repr(Settings())

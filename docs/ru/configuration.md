@@ -58,7 +58,7 @@ pydantic-settings. Значения переопределяются перем�
 
 | Переменная | По умолчанию | Описание |
 |------------|--------------|----------|
-| `DVD_OLLAMA_BASE` | `http://a.dgx:11434` | адрес Ollama |
+| `DVD_OLLAMA_BASE` | `http://localhost:11434` | адрес локальной Ollama; удалённые хосты для LLM запрещены |
 | `DVD_OLLAMA_MODEL` | `gpt-oss:20b` | LLM для разметки, мерджа, тегов, версии |
 | `DVD_OLLAMA_EMBED_MODEL` | `bge-m3` | эмбеддинг-модель для `DVD_EMBEDDINGS_PROVIDER=ollama` |
 | `DVD_OLLAMA_NUM_CTX` | `16384` | размер контекста модели |
@@ -288,7 +288,7 @@ DVD_MINIO_ENDPOINT=http://minio:9000/store  # ошибка: путь в адре
   существующую (или включите namespacing).
 - `DVD_PARTITION_STRATEGY` влияет только на разбор форматов, отличных от `.docx`; `.docx`
   разбирается через `partition_docx` без учёта стратегии.
-- По умолчанию адрес Ollama и LLM указывают на стенд (`a.dgx`, `gpt-oss:20b`). Для локального
+- По умолчанию адрес Ollama указывает на локальный хост (`localhost`, `gpt-oss:20b`). Для локального
   запуска переопределите их в `.env`.
 
 ## Рекомендации по моделям
