@@ -1,3 +1,9 @@
+## v0.14.0 (2026-08-20)
+
+### Feat
+
+- **auth**: open shared-corpus reads to user tokens (#54)
+
 ## v0.13.1 (2026-08-19)
 
 ### Fix
