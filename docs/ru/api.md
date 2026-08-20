@@ -8,19 +8,26 @@
 
 Каждый эндпоинт требует Keycloak bearer-токен; он проверяется локально по JWKS реалма —
 подпись, issuer и `exp`. На просроченный токен возвращается `401 Bearer token has expired`.
-Гейтов три:
+Гейтов два:
 
 | Гейт | Кого пускает | Что закрывает |
 |------|--------------|---------------|
-| authenticated | любой живой токен — пользователя или сервис-аккаунта (плюс сессионная кука админ-панели) | чтение общего корпуса: `GET /documents`, `GET /documents/{name}/source`, весь `/library` кроме его `PATCH`, весь `/search`, `GET /tags`, `GET /scopes` |
-| admin | пользователь с realm-ролью `DVD_ADMIN_ROLE` (по умолчанию `ADMIN`), сервис-аккаунт или сессионная кука админ-панели | всё, что меняет общий корпус: `POST`/`PATCH`/`PUT`/`DELETE /documents`, `/documents/direct`, представления `/documents/jobs/*`, отслеживающие эти загрузки, `PATCH /library/...`, `/tagging` |
-| service-only | токен client-credentials Keycloak (`preferred_username` начинается с `service-account-`) или сессионная кука админ-панели | `/system` |
+| authenticated | любой живой токен — пользователя или сервис-аккаунта | чтение общего корпуса: `GET /documents`, `GET /documents/{name}/source`, весь `/library` кроме его `PATCH`, весь `/search`, `GET /tags`, `GET /scopes` |
+| admin | пользователь с realm-ролью `DVD_ADMIN_ROLE` (по умолчанию `ADMIN`) или сервис-аккаунт | всё, что меняет общий корпус или сам сервис: `POST`/`PATCH`/`PUT`/`DELETE /documents`, `/documents/direct`, представления `/documents/jobs/*`, отслеживающие эти загрузки, `PATCH /library/...`, `/tagging`, `/system` |
 
 Аутентифицированный пользователь без роли получает `403`, а не `401`: с токеном всё в порядке,
 прав нет у человека. С сервис-аккаунтов роль не спрашивается — авторизацией служит само владение
 client credentials.
 
-MCP-сервер на `/mcp` целиком service-only.
+MCP-сервер на `/mcp` целиком требует сервисный токен.
+
+### Админ-панель
+
+У `/admin/ui` нет собственного пароля. Форма входа отправляет учётные данные Keycloak в IDU
+auth helper (`DVD_AUTH_HELPER_URL` + `DVD_AUTH_HELPER_API_KEY` — тот же сервис, что стоит за
+`/auth/token` в gMART), и панель открывается только держателю роли администратора. В сессионной
+куке лежит сам выданный access-токен, поэтому запросы панели к API — обычные bearer-запросы, а
+сессия заканчивается вместе с токеном.
 
 ### От чьего имени идёт запрос
 

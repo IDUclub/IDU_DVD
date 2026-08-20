@@ -31,9 +31,16 @@ class Settings(BaseSettings):
     service_auth_realm: str
     service_auth_client_id: str
     service_auth_client_secret: SecretStr
-    # Realm role a *user* must hold to change the shared corpus. Service accounts are trusted
-    # by virtue of holding client credentials and are not asked for it.
+    # Realm role a *user* must hold to change the shared corpus and to open the admin panel.
+    # Service accounts are trusted by virtue of holding client credentials and are not asked
+    # for it.
     admin_role: str = "ADMIN"
+    # IDU auth helper: the login proxy the admin panel posts credentials to (gMART uses the
+    # same service behind its /auth/token). Unset means nobody can log into the panel — there
+    # is no local password to fall back on.
+    auth_helper_url: str | None = None
+    auth_helper_api_key: SecretStr | None = None
+    auth_helper_timeout: float = 15.0
 
     # --- Ollama (LLM for markup/tags; embeddings fallback provider) ---
     ollama_base: str = "http://a.dgx:11434"
@@ -118,12 +125,6 @@ class Settings(BaseSettings):
         3600.0  # seconds between sweeps; 0 disables the timer
     )
     tagging_max_attempts: int = 5
-
-    # --- Admin UI ---
-    # No insecure default: /admin/ui stays unavailable until a password is configured.
-    # The password also derives the HMAC key for the short-lived login cookie.
-    admin_password: str | None = None
-    admin_session_hours: int = 12
 
     # --- Search ---
     search_limit: int = 10

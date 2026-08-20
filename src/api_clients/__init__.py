@@ -4,6 +4,10 @@ Implementations live in dedicated modules (e.g. ``ollama_client``); this file on
 package and re-exports the public symbols.
 """
 
+from src.api_clients.auth_helper_client import (  # noqa: F401
+    AuthHelperClient,
+    AuthHelperError,
+)
 from src.api_clients.base import ChatClient, LlmError  # noqa: F401
 from src.api_clients.embeddings_client import (  # noqa: F401
     EmbeddingsError,
@@ -36,6 +40,8 @@ __all__ = [
     "LEVEL_FEDERAL",
     "LEVEL_MUNICIPAL",
     "LEVEL_REGIONAL",
+    "AuthHelperClient",
+    "AuthHelperError",
     "ChatClient",
     "EmbeddingsError",
     "GigaEmbeddingsClient",
