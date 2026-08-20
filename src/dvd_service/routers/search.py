@@ -8,8 +8,8 @@ from fastapi.concurrency import run_in_threadpool
 from src.api_clients import ScenarioNotFound, UrbanApiError
 from src.common.auth import (
     get_current_user_id,
-    get_optional_user_id,
-    require_service_token,
+    get_effective_user_id,
+    require_authenticated,
 )
 from src.dependencies import Dependencies
 from src.dvd_service.dto import (
@@ -20,7 +20,18 @@ from src.dvd_service.dto import (
 )
 from src.dvd_service.services.dvd_service import SearchService, TagsService
 
-router = APIRouter(tags=["search"], dependencies=[Depends(require_service_token)])
+router = APIRouter(tags=["search"], dependencies=[Depends(require_authenticated)])
+
+
+def _pin_owner(req: SearchRequest, user_id: str) -> SearchRequest:
+    """Force the index owner to the authenticated caller, refusing an impersonation attempt.
+
+    The body's ``user_id`` is never trusted: it may only repeat who the caller already is.
+    """
+
+    if req.user_id and req.user_id != user_id:
+        raise HTTPException(403, "the request body cannot search another user's index")
+    return req.model_copy(update={"user_id": user_id})
 
 
 async def _run_search(
@@ -31,8 +42,12 @@ async def _run_search(
 ):
     if req.user_id or req.project_id or req.scenario_id:
         if not user_id:
-            raise HTTPException(401, "X-User-Id header is required for user data")
-        req = req.model_copy(update={"user_id": user_id})
+            raise HTTPException(
+                401,
+                "user data needs a user token, or a service token naming the user in "
+                "X-User-Id",
+            )
+        req = _pin_owner(req, user_id)
     try:
         return await run_in_threadpool(search.search, req, kind)
     except ScenarioNotFound as exc:
@@ -47,12 +62,14 @@ async def _run_search(
 async def search_texts(
     req: SearchRequest,
     search: SearchService = Depends(Dependencies.get_search),
-    user_id: str | None = Depends(get_optional_user_id),
+    user_id: str | None = Depends(get_effective_user_id),
 ):
     """Relevant text fragments (kind=text) with filters and context height.
 
-    Set ``user_id``+``scenario_id`` to also (or, with ``include_shared=false``, only) search a
-    user document index — see ``/search/user-index/texts`` for the index-only shortcut.
+    Set ``project_id`` (or ``scenario_id``) to also (or, with ``include_shared=false``, only)
+    search a user document index — see ``/search/user-index/texts`` for the index-only
+    shortcut. The index searched is always the caller's own: ``user_id`` comes from the
+    bearer token, and only a service account can act for someone else via ``X-User-Id``.
     """
     return await _run_search(search, req, "text", user_id)
 
@@ -61,7 +78,7 @@ async def search_texts(
 async def search_tables(
     req: SearchRequest,
     search: SearchService = Depends(Dependencies.get_search),
-    user_id: str | None = Depends(get_optional_user_id),
+    user_id: str | None = Depends(get_effective_user_id),
 ):
     """Relevant tables (kind=table) — stored as separate entities."""
     return await _run_search(search, req, "table", user_id)
@@ -71,7 +88,7 @@ async def search_tables(
 async def search_all(
     req: SearchRequest,
     search: SearchService = Depends(Dependencies.get_search),
-    user_id: str | None = Depends(get_optional_user_id),
+    user_id: str | None = Depends(get_effective_user_id),
 ):
     """Search across all entities (texts and tables)."""
     return await _run_search(search, req, None, user_id)
@@ -94,10 +111,11 @@ async def get_scopes(tags_svc: TagsService = Depends(Dependencies.get_tags)):
 
 
 def _require_user_index_scope(req: SearchRequest) -> SearchRequest:
-    if not req.user_id or not (req.project_id or req.scenario_id):
+    """The owner is already pinned to the caller; only the index target is still missing."""
+
+    if not req.project_id and not req.scenario_id:
         raise HTTPException(
-            400,
-            "user_id and one of project_id or scenario_id are required for index-only search",
+            400, "project_id or scenario_id is required for index-only search"
         )
     return req.model_copy(update={"include_shared": False})
 
@@ -108,8 +126,12 @@ async def search_user_index_texts(
     search: SearchService = Depends(Dependencies.get_search),
     user_id: str = Depends(get_current_user_id),
 ):
-    """Search only a user document index (text fragments) — never the shared corpus."""
-    req = req.model_copy(update={"user_id": user_id})
+    """Search only your own document index (text fragments) — never the shared corpus.
+
+    Open to a user token (the index is the token's own) and to a service token acting for a
+    user through ``X-User-Id``.
+    """
+    req = _pin_owner(req, user_id)
     return await _run_search(search, _require_user_index_scope(req), "text", user_id)
 
 
@@ -120,7 +142,7 @@ async def search_user_index_tables(
     user_id: str = Depends(get_current_user_id),
 ):
     """Search only a user document index (tables) — never the shared corpus."""
-    req = req.model_copy(update={"user_id": user_id})
+    req = _pin_owner(req, user_id)
     return await _run_search(search, _require_user_index_scope(req), "table", user_id)
 
 
@@ -131,5 +153,5 @@ async def search_user_index_all(
     user_id: str = Depends(get_current_user_id),
 ):
     """Search only a user document index (all entities) — never the shared corpus."""
-    req = req.model_copy(update={"user_id": user_id})
+    req = _pin_owner(req, user_id)
     return await _run_search(search, _require_user_index_scope(req), None, user_id)

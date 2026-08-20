@@ -11,7 +11,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from src.common.auth import get_current_user_id, require_service_token
+from src.common.auth import (
+    get_current_user_id,
+    get_effective_user_id,
+    require_authenticated,
+    require_service_token,
+)
 from src.common.config import Settings
 from src.dependencies import Dependencies
 from src.dvd_service.dto import (
@@ -192,7 +197,9 @@ def client(tmp_path, fake_qdrant, fake_document_storage):
     app.include_router(documents_router)
     app.include_router(search_router)
     app.dependency_overrides[require_service_token] = lambda: None
+    app.dependency_overrides[require_authenticated] = lambda: None
     app.dependency_overrides[get_current_user_id] = lambda: "u1"
+    app.dependency_overrides[get_effective_user_id] = lambda: "u1"
     app.dependency_overrides[Dependencies.get_settings] = lambda: fakes["settings"]
     app.dependency_overrides[Dependencies.get_parser] = lambda: fakes["parser"]
     app.dependency_overrides[Dependencies.get_registry] = lambda: fakes["registry"]
@@ -549,6 +556,22 @@ class TestSearchEndpoints:
         assert resp.status_code == 200 and resp.json()["count"] == 1
         assert fakes["search"].calls[-1][1] == expected_kind
 
+    def test_index_search_needs_no_owner_in_the_body(self, client):
+        c, fakes = client
+        resp = c.post("/search/texts", json={"query": "требования", "project_id": "p1"})
+        assert resp.status_code == 200
+        assert fakes["search"].calls[-1][0].user_id == "u1"
+
+    def test_body_cannot_aim_the_search_at_another_user(self, client):
+        c, fakes = client
+        before = len(fakes["search"].calls)
+        resp = c.post(
+            "/search/texts",
+            json={"query": "требования", "user_id": "u2", "project_id": "p1"},
+        )
+        assert resp.status_code == 403
+        assert len(fakes["search"].calls) == before, "no search may reach the service"
+
 
 class TestUserIndexSearchEndpoints:
     @pytest.mark.parametrize(
@@ -559,10 +582,20 @@ class TestUserIndexSearchEndpoints:
             ("/search/user-index", None),
         ],
     )
-    def test_requires_user_id_and_scenario_id(self, client, path, expected_kind):
+    def test_requires_an_index_target(self, client, path, expected_kind):
         c, _ = client
         resp = c.post(path, json={"query": "требования"})
         assert resp.status_code == 400
+
+    def test_body_cannot_aim_the_search_at_another_user(self, client):
+        c, fakes = client
+        before = len(fakes["search"].calls)
+        resp = c.post(
+            "/search/user-index/texts",
+            json={"query": "требования", "user_id": "u2", "scenario_id": "s1"},
+        )
+        assert resp.status_code == 403
+        assert len(fakes["search"].calls) == before, "no search may reach the service"
 
     def test_forces_include_shared_false(self, client):
         c, fakes = client
