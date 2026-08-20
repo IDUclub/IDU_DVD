@@ -9,13 +9,16 @@ from fastmcp.exceptions import AuthorizationError
 from fastmcp.server.auth import AccessToken
 
 from src.common.auth import (
+    ADMIN_SESSION_COOKIE,
+    admin_session,
     get_current_user_id,
     get_effective_user_id,
     keycloak_token_verifier,
+    require_admin,
     require_authenticated,
-    require_service_token,
     service_token_verifier,
 )
+from src.common.config import settings as app_settings
 
 
 @pytest.fixture(autouse=True)
@@ -36,6 +39,28 @@ def _fake_token_verifier(monkeypatch):
                 claims={
                     "sub": "service-subject",
                     "preferred_username": "service-account-test",
+                },
+            )
+        if token == "admin-token":
+            return AccessToken(
+                token=token,
+                client_id="frontend",
+                scopes=[],
+                claims={
+                    "sub": "admin-1",
+                    "preferred_username": "admin",
+                    "realm_access": {"roles": ["STAFF", "ADMIN"]},
+                },
+            )
+        if token == "staff-token":
+            return AccessToken(
+                token=token,
+                client_id="frontend",
+                scopes=[],
+                claims={
+                    "sub": "staff-1",
+                    "preferred_username": "staff",
+                    "realm_access": {"roles": ["STAFF"]},
                 },
             )
         if token == "expired-token":
@@ -103,15 +128,18 @@ async def test_service_verifier_rejects_user_token():
         await service_token_verifier.verify_token("user-token")
 
 
-def _request() -> Request:
-    """A bare request — no admin session cookie, so only a bearer token can authenticate it."""
+def _request(session: str | None = None) -> Request:
+    """A request, optionally carrying the admin panel's session cookie."""
 
+    headers = (
+        [(b"cookie", f"{ADMIN_SESSION_COOKIE}={session}".encode())] if session else []
+    )
     return Request(
         {
             "type": "http",
             "method": "GET",
             "path": "/documents",
-            "headers": [],
+            "headers": headers,
             "query_string": b"",
         }
     )
@@ -152,20 +180,6 @@ async def test_expired_token_is_rejected_for_user_identity():
     assert error.value.detail == "Bearer token has expired"
 
 
-async def test_service_gate_still_refuses_a_user_token():
-    with pytest.raises(HTTPException) as error:
-        await require_service_token(_request(), _credentials("user-token"))
-
-    assert error.value.status_code == 401
-    assert error.value.detail == "Invalid service token"
-
-
-async def test_service_gate_accepts_a_service_token():
-    assert (
-        await require_service_token(_request(), _credentials("service-token")) is None
-    )
-
-
 async def test_effective_user_ignores_a_spoofed_header_on_a_user_token():
     resolved = await get_effective_user_id(
         _request(), _credentials("user-token"), "another-user"
@@ -190,3 +204,57 @@ async def test_effective_user_is_none_for_a_service_without_a_header():
     )
 
     assert resolved is None
+
+
+@pytest.mark.parametrize("token", ["admin-token", "service-token"])
+async def test_admin_gate_accepts_the_admin_role_and_service_accounts(token):
+    assert await require_admin(_request(), _credentials(token)) is None
+
+
+@pytest.mark.parametrize("token", ["user-token", "staff-token"])
+async def test_admin_gate_refuses_a_user_without_the_role(token):
+    """Authenticated but not entitled — 403, not 401."""
+
+    with pytest.raises(HTTPException) as error:
+        await require_admin(_request(), _credentials(token))
+
+    assert error.value.status_code == 403
+    assert "ADMIN" in error.value.detail
+
+
+async def test_admin_gate_still_needs_a_token():
+    with pytest.raises(HTTPException) as error:
+        await require_admin(_request(), _credentials(None))
+
+    assert error.value.status_code == 401
+
+
+async def test_admin_role_is_configurable(monkeypatch):
+    monkeypatch.setattr(app_settings, "admin_role", "STAFF")
+
+    assert await require_admin(_request(), _credentials("staff-token")) is None
+
+
+async def test_panel_session_authenticates_like_a_bearer_token():
+    """The cookie holds the very token the auth helper issued — same credential, new route."""
+
+    assert await require_admin(_request(session="admin-token"), None) is None
+
+
+async def test_panel_session_of_a_plain_user_is_refused():
+    with pytest.raises(HTTPException) as error:
+        await require_admin(_request(session="user-token"), None)
+
+    assert error.value.status_code == 403
+
+
+@pytest.mark.parametrize("session", ["admin-token"])
+async def test_admin_session_returns_the_signed_in_admin(session):
+    access_token = await admin_session(_request(session=session))
+
+    assert access_token is not None and access_token.claims["sub"] == "admin-1"
+
+
+@pytest.mark.parametrize("session", [None, "user-token", "expired-token", "nonsense"])
+async def test_admin_session_is_none_for_anyone_else(session):
+    assert await admin_session(_request(session=session)) is None

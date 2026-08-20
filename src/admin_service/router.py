@@ -1,11 +1,17 @@
-"""Routes for the password-protected administration UI at ``/admin/ui``."""
+"""Routes for the administration UI at ``/admin/ui``.
+
+Entry is a Keycloak login: the form posts to the IDU auth helper through
+:class:`AuthHelperClient`, and only a user carrying the ``DVD_ADMIN_ROLE`` realm role is let
+in. The session cookie holds the issued access token itself, so the panel's own API calls are
+authenticated exactly like any other bearer request and expire with the token.
+"""
 
 from __future__ import annotations
 
-import hmac
+import time
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import (
     HTMLResponse,
@@ -15,13 +21,8 @@ from fastapi.responses import (
 )
 
 from src.__version__ import VERSION
-from src.api_clients import UrbanApiError
-from src.common.auth import (
-    ADMIN_SESSION_COOKIE,
-    create_admin_session_token,
-    is_admin_session_authenticated,
-)
-from src.common.config import Settings
+from src.api_clients import AuthHelperClient, AuthHelperError, UrbanApiError
+from src.common.auth import ADMIN_SESSION_COOKIE, admin_session, verify_admin_token
 from src.dependencies import Dependencies
 
 router = APIRouter(prefix="/admin/ui", tags=["admin-ui"], include_in_schema=False)
@@ -43,47 +44,73 @@ def _html(name: str, **values: str) -> HTMLResponse:
     )
 
 
+_NOT_CONFIGURED = (
+    "Вход не настроен. Задайте DVD_AUTH_HELPER_URL и DVD_AUTH_HELPER_API_KEY."
+)
+_NOT_ENTITLED = "У этой учётной записи нет прав администратора."
+_SESSION_FALLBACK_SECONDS = 3600
+
+
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(
     request: Request,
-    settings: Settings = Depends(Dependencies.get_settings),
+    auth_helper: AuthHelperClient = Depends(Dependencies.get_auth_helper),
 ):
-    if is_admin_session_authenticated(request, settings):
+    if await admin_session(request):
         return RedirectResponse("/admin/ui", status_code=303)
-    configured = (
-        ""
-        if settings.admin_password
-        else "Пароль администратора не настроен. Задайте DVD_ADMIN_PASSWORD."
+    return _html(
+        "login.html",
+        error="",
+        configured="" if auth_helper.configured else _NOT_CONFIGURED,
     )
-    return _html("login.html", error="", configured=configured)
 
 
 @router.post("/login", response_class=HTMLResponse)
 async def login(
     request: Request,
+    username: str = Form(...),
     password: str = Form(...),
-    settings: Settings = Depends(Dependencies.get_settings),
+    auth_helper: AuthHelperClient = Depends(Dependencies.get_auth_helper),
 ):
-    expected = settings.admin_password
-    if not expected:
-        return _html(
-            "login.html",
-            error="",
-            configured="Пароль администратора не настроен. Задайте DVD_ADMIN_PASSWORD.",
+    """Log in with Keycloak credentials and keep the issued token as the session."""
+
+    try:
+        token = await auth_helper.issue_token(username, password)
+    except AuthHelperError as exc:
+        if exc.status_code == 503:
+            return _html("login.html", error="", configured=_NOT_CONFIGURED)
+        error = (
+            "Неверный логин или пароль"
+            if exc.status_code == 401
+            else "Сервис авторизации недоступен, попробуйте позже"
         )
-    if not hmac.compare_digest(password.encode(), expected.encode()):
-        return _html("login.html", error="Неверный пароль", configured="")
+        return _html("login.html", error=error, configured="")
+
+    try:
+        access_token = await verify_admin_token(token)
+    except HTTPException as exc:
+        error = _NOT_ENTITLED if exc.status_code == 403 else "Токен не принят"
+        return _html("login.html", error=error, configured="")
+
     response = RedirectResponse("/admin/ui", status_code=303)
     response.set_cookie(
         ADMIN_SESSION_COOKIE,
-        create_admin_session_token(expected, settings.admin_session_hours),
-        max_age=max(1, settings.admin_session_hours) * 3600,
+        token,
+        max_age=_session_seconds(access_token.expires_at),
         httponly=True,
         secure=request.url.scheme == "https",
         samesite="strict",
         path="/",
     )
     return response
+
+
+def _session_seconds(expires_at: int | None) -> int:
+    """Outlive the token by nothing: the cookie is useless the moment it stops verifying."""
+
+    if expires_at is None:
+        return _SESSION_FALLBACK_SECONDS
+    return max(60, int(expires_at) - int(time.time()))
 
 
 @router.post("/logout")
@@ -98,7 +125,6 @@ async def territories(
     request: Request,
     query: str = "",
     limit: int = 20,
-    settings: Settings = Depends(Dependencies.get_settings),
 ):
     """Urban API territory search for the panel's autocomplete (session-protected).
 
@@ -106,7 +132,7 @@ async def territories(
     tree has ~100k nodes, so the search has to happen server-side anyway. The parent name comes
     along because it is the only thing that tells two identically named districts apart.
     """
-    if not is_admin_session_authenticated(request, settings):
+    if not await admin_session(request):
         return JSONResponse({"detail": "unauthorized"}, status_code=401)
     try:
         found = await run_in_threadpool(
@@ -146,10 +172,7 @@ async def asset(filename: str):
 
 @router.get("")
 @router.get("/")
-async def admin_ui(
-    request: Request,
-    settings: Settings = Depends(Dependencies.get_settings),
-):
-    if not is_admin_session_authenticated(request, settings):
+async def admin_ui(request: Request):
+    if not await admin_session(request):
         return RedirectResponse("/admin/ui/login", status_code=303)
     return _html("admin.html", version=VERSION)

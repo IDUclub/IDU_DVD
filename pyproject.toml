@@ -4,20 +4,20 @@ version = "0.14.0"
 requires-python = "<3.14,>=3.11"
 dependencies = [
     "fastapi>=0.141.1",
-    "fastmcp>=3.4.5",
+    "fastmcp>=3.4.7",
     "httpx>=0.28.1",
     "idu-service-auth @ https://github.com/IDUclub/idu-service-auth/archive/1b8a418d9b1ab702860eb7289a3b75244666a8d8.tar.gz",
     "ipykernel>=7.3.0",
     "minio>=7.2.20",
     "otteroad>=0.3.0",
-    "pydantic-settings>=2.14.2",
+    "pydantic-settings>=2.15.0",
     "python-multipart>=0.0.32",
-    "qdrant-client>=1.18.0",
+    "qdrant-client>=1.19.0",
     "redis>=8.1.0",
     "structlog>=26.1.0",
     "tqdm>=4.70.0",
-    "unstructured[docx]>=0.25.0,<=1.0.0",
-    "uvicorn[standard]>=0.52.1",
+    "unstructured[docx]>=0.25.2,<=1.0.0",
+    "uvicorn[standard]>=0.52.4",
 ]
 
 [dependency-groups]

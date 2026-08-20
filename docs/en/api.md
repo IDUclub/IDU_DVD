@@ -11,10 +11,22 @@ There are two gates:
 
 | Gate | Accepts | Applies to |
 |------|---------|------------|
-| authenticated | any live token — a user's or a service account's (plus the admin-UI session cookie) | reading the shared corpus: `GET /documents`, `GET /documents/{name}/source`, all of `/library` except its `PATCH`es, all of `/search`, `GET /tags`, `GET /scopes` |
-| service-only | a Keycloak client-credentials token (`preferred_username` starting with `service-account-`), or the admin-UI session cookie | everything that writes to the shared corpus or runs the service: `POST`/`PATCH`/`PUT`/`DELETE /documents`, `/documents/direct`, the `/documents/jobs/*` views, `PATCH /library/...`, `/tagging`, `/system` |
+| authenticated | any live token — a user's or a service account's | reading the shared corpus: `GET /documents`, `GET /documents/{name}/source`, all of `/library` except its `PATCH`es, all of `/search`, `GET /tags`, `GET /scopes` |
+| admin | a user holding the `DVD_ADMIN_ROLE` realm role (`ADMIN` by default) or a service account | everything that changes the shared corpus or the service itself: `POST`/`PATCH`/`PUT`/`DELETE /documents`, `/documents/direct`, the `/documents/jobs/*` views that track those ingests, `PATCH /library/...`, `/tagging`, `/system` |
 
-The MCP server at `/mcp` is service-only as a whole.
+A user who is authenticated but lacks the role is answered `403`, not `401`: the token is
+fine, the person is not entitled. Service accounts are not asked for the role — holding the
+client credentials is the authorisation.
+
+The MCP server at `/mcp` requires a service token as a whole.
+
+### The admin panel
+
+`/admin/ui` has no password of its own. Its login form posts the visitor's Keycloak
+credentials to the IDU auth helper (`DVD_AUTH_HELPER_URL` + `DVD_AUTH_HELPER_API_KEY`, the
+same service behind gMART's `/auth/token`), and the panel opens only for a holder of the admin
+role. The session cookie stores the issued access token itself, so the panel's own API calls
+are ordinary bearer requests and the session ends when the token expires.
 
 ### Who the request acts as
 

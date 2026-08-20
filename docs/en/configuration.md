@@ -16,6 +16,22 @@ the table here and `.env.full.example` together.
 
 ## Variables
 
+### Authentication
+
+The service verifies incoming tokens against this Keycloak realm and uses the same client to
+call its neighbours. See the API page for which gate each endpoint sits behind.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DVD_SERVICE_AUTH_SERVER_URL` | — | Keycloak base URL. Required: startup fails without it |
+| `DVD_SERVICE_AUTH_REALM` | — | realm. Together with the URL it forms the issuer and the JWKS address every incoming token is checked against |
+| `DVD_SERVICE_AUTH_CLIENT_ID` | — | the service's own client (client credentials) |
+| `DVD_SERVICE_AUTH_CLIENT_SECRET` | — | its secret; masked in `GET /system/settings` |
+| `DVD_ADMIN_ROLE` | `ADMIN` | realm role a **user** must hold to change the shared corpus and to open `/admin/ui`. Service accounts are not asked for it — holding the client credentials is the authorisation |
+| `DVD_AUTH_HELPER_URL` | empty | IDU auth helper: the panel's login form posts credentials here (`POST /api/token`), the same service gMART proxies behind its `/auth/token` |
+| `DVD_AUTH_HELPER_API_KEY` | empty | key sent as `X-Auth-Helper-Api-Key`; never reaches the browser, masked in `GET /system/settings`. **Without both halves nobody can log into the panel** — there is no local password to fall back on |
+| `DVD_AUTH_HELPER_TIMEOUT` | `15.0` | seconds to wait for the helper |
+
 ### LLM provider
 
 The pipeline asks the model for one thing: a JSON answer matching a given schema. Both providers

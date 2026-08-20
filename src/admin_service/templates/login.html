@@ -11,9 +11,10 @@
     <div class="brand-mark">D</div>
     <p class="eyebrow">IDU · DOCUMENT VECTOR DB</p>
     <h1>Панель управления</h1>
-    <p class="muted">Введите пароль администратора, чтобы продолжить.</p>
+    <p class="muted">Войдите учётной записью IDU. Нужны права администратора.</p>
     <form method="post" action="/admin/ui/login" class="stack">
-      <label>Пароль<input name="password" type="password" required autofocus autocomplete="current-password"></label>
+      <label>Логин<input name="username" type="text" required autofocus autocomplete="username"></label>
+      <label>Пароль<input name="password" type="password" required autocomplete="current-password"></label>
       <button class="button primary" type="submit">Войти</button>
     </form>
     <p class="form-error">{{ error }}</p>
