@@ -16,6 +16,21 @@ the table here and `.env.full.example` together.
 
 ## Variables
 
+### Authentication
+
+The service verifies incoming tokens against this Keycloak realm and uses the same client to
+call its neighbours. See the API page for which gate each endpoint sits behind.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DVD_SERVICE_AUTH_SERVER_URL` | — | Keycloak base URL. Required: startup fails without it |
+| `DVD_SERVICE_AUTH_REALM` | — | realm. Together with the URL it forms the issuer and the JWKS address every incoming token is checked against |
+| `DVD_SERVICE_AUTH_CLIENT_ID` | — | the service's own client (client credentials) |
+| `DVD_SERVICE_AUTH_CLIENT_SECRET` | — | its secret; masked in `GET /system/settings` |
+| `DVD_ADMIN_ROLE` | `ADMIN` | realm role a **user** must hold to change the shared corpus. Service accounts are not asked for it — holding the client credentials is the authorisation |
+| `DVD_ADMIN_PASSWORD` | empty | password for `/admin/ui`; without it the panel cannot be logged into. Also derives the HMAC key of the session cookie |
+| `DVD_ADMIN_SESSION_HOURS` | `12` | lifetime of that cookie |
+
 ### LLM provider
 
 The pipeline asks the model for one thing: a JSON answer matching a given schema. Both providers

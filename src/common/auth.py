@@ -145,6 +145,39 @@ async def require_authenticated(
     await _authenticate(request, credentials)
 
 
+def _realm_roles(access_token: AccessToken) -> set[str]:
+    realm_access = access_token.claims.get("realm_access")
+    roles = realm_access.get("roles") if isinstance(realm_access, dict) else None
+    if not isinstance(roles, list):
+        return set()
+    return {role for role in roles if isinstance(role, str)}
+
+
+async def require_admin(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Security(optional_bearer_scheme),
+) -> None:
+    """Guard the shared corpus against edits by people who were merely let in.
+
+    Three ways through: the password-protected admin panel, a service account (its client
+    credentials are the authorisation), and a user carrying the ``DVD_ADMIN_ROLE`` realm role.
+    An authenticated user without that role is refused with 403, not 401 — the token is fine,
+    the person is not entitled.
+    """
+
+    if is_admin_session_authenticated(request, app_settings):
+        return
+    access_token = await _authenticate(request, credentials)
+    if access_token is None or _is_service_account(access_token):
+        return
+    role = app_settings.admin_role
+    if role not in _realm_roles(access_token):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"realm role {role} is required to change the shared corpus",
+        )
+
+
 async def require_service_token(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Security(optional_bearer_scheme),

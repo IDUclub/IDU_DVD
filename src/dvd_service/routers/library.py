@@ -12,7 +12,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 
 from src.api_clients import TerritoryNotFound, UrbanApiError
-from src.common.auth import require_authenticated, require_service_token
+from src.common.auth import require_admin, require_authenticated
 from src.dependencies import Dependencies
 from src.dvd_service.dto import (
     DocumentDetail,
@@ -29,7 +29,7 @@ router = APIRouter(prefix="/library", tags=["library"])
 
 # Reading the library is open to any live token; hand-editing the shared corpus is not.
 AUTHENTICATED = [Depends(require_authenticated)]
-SERVICE_ONLY = [Depends(require_service_token)]
+ADMIN_ONLY = [Depends(require_admin)]
 
 
 @router.get("/documents", response_model=DocumentList, dependencies=AUTHENTICATED)
@@ -107,7 +107,7 @@ async def get_node(
 @router.patch(
     "/documents/{doc_id}",
     response_model=DocumentUpdateResponse,
-    dependencies=SERVICE_ONLY,
+    dependencies=ADMIN_ONLY,
 )
 async def update_document_metadata(
     doc_id: str,
@@ -137,7 +137,7 @@ async def update_document_metadata(
 @router.patch(
     "/documents/{doc_id}/fragments/{fragment_id}",
     response_model=DocumentFragment,
-    dependencies=SERVICE_ONLY,
+    dependencies=ADMIN_ONLY,
 )
 async def update_document_fragment(
     doc_id: str,
