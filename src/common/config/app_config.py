@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     service_auth_realm: str
     service_auth_client_id: str
     service_auth_client_secret: SecretStr
+    # Realm role a *user* must hold to change the shared corpus. Service accounts are trusted
+    # by virtue of holding client credentials and are not asked for it.
+    admin_role: str = "ADMIN"
 
     # --- Ollama (LLM for markup/tags; embeddings fallback provider) ---
     ollama_base: str = "http://a.dgx:11434"

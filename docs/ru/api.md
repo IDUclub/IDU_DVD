@@ -8,12 +8,17 @@
 
 Каждый эндпоинт требует Keycloak bearer-токен; он проверяется локально по JWKS реалма —
 подпись, issuer и `exp`. На просроченный токен возвращается `401 Bearer token has expired`.
-Гейтов два:
+Гейтов три:
 
 | Гейт | Кого пускает | Что закрывает |
 |------|--------------|---------------|
 | authenticated | любой живой токен — пользователя или сервис-аккаунта (плюс сессионная кука админ-панели) | чтение общего корпуса: `GET /documents`, `GET /documents/{name}/source`, весь `/library` кроме его `PATCH`, весь `/search`, `GET /tags`, `GET /scopes` |
-| service-only | токен client-credentials Keycloak (`preferred_username` начинается с `service-account-`) или сессионная кука админ-панели | всё, что пишет в общий корпус или управляет сервисом: `POST`/`PATCH`/`PUT`/`DELETE /documents`, `/documents/direct`, представления `/documents/jobs/*`, `PATCH /library/...`, `/tagging`, `/system` |
+| admin | пользователь с realm-ролью `DVD_ADMIN_ROLE` (по умолчанию `ADMIN`), сервис-аккаунт или сессионная кука админ-панели | всё, что меняет общий корпус: `POST`/`PATCH`/`PUT`/`DELETE /documents`, `/documents/direct`, представления `/documents/jobs/*`, отслеживающие эти загрузки, `PATCH /library/...`, `/tagging` |
+| service-only | токен client-credentials Keycloak (`preferred_username` начинается с `service-account-`) или сессионная кука админ-панели | `/system` |
+
+Аутентифицированный пользователь без роли получает `403`, а не `401`: с токеном всё в порядке,
+прав нет у человека. С сервис-аккаунтов роль не спрашивается — авторизацией служит само владение
+client credentials.
 
 MCP-сервер на `/mcp` целиком service-only.
 

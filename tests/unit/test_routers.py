@@ -14,8 +14,8 @@ from fastapi.testclient import TestClient
 from src.common.auth import (
     get_current_user_id,
     get_effective_user_id,
+    require_admin,
     require_authenticated,
-    require_service_token,
 )
 from src.common.config import Settings
 from src.dependencies import Dependencies
@@ -196,7 +196,7 @@ def client(tmp_path, fake_qdrant, fake_document_storage):
     app = FastAPI()
     app.include_router(documents_router)
     app.include_router(search_router)
-    app.dependency_overrides[require_service_token] = lambda: None
+    app.dependency_overrides[require_admin] = lambda: None
     app.dependency_overrides[require_authenticated] = lambda: None
     app.dependency_overrides[get_current_user_id] = lambda: "u1"
     app.dependency_overrides[get_effective_user_id] = lambda: "u1"

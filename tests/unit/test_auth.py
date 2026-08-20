@@ -12,10 +12,12 @@ from src.common.auth import (
     get_current_user_id,
     get_effective_user_id,
     keycloak_token_verifier,
+    require_admin,
     require_authenticated,
     require_service_token,
     service_token_verifier,
 )
+from src.common.config import settings as app_settings
 
 
 @pytest.fixture(autouse=True)
@@ -36,6 +38,28 @@ def _fake_token_verifier(monkeypatch):
                 claims={
                     "sub": "service-subject",
                     "preferred_username": "service-account-test",
+                },
+            )
+        if token == "admin-token":
+            return AccessToken(
+                token=token,
+                client_id="frontend",
+                scopes=[],
+                claims={
+                    "sub": "admin-1",
+                    "preferred_username": "admin",
+                    "realm_access": {"roles": ["STAFF", "ADMIN"]},
+                },
+            )
+        if token == "staff-token":
+            return AccessToken(
+                token=token,
+                client_id="frontend",
+                scopes=[],
+                claims={
+                    "sub": "staff-1",
+                    "preferred_username": "staff",
+                    "realm_access": {"roles": ["STAFF"]},
                 },
             )
         if token == "expired-token":
@@ -190,3 +214,32 @@ async def test_effective_user_is_none_for_a_service_without_a_header():
     )
 
     assert resolved is None
+
+
+@pytest.mark.parametrize("token", ["admin-token", "service-token"])
+async def test_admin_gate_accepts_the_admin_role_and_service_accounts(token):
+    assert await require_admin(_request(), _credentials(token)) is None
+
+
+@pytest.mark.parametrize("token", ["user-token", "staff-token"])
+async def test_admin_gate_refuses_a_user_without_the_role(token):
+    """Authenticated but not entitled — 403, not 401."""
+
+    with pytest.raises(HTTPException) as error:
+        await require_admin(_request(), _credentials(token))
+
+    assert error.value.status_code == 403
+    assert "ADMIN" in error.value.detail
+
+
+async def test_admin_gate_still_needs_a_token():
+    with pytest.raises(HTTPException) as error:
+        await require_admin(_request(), _credentials(None))
+
+    assert error.value.status_code == 401
+
+
+async def test_admin_role_is_configurable(monkeypatch):
+    monkeypatch.setattr(app_settings, "admin_role", "STAFF")
+
+    assert await require_admin(_request(), _credentials("staff-token")) is None

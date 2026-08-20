@@ -21,7 +21,7 @@ from fastapi import (
 from fastapi.concurrency import run_in_threadpool
 from minio.error import S3Error
 
-from src.common.auth import require_authenticated, require_service_token
+from src.common.auth import require_admin, require_authenticated
 from src.common.config import Settings
 from src.common.db.minio_client import DocumentStorage
 from src.common.db.qdrant_client import QdrantRepository
@@ -52,17 +52,18 @@ from src.dvd_service.services.dvd_service import DocumentsService, IngestionServ
 log = structlog.get_logger(__name__)
 router = APIRouter(tags=["documents"])
 
-# The shared corpus is readable by anyone Keycloak still vouches for; changing it, and the
-# operational job views, stay with the services and the admin panel.
+# The shared corpus is readable by anyone Keycloak still vouches for; changing it — and
+# watching the ingestion that changes it — needs the admin role, a service account, or the
+# admin panel.
 AUTHENTICATED = [Depends(require_authenticated)]
-SERVICE_ONLY = [Depends(require_service_token)]
+ADMIN_ONLY = [Depends(require_admin)]
 
 
 @router.post(
     "/documents",
     response_model=UploadResponse,
     status_code=202,
-    dependencies=SERVICE_ONLY,
+    dependencies=ADMIN_ONLY,
 )
 async def upload_document(
     background: BackgroundTasks,
@@ -119,7 +120,7 @@ async def upload_document(
     "/documents/{name}",
     response_model=UploadResponse,
     status_code=202,
-    dependencies=SERVICE_ONLY,
+    dependencies=ADMIN_ONLY,
 )
 async def update_document(
     name: str,
@@ -175,7 +176,7 @@ async def update_document(
     "/documents/{name}",
     response_model=UploadResponse,
     status_code=202,
-    dependencies=SERVICE_ONLY,
+    dependencies=ADMIN_ONLY,
 )
 async def reload_document(
     name: str,
@@ -222,7 +223,7 @@ async def reload_document(
 
 
 @router.delete(
-    "/documents/{name}", response_model=DeleteResponse, dependencies=SERVICE_ONLY
+    "/documents/{name}", response_model=DeleteResponse, dependencies=ADMIN_ONLY
 )
 async def delete_document(
     name: str,
@@ -290,7 +291,7 @@ async def list_documents(
 @router.get(
     "/documents/jobs/active",
     response_model=ActiveJobsResponse,
-    dependencies=SERVICE_ONLY,
+    dependencies=ADMIN_ONLY,
 )
 async def active_jobs(jobs: JobStore = Depends(Dependencies.get_jobs)):
     """All queued and currently processing ingestion jobs."""
@@ -303,7 +304,7 @@ async def active_jobs(jobs: JobStore = Depends(Dependencies.get_jobs)):
 @router.get(
     "/documents/jobs/recent",
     response_model=ActiveJobsResponse,
-    dependencies=SERVICE_ONLY,
+    dependencies=ADMIN_ONLY,
 )
 async def recent_jobs(
     limit: int = Query(20, ge=1, le=100),
@@ -316,9 +317,7 @@ async def recent_jobs(
     )
 
 
-@router.get(
-    "/documents/{job_id}", response_model=JobStatusDTO, dependencies=SERVICE_ONLY
-)
+@router.get("/documents/{job_id}", response_model=JobStatusDTO, dependencies=ADMIN_ONLY)
 async def job_status(job_id: str, jobs: JobStore = Depends(Dependencies.get_jobs)):
     job = jobs.get(job_id)
     if not job:
