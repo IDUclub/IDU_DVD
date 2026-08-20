@@ -75,12 +75,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.add_middleware(RequestLoggingMiddleware)
-app.include_router(documents_router, dependencies=[Depends(require_service_token)])
+# documents_router and library_router gate each route themselves: reading the shared corpus
+# is open to any authenticated caller, writing to it is not.
+app.include_router(documents_router)
 app.include_router(
     direct_documents_router, dependencies=[Depends(require_service_token)]
 )
 app.include_router(search_router)
-app.include_router(library_router, dependencies=[Depends(require_service_token)])
+app.include_router(library_router)
 app.include_router(tagging_router, dependencies=[Depends(require_service_token)])
 app.include_router(user_documents_router)
 app.include_router(system_router, dependencies=[Depends(require_service_token)])

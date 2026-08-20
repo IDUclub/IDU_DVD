@@ -3,6 +3,7 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from src.common.auth import require_authenticated, require_service_token
 from src.dependencies import Dependencies
 from src.dvd_service.dto import DocumentUpdateResponse
 from src.dvd_service.routers import library_router
@@ -43,6 +44,8 @@ def _client():
     app = FastAPI()
     app.include_router(library_router)
     app.dependency_overrides[Dependencies.get_editor] = lambda: editor
+    app.dependency_overrides[require_authenticated] = lambda: None
+    app.dependency_overrides[require_service_token] = lambda: None
     return TestClient(app), editor
 
 
