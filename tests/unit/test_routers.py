@@ -632,3 +632,113 @@ class TestUserIndexSearchEndpoints:
         assert kind == "text"
         assert req.user_id == "u1" and req.scenario_id == "s1"
         assert req.include_shared is False
+
+
+class TestReindexDocument:
+    """Re-running a stored document must not require the client to hand the file back.
+
+    The original is already in MinIO and its key is on every fragment, so the job is queued
+    from the stored key alone. This is the repair path after a bad ingest — and after the
+    outage that indexed a batch of documents under name="unknown", it is the difference
+    between six API calls and re-uploading 26 MB the server already has.
+    """
+
+    def _stored(self, fakes, name="СП 1", version="2020", key="hash-1.docx", **extra):
+        fakes["qdrant"].points["p1"] = (
+            [0.0],
+            {
+                "name": name,
+                "version": version,
+                "doc_id": "d1",
+                "source_object_key": key,
+                "source": "sp1.docx",
+                "content_hash": "hash-1",
+                **extra,
+            },
+        )
+        fakes["document_storage"].objects[key] = (b"docx", "application/octet-stream")
+
+    def test_queues_a_reload_from_the_stored_original(self, client):
+        c, fakes = client
+        self._stored(fakes)
+        resp = c.post("/documents/СП 1/reindex")
+        assert resp.status_code == 202 and resp.json()["status"] == "queued"
+        [entry] = fakes["queue"].pending()
+        assert entry["operation"] == "reload"
+        assert entry["name"] == "СП 1"
+        assert entry["source_object_key"] == "hash-1.docx"
+        assert entry["content_hash"] == "hash-1"
+
+    def test_no_file_is_uploaded(self, client):
+        """The whole point: the bytes never leave the server."""
+        c, fakes = client
+        self._stored(fakes)
+        assert c.post("/documents/СП 1/reindex").status_code == 202
+        assert fakes["document_storage"].upload_calls == []
+
+    def test_mode_new_forgets_the_old_identity(self, client):
+        """A document named wrongly cannot be repaired by re-ingesting under that same name."""
+        c, fakes = client
+        self._stored(fakes, name="unknown", version="unknown")
+        resp = c.post("/documents/unknown/reindex", params={"mode": "new"})
+        assert resp.status_code == 202
+        [entry] = fakes["queue"].pending()
+        assert entry["operation"] == "upload"
+        assert entry["name"] is None, "the pipeline must re-detect the name"
+        assert entry["doc_id"], "a fresh document owns a fresh id"
+
+    def test_version_selects_which_original_to_reuse(self, client):
+        c, fakes = client
+        self._stored(fakes, version="2020", key="old.docx")
+        fakes["qdrant"].points["p2"] = (
+            [0.0],
+            {
+                "name": "СП 1",
+                "version": "2024",
+                "doc_id": "d1",
+                "source_object_key": "new.docx",
+                "content_hash": "hash-2",
+            },
+        )
+        fakes["document_storage"].objects["new.docx"] = (b"docx", None)
+
+        assert c.post("/documents/СП 1/reindex").status_code == 202
+        assert fakes["queue"].pending()[0]["source_object_key"] == "new.docx"  # latest
+
+        resp = c.post("/documents/СП 1/reindex", params={"version": "2020"})
+        assert resp.status_code == 202
+        assert fakes["queue"].pending()[1]["source_object_key"] == "old.docx"
+
+    def test_unknown_document_is_404(self, client):
+        c, fakes = client
+        resp = c.post("/documents/нет такого/reindex")
+        assert resp.status_code == 404
+        assert not fakes["queue"].pending()
+
+    def test_document_without_a_stored_original_is_404(self, client):
+        """Uploaded before MinIO storage existed — there is nothing to re-run from."""
+        c, fakes = client
+        fakes["qdrant"].points["p1"] = (
+            [0.0],
+            {"name": "СП 1", "version": "2020", "doc_id": "d1"},
+        )
+        resp = c.post("/documents/СП 1/reindex")
+        assert resp.status_code == 404
+        assert "исходник" in resp.json()["detail"]
+        assert not fakes["queue"].pending()
+
+    def test_missing_object_fails_now_rather_than_in_the_worker(self, client):
+        """Better a 404 to the caller than a job that dead-letters ten minutes later."""
+        c, fakes = client
+        self._stored(fakes)
+        fakes["document_storage"].objects.clear()
+        resp = c.post("/documents/СП 1/reindex")
+        assert resp.status_code == 404
+        assert not fakes["queue"].pending()
+
+    def test_unknown_mode_is_rejected(self, client):
+        c, fakes = client
+        self._stored(fakes)
+        resp = c.post("/documents/СП 1/reindex", params={"mode": "rebuild"})
+        assert resp.status_code == 422
+        assert not fakes["queue"].pending()

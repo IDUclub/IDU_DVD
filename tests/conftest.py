@@ -12,6 +12,10 @@ import os
 
 # DVD_LLM_BASE_URL has no default in the code on purpose (see Settings._require_llm_endpoint),
 # so the openai provider — now the default — would refuse to build a Settings object at all.
+# This is a placeholder to make Settings constructible, NOT a working endpoint: nothing listens
+# there. Unit tests never reach a real LLM, but anything that does — the integration jobs — must
+# name its provider explicitly rather than inherit this, or it will spend the run talking to a
+# closed port.
 os.environ.setdefault("DVD_LLM_BASE_URL", "http://localhost:8001/v1")
 os.environ.setdefault("DVD_OLLAMA_BASE", "http://localhost:11434")
 os.environ.setdefault("DVD_OLLAMA_MODEL", "qwen2.5:7b-instruct")
