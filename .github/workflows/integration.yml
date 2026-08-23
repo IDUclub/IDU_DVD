@@ -153,6 +153,11 @@ jobs:
       # its own job above.
       - name: Run integration tests
         env:
+          # Spelled out, not inherited from the default: this job runs the pipeline against
+          # the Ollama container it starts itself, and the app defaults to the OpenAI-compatible
+          # provider. Leaving it implicit is what sent a production deploy to an endpoint nobody
+          # had configured — a CI job that starts its own LLM should say which one it means.
+          DVD_LLM_PROVIDER: ollama
           DVD_OLLAMA_BASE: http://localhost:11434
           DVD_OLLAMA_MODEL: qwen2.5:3b-instruct
           DVD_OLLAMA_EMBED_MODEL: bge-m3
