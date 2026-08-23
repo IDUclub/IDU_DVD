@@ -369,43 +369,28 @@ class TestIngest:
         assert final["stage_index"] == final["stage_total"] == 7
         assert final["overall_progress"] == final["task_progress"] == 100
 
-    def test_gpu_gate_serializes_concurrent_ingests(self, wired, sample_raw):
-        # With ingest_concurrency=1 (default) the GPU-bound pipeline is serialized: two ingests
-        # started at once must never be inside the pipeline body simultaneously. We instrument
-        # the first in-gate stage (parser.to_logical_parts) to record peak overlap.
-        import threading
-        import time
+    def test_identity_is_reported_before_the_first_write(self, wired, sample_raw):
+        """The queue records name+version through this hook to undo an interrupted attempt.
 
-        active = {"cur": 0, "max": 0}
-        lock = threading.Lock()
-        orig = wired.ingestion.parser.to_logical_parts
+        It has to fire before anything reaches Qdrant, otherwise a crash could leave fragments
+        that no checkpoint can identify.
+        """
+        seen: list[tuple[str, str]] = []
+        upserts: list[int] = []
+        orig_upsert = wired.ingestion.qdrant.upsert
 
-        def tracked(raw, client, on_progress=None):
-            with lock:
-                active["cur"] += 1
-                active["max"] = max(active["max"], active["cur"])
-            time.sleep(
-                0.05
-            )  # widen the window so an unguarded pipeline would overlap here
-            try:
-                return orig(raw, client, on_progress=on_progress)
-            finally:
-                with lock:
-                    active["cur"] -= 1
+        def tracked_upsert(points):
+            upserts.append(len(seen))  # how many identities were known by upsert time
+            return orig_upsert(points)
 
-        wired.ingestion.parser.to_logical_parts = tracked
+        wired.ingestion.qdrant.upsert = tracked_upsert
         h = DocumentParser.content_hash(sample_raw)
+        result = wired.ingestion.ingest(
+            "doc.docx", sample_raw, h, on_identity=lambda n, v: seen.append((n, v))
+        )
 
-        def run(i):
-            wired.ingestion.ingest(f"doc{i}.docx", sample_raw, h, job_id=f"g{i}")
-
-        threads = [threading.Thread(target=run, args=(i,)) for i in range(3)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        assert active["max"] == 1  # never two documents in the GPU section at once
+        assert seen == [(result["name"], result["version"])]
+        assert upserts and all(count == 1 for count in upserts)
 
     def test_document_processed_event_enqueued(self, wired, sample_raw):
         h = DocumentParser.content_hash(sample_raw)

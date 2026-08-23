@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import difflib
 import os
-import threading
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -164,16 +164,10 @@ class IngestionService:
         self.jobs = jobs
         self.settings = settings
         self.outbox = outbox
-        # Serializes the GPU-bound pipeline: at most ``ingest_concurrency`` documents touch the
-        # LLM/embedder at once. A document waits here (status "queued") until the GPU is free, so
-        # a batch upload keeps the GPU busy without oversubscribing it. Process-wide — background
-        # ingest jobs run in the threadpool, hence a threading primitive.
-        self._gpu_gate = threading.BoundedSemaphore(max(1, settings.ingest_concurrency))
 
     def __repr__(self) -> str:
         return (
-            f"{type(self).__name__}(ingest_concurrency={self.settings.ingest_concurrency}, "
-            f"embed_batch={self.settings.embed_batch}, "
+            f"{type(self).__name__}(embed_batch={self.settings.embed_batch}, "
             f"parser={type(self.parser).__name__}, "
             f"structure={type(self.structure).__name__}, "
             f"hierarchy={type(self.hierarchy).__name__}, "
@@ -452,6 +446,7 @@ class IngestionService:
         *,
         name_override: str | None = None,
         emit_event: bool = True,
+        on_identity: Callable[[str, str], None] | None = None,
         doc_type: str | None = None,
         corpus: str | None = None,
         lang: str | None = None,
@@ -464,11 +459,6 @@ class IngestionService:
         territory_id: int | None = None,
     ) -> dict:
         doc_id = doc_id or str(uuid.uuid4())
-        # Block until a GPU slot is free: the job stays "queued" while it waits, flips to
-        # "processing" only once it holds the slot (see ``_gpu_gate``). Released in ``finally``.
-        if job_id:
-            self.jobs.update(job_id, status="queued")
-        self._gpu_gate.acquire()
         client = create_llm()
         try:
             if job_id:
@@ -511,6 +501,10 @@ class IngestionService:
             )
             version, other_versions = self._resolve_version(name, version, content_hash)
             scope = preset or self._resolve_scope(head)
+            # The last point before anything is written to Qdrant: tell the caller what this
+            # attempt decided to be, so an interrupted run can be undone by (name, version).
+            if on_identity is not None:
+                on_identity(name, version)
             progress.complete_stage()
 
             # Fragment tags were produced together with the structural fields (see
@@ -649,7 +643,6 @@ class IngestionService:
             raise
         finally:
             client.close()
-            self._gpu_gate.release()
 
     def update(
         self,
@@ -660,6 +653,7 @@ class IngestionService:
         version_override: str | None = None,
         job_id: str | None = None,
         *,
+        on_identity: Callable[[str, str], None] | None = None,
         doc_type: str | None = None,
         corpus: str | None = None,
         lang: str | None = None,
@@ -678,9 +672,6 @@ class IngestionService:
         (structure, tagging, embedding) and are inserted next to them, tagged with the new
         version only. Old versions stay searchable untouched.
         """
-        if job_id:
-            self.jobs.update(job_id, status="queued")
-        self._gpu_gate.acquire()
         client = create_llm()
         try:
             if job_id:
@@ -737,6 +728,10 @@ class IngestionService:
             )
             version, other_versions = self._resolve_version(name, version, content_hash)
             scope = preset or self._resolve_scope(head)
+            # The last point before anything is written to Qdrant: tell the caller what this
+            # attempt decided to be, so an interrupted run can be undone by (name, version).
+            if on_identity is not None:
+                on_identity(name, version)
             progress.complete_stage()
 
             for order, n in enumerate(nodes):
@@ -914,7 +909,6 @@ class IngestionService:
             raise
         finally:
             client.close()
-            self._gpu_gate.release()
 
     def reload(
         self,
@@ -1045,9 +1039,6 @@ class IngestionService:
                 f"векторизатор '{provider}' недоступен; активен "
                 f"'{self.settings.embeddings_provider}'"
             )
-        if job_id:
-            self.jobs.update(job_id, status="queued")
-        self._gpu_gate.acquire()
         try:
             if job_id:
                 self.jobs.update(
@@ -1177,8 +1168,6 @@ class IngestionService:
             if job_id:
                 self.jobs.update(job_id, status="error", error=str(exc))
             raise
-        finally:
-            self._gpu_gate.release()
 
     def reload_direct(
         self, doc: DirectDocumentIn, content_hash: str, *, job_id: str | None = None
@@ -1225,6 +1214,43 @@ class IngestionService:
             else:
                 self.outbox.enqueue(DirectDocumentProcessed(document_name=name))
         return result
+
+    def discard_attempt(
+        self,
+        *,
+        doc_id: str | None = None,
+        name: str | None = None,
+        version: str | None = None,
+    ) -> dict:
+        """Undo what an interrupted ingestion attempt wrote, so a retry starts from scratch.
+
+        Node ids are generated fresh on every run, so re-running the pipeline over the same
+        file adds a second copy of every fragment instead of overwriting the first — a retry
+        must clean up first. Callers pass whichever handle identifies *only* the failed
+        attempt's writes:
+
+        ``doc_id``
+            A document being created owns its id, so dropping the points carrying it is exact.
+        ``name`` + ``version``
+            A delta update writes under the base document's ``doc_id`` (deleting by it would
+            take the previous versions with it) and re-tags fragments it reuses, so the new
+            version is the only thing that isolates it. This is exactly what deleting a single
+            version does, so the version delete is reused verbatim.
+
+        Silent about a document that is not there: a crash before the first Qdrant write leaves
+        nothing to undo, which is the common case.
+        """
+        removed = {}
+        if doc_id:
+            removed["points_removed"] = self.qdrant.delete_by_doc(doc_id)
+            self.registry.unregister_document(doc_id)
+        if name and version:
+            try:
+                result = self.delete_document(name, version, emit_event=False)
+                removed["version_points_removed"] = result.get("points_deleted", 0)
+            except KeyError:
+                pass
+        return removed
 
     def delete_document(
         self, name: str, version: str | None = None, *, emit_event: bool = True

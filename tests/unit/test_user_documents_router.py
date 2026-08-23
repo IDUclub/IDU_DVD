@@ -99,7 +99,13 @@ def _reset_singleton():
 
 @pytest.fixture
 def client(
-    tmp_path, settings, fake_redis, fake_qdrant, fake_document_storage, monkeypatch
+    tmp_path,
+    settings,
+    fake_redis,
+    fake_qdrant,
+    fake_document_storage,
+    ingest_queue,
+    monkeypatch,
 ):
     async def fake_verify_token(token):
         if token == "user":
@@ -150,6 +156,7 @@ def client(
     fake_jobs = FakeJobs()
     app = FastAPI()
     app.state.fake_jobs = fake_jobs
+    app.state.ingest_queue = ingest_queue
     app.include_router(user_documents_router)
     app.dependency_overrides[Dependencies.get_settings] = lambda: upload_settings
     app.dependency_overrides[Dependencies.get_parser] = lambda: FakeParser()
@@ -165,6 +172,7 @@ def client(
         lambda: fake_document_storage
     )
     app.dependency_overrides[Dependencies.get_jobs] = lambda: fake_jobs
+    app.dependency_overrides[Dependencies.get_ingest_queue] = lambda: ingest_queue
     app.dependency_overrides[Dependencies.get_urban_api] = lambda: FakeUrbanApi()
     with TestClient(
         app,
@@ -232,7 +240,7 @@ class TestUploadDocument:
         )
         assert resp.status_code == 202
         assert index_registry.list_for_user("u1") == []
-        assert fake_ingestion.ingest_calls
+        assert c.app.state.ingest_queue.pending()
 
     def test_auto_creates_index_and_queues_ingest(self, client):
         c, fake_ingestion, index_registry, _ = client
@@ -244,7 +252,13 @@ class TestUploadDocument:
         assert resp.status_code == 202
         assert resp.json()["status"] == "queued"
         assert index_registry.get("u1", "s1") is not None
-        assert fake_ingestion.ingest_calls
+        [entry] = c.app.state.ingest_queue.pending()
+        assert entry["operation"] == "upload"
+        assert entry["scope"] == {
+            "user_id": "u1",
+            "project_id": "p1",
+            "scenario_id": "s1",
+        }, "a worker rebuilds the user-scoped service from this"
 
     def test_job_records_user_and_project_ownership(self, client):
         c, _, _, _ = client
@@ -291,8 +305,8 @@ class TestUploadDocument:
         )
         assert resp.status_code == 202
         assert storage.upload_calls
-        _, kwargs = fake_ingestion.ingest_calls[-1]
-        assert kwargs["source_object_key"] == storage.upload_calls[-1]
+        [entry] = c.app.state.ingest_queue.pending()
+        assert entry["source_object_key"] == storage.upload_calls[-1]
 
     def test_storage_failure_rejects_upload_and_never_queues_a_job(self, client):
         c, fake_ingestion, _, storage = client
@@ -379,8 +393,8 @@ class TestUpdateReloadDeleteDocument:
         )
         assert resp.status_code == 202
 
-    def test_reload_queues_background_reload(self, client):
-        c, fake_ingestion, _, _ = client
+    def test_reload_queues_a_durable_job(self, client):
+        c, _, _, _ = client
         self._create_index(c)
         resp = c.put(
             "/user-documents/doc",
@@ -388,7 +402,9 @@ class TestUpdateReloadDeleteDocument:
             params={"user_id": "u1", "scenario_id": "s1"},
         )
         assert resp.status_code == 202
-        assert fake_ingestion.reload_calls
+        assert [e["operation"] for e in c.app.state.ingest_queue.pending()] == [
+            "reload"
+        ]
 
     def test_delete_does_not_require_scenario_index_registry(self, client):
         c, _, _, _ = client

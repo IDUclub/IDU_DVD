@@ -363,6 +363,19 @@ def fake_redis(monkeypatch):
 
 
 @pytest.fixture
+def ingest_queue(settings, fake_redis):
+    """The real ``IngestQueue`` over fakeredis.
+
+    Queue semantics (FIFO, claim/commit, retry placement) are the point of the feature, so the
+    tests exercise the real implementation rather than a stand-in.
+    """
+    from src.common.db.redis_client import RedisClient
+    from src.dvd_service.ingest_queue import IngestQueue
+
+    return IngestQueue(RedisClient(settings), settings)
+
+
+@pytest.fixture
 def user_index_registry(settings, fake_redis):
     """A real ``UserIndexRegistry`` backed by fakeredis (needs the ``fake_redis`` patch active)."""
     from src.common.db.redis_client import RedisClient, UserIndexRegistry

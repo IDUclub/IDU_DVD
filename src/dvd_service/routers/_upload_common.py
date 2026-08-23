@@ -45,6 +45,41 @@ def queued_job(
     }
 
 
+def ingest_entry(
+    job_id: str,
+    operation: str,
+    *,
+    content_hash: str,
+    source_object_key: str | None = None,
+    payload_object_key: str | None = None,
+    filename: str | None = None,
+    name: str | None = None,
+    version: str | None = None,
+    meta: dict | None = None,
+    doc_id: str | None = None,
+    scope: dict | None = None,
+) -> dict:
+    """Describe a queued ingestion job: everything a worker needs to run it from scratch.
+
+    Deliberately holds no file content and no parsed document — only the MinIO key of the
+    original. The entry has to be small enough to sit in Redis and complete enough to be
+    executed by a process that has never seen the request that created it.
+    """
+    return {
+        "job_id": job_id,
+        "operation": operation,
+        "content_hash": content_hash,
+        "source_object_key": source_object_key,
+        "payload_object_key": payload_object_key,
+        "filename": filename,
+        "name": name,
+        "version": version,
+        "meta": meta or {},
+        "doc_id": doc_id,
+        "scope": scope,
+    }
+
+
 def parse_json_field(name: str, value: str | None) -> dict:
     if not value:
         return {}
@@ -158,16 +193,36 @@ def object_key(content_hash: str, suffix: str) -> str:
     return f"{content_hash}{suffix}"
 
 
-async def save_source(storage: DocumentStorage, path: str, content_hash: str) -> str:
-    """Upload the already-received temp file to MinIO; returns its object key.
+async def park_source(storage: DocumentStorage, path: str, content_hash: str) -> str:
+    """Move the already-received temp file to MinIO; returns its object key.
 
     Raises on failure — this is the fail-closed gate: callers must not queue an ingestion job
-    for a source file that wasn't durably saved.
+    for a source file that wasn't durably saved. On success the scratch copy is dropped: the
+    queued job carries only the object key, and the worker downloads the original when its turn
+    comes (possibly in a later process, after a restart).
     """
     key = object_key(content_hash, Path(path).suffix)
     data = await run_in_threadpool(Path(path).read_bytes)
     content_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
     await run_in_threadpool(storage.upload, key, data, content_type)
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    return key
+
+
+async def park_payload(
+    storage: DocumentStorage, settings: Settings, job_id: str, body: bytes
+) -> str:
+    """Park a direct-ingestion JSON payload in MinIO; returns its object key.
+
+    The direct path has no uploaded file to fall back on, so the fragments themselves are what
+    has to outlive the process. Keyed by job (not by content) because the object is scratch
+    space for exactly one queued job and is deleted once that job succeeds.
+    """
+    key = f"{settings.ingest_payload_prefix}/{job_id}.json"
+    await run_in_threadpool(storage.upload, key, body, "application/json")
     return key
 
 
@@ -208,16 +263,3 @@ def download_response(data: bytes, content_type: str | None, filename: str) -> R
         media_type=content_type or "application/octet-stream",
         headers={"Content-Disposition": disposition},
     )
-
-
-def run_job(job_id: str, path: str, task) -> None:
-    """Background wrapper: job status is maintained inside the service call itself."""
-    try:
-        task()
-    except Exception:  # noqa: BLE001 — error status is already set by the service
-        log.warning("background_job_error", job_id=job_id)
-    finally:
-        try:
-            os.remove(path)
-        except OSError:
-            pass

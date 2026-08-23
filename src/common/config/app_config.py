@@ -153,12 +153,30 @@ class Settings(BaseSettings):
     # requests efficiently; result order is preserved before overlap reconciliation.
     llm_concurrency: int = 8
 
-    # --- Ingestion concurrency ---
-    # How many documents may run the GPU-bound pipeline (LLM markup/tags/refs + embeddings)
-    # at once. Default 1 — a single GPU is the bottleneck, so documents are serialized: a new
-    # one waits (job status "queued") until the current one frees the GPU. Raise only with
-    # more GPU capacity (e.g. a second Ollama instance / card).
+    # --- Ingestion queue ---
+    # Uploads are not processed in the request that brought them: the job is appended to a
+    # durable Redis queue and picked up by ``ingest_concurrency`` background workers. The
+    # count is therefore the parallelism limit — how many documents may run the GPU-bound
+    # pipeline (LLM markup/tags/refs + embeddings) at once. Default 1: a single GPU is the
+    # bottleneck, so documents are serialized and a new one simply waits its turn in the
+    # queue. Raise only with more GPU capacity (e.g. a second Ollama instance / card).
     ingest_concurrency: int = 1
+    ingest_queue_key: str = "dvd:ingest:pending"  # Redis list of queued jobs (FIFO)
+    ingest_inflight_key: str = (
+        "dvd:ingest:inflight"  # claimed by a worker, not yet finished
+    )
+    ingest_dead_key: str = "dvd:ingest:dead"  # jobs that exhausted their attempts
+    ingest_checkpoint_prefix: str = (
+        "dvd:ingest:checkpoint"  # per-job identity checkpoint (retry cleanup)
+    )
+    ingest_poll_interval: float = 2.0  # seconds between queue checks when idle
+    # Processing attempts before a job is dead-lettered. Every restart mid-processing costs
+    # one attempt, so this also caps how often a document that reliably kills the process can
+    # take the whole service down with it on boot.
+    ingest_max_attempts: int = 3
+    # Object key prefix for direct-ingestion payloads parked in MinIO while queued (the direct
+    # path has no uploaded file to fall back on). Removed once the job finishes.
+    ingest_payload_prefix: str = "queue"
 
     # --- Upload ---
     upload_dir: str = "./_uploads"

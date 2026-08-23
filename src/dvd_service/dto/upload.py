@@ -46,6 +46,32 @@ class ActiveJobsResponse(BaseModel):
     jobs: list[JobStatusDTO]
 
 
+class QueuedJobDTO(BaseModel):
+    """One entry of the durable ingestion queue (what a worker needs to run the job).
+
+    Distinct from :class:`JobStatusDTO`, which reports live pipeline progress: this is the
+    persisted work item that survives a restart.
+    """
+
+    job_id: str
+    operation: str  # upload | update | reload | upload-direct | reload-direct
+    name: str | None = None
+    filename: str | None = None
+    attempts: int = 0
+    enqueued_at: str | None = None
+    failed_at: str | None = None
+    last_error: str | None = None
+
+
+class QueueStateResponse(BaseModel):
+    """Depth of the ingestion queue and the jobs in it."""
+
+    pending: int  # waiting for a worker
+    inflight: int  # claimed by a worker, being processed right now
+    dead: int  # exhausted their attempts; retried only on request
+    jobs: list[QueuedJobDTO]
+
+
 class DeleteResponse(BaseModel):
     name: str
     versions_removed: list[str]

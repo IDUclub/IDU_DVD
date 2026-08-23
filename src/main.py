@@ -11,6 +11,7 @@ from src.admin_service.router import router as admin_router
 from src.common.auth import require_admin
 from src.common.middlewares import RequestLoggingMiddleware
 from src.dependencies import init_dependencies
+from src.dvd_service.ingest_worker import IngestWorker
 from src.dvd_service.routers import (
     direct_documents_router,
     documents_router,
@@ -49,6 +50,30 @@ async def _tagging_backfill_loop(deps) -> None:
         await asyncio.sleep(settings.tagging_backfill_interval)
 
 
+def _start_ingest_workers(deps) -> list[asyncio.Task]:
+    """Start the pool that drains the ingestion queue.
+
+    The pool size *is* the ingestion parallelism limit: a document is processed by exactly one
+    worker from start to finish, so ``ingest_concurrency`` workers means that many documents
+    touch the LLM/embedder at once. Everything else waits in Redis, costing no thread.
+    """
+    workers = [
+        IngestWorker(
+            f"ingest-{index + 1}",
+            settings=deps.settings,
+            queue=deps.ingest_queue,
+            jobs=deps.jobs,
+            parser=deps.parser,
+            ingestion=deps.ingestion,
+            document_storage=deps.document_storage,
+            user_document_storage=deps.user_document_storage,
+            deps=deps,
+        )
+        for index in range(max(1, deps.settings.ingest_concurrency))
+    ]
+    return [asyncio.create_task(worker.run()) for worker in workers]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     deps = init_dependencies()
@@ -60,11 +85,16 @@ async def lifespan(app: FastAPI):
         # Kafka outbox publisher (no-op when DVD_KAFKA_BOOTSTRAP_SERVERS is not set)
         await deps.publisher.start()
         backfill_task = asyncio.create_task(_tagging_backfill_loop(deps))
+        ingest_tasks = _start_ingest_workers(deps)
         try:
             async with mcp_app.lifespan(app):
                 yield
         finally:
             backfill_task.cancel()
+            # A worker cancelled mid-document leaves its job on the in-flight list, where the
+            # next start finds it and requeues it — deliberately not awaited to a clean stop.
+            for task in ingest_tasks:
+                task.cancel()
             await deps.publisher.stop()
             deps.urban_api.close()
 

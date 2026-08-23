@@ -7,7 +7,9 @@ registered in the registry — so search / ``GET /documents`` / ``/library`` and
 ``DELETE /documents/{name}`` work on them unchanged.
 
 Both endpoints take a JSON array of documents (a single document is an array of one) and queue
-one background job per document, returning a per-document result list.
+one job per document on the durable ingestion queue, returning a per-document result list. The
+fragments themselves are parked in MinIO first: unlike an upload there is no file to fall back
+on, and a queued job must be replayable by a process that never saw the request.
 """
 
 from __future__ import annotations
@@ -15,13 +17,21 @@ from __future__ import annotations
 import uuid
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
+from src.common.config import Settings
+from src.common.db.minio_client import DocumentStorage
 from src.common.db.redis_client import DocumentRegistry, JobStore
 from src.dependencies import Dependencies
 from src.dvd_service.dto import DirectDocumentIn, DirectJobResult
+from src.dvd_service.ingest_queue import IngestQueue
 from src.dvd_service.modules.doc_parsers import DocumentParser
-from src.dvd_service.routers._upload_common import duplicate_conflict, queued_job
+from src.dvd_service.routers._upload_common import (
+    duplicate_conflict,
+    ingest_entry,
+    park_payload,
+    queued_job,
+)
 from src.dvd_service.services.dvd_service import IngestionService
 
 log = structlog.get_logger(__name__)
@@ -33,74 +43,98 @@ def _content_hash(doc: DirectDocumentIn) -> str:
     return DocumentParser.content_hash([{"text": f.text} for f in doc.fragments])
 
 
-def _run_direct_job(job_id: str, task) -> None:
-    """Background wrapper: the service call maintains job status itself (incl. errors)."""
+async def _queue_direct(
+    doc: DirectDocumentIn,
+    operation: str,
+    *,
+    storage: DocumentStorage,
+    settings: Settings,
+    jobs: JobStore,
+    queue: IngestQueue,
+) -> DirectJobResult:
+    """Park one document's fragments in MinIO and queue the job that will index them."""
+    job_id = str(uuid.uuid4())
+    content_hash = _content_hash(doc)
     try:
-        task()
-    except Exception:  # noqa: BLE001 — error status is already set by the service
-        log.warning("direct_background_job_error", job_id=job_id)
+        payload_key = await park_payload(
+            storage, settings, job_id, doc.model_dump_json().encode("utf-8")
+        )
+    except Exception as exc:  # noqa: BLE001 — fail closed, same rule as an upload
+        raise HTTPException(502, f"Не удалось сохранить фрагменты в хранилище: {exc}")
+    jobs.set(job_id, queued_job(job_id, None, operation, doc.name))
+    queue.enqueue(
+        ingest_entry(
+            job_id,
+            operation,
+            content_hash=content_hash,
+            payload_object_key=payload_key,
+            name=doc.name,
+            version=doc.version,
+            doc_id=str(uuid.uuid4()) if operation == "upload-direct" else None,
+        )
+    )
+    return DirectJobResult(name=doc.name, status="queued", job_id=job_id)
 
 
 @router.post("/documents/direct", response_model=list[DirectJobResult], status_code=202)
 async def upload_documents_direct(
     docs: list[DirectDocumentIn],
-    background: BackgroundTasks,
     registry: DocumentRegistry = Depends(Dependencies.get_registry),
+    settings: Settings = Depends(Dependencies.get_settings),
+    storage: DocumentStorage = Depends(Dependencies.get_document_storage),
     jobs: JobStore = Depends(Dependencies.get_jobs),
+    queue: IngestQueue = Depends(Dependencies.get_ingest_queue),
     ingestion: IngestionService = Depends(Dependencies.get_ingestion),
 ):
     """Directly ingest one or more documents from caller-supplied fragments.
 
-    Each document is embedded and indexed in the background (no LLM structuring). An exact
+    Each document is embedded and indexed by a queue worker (no LLM structuring). An exact
     content duplicate is rejected per-document (``status="rejected"``); the rest are queued
     (``status="queued"`` + ``job_id``). Poll ``GET /documents/{job_id}`` for progress.
     """
     results: list[DirectJobResult] = []
     for doc in docs:
-        content_hash = _content_hash(doc)
-        conflict = duplicate_conflict(registry, ingestion.qdrant, content_hash)
+        conflict = duplicate_conflict(registry, ingestion.qdrant, _content_hash(doc))
         if conflict:
             results.append(
                 DirectJobResult(name=doc.name, status="rejected", error=conflict)
             )
             continue
-        job_id = str(uuid.uuid4())
-        jobs.set(job_id, queued_job(job_id, None, "upload-direct", doc.name))
-        background.add_task(
-            _run_direct_job,
-            job_id,
-            lambda d=doc, ch=content_hash, jid=job_id: ingestion.ingest_direct(
-                d, ch, job_id=jid
-            ),
+        results.append(
+            await _queue_direct(
+                doc,
+                "upload-direct",
+                storage=storage,
+                settings=settings,
+                jobs=jobs,
+                queue=queue,
+            )
         )
-        results.append(DirectJobResult(name=doc.name, status="queued", job_id=job_id))
     return results
 
 
 @router.put("/documents/direct", response_model=list[DirectJobResult], status_code=202)
 async def replace_documents_direct(
     docs: list[DirectDocumentIn],
-    background: BackgroundTasks,
+    settings: Settings = Depends(Dependencies.get_settings),
+    storage: DocumentStorage = Depends(Dependencies.get_document_storage),
     jobs: JobStore = Depends(Dependencies.get_jobs),
-    ingestion: IngestionService = Depends(Dependencies.get_ingestion),
+    queue: IngestQueue = Depends(Dependencies.get_ingest_queue),
 ):
     """Full replace (create-or-replace) of one or more directly-ingested documents by name.
 
     Every stored version of each named document is wiped, then the supplied fragments are
     ingested from scratch. No duplicate rejection — re-supplying the same fragments is a
-    legitimate way to rebuild the index. Queues one background job per document.
+    legitimate way to rebuild the index. Queues one job per document.
     """
-    results: list[DirectJobResult] = []
-    for doc in docs:
-        content_hash = _content_hash(doc)
-        job_id = str(uuid.uuid4())
-        jobs.set(job_id, queued_job(job_id, None, "reload-direct", doc.name))
-        background.add_task(
-            _run_direct_job,
-            job_id,
-            lambda d=doc, ch=content_hash, jid=job_id: ingestion.reload_direct(
-                d, ch, job_id=jid
-            ),
+    return [
+        await _queue_direct(
+            doc,
+            "reload-direct",
+            storage=storage,
+            settings=settings,
+            jobs=jobs,
+            queue=queue,
         )
-        results.append(DirectJobResult(name=doc.name, status="queued", job_id=job_id))
-    return results
+        for doc in docs
+    ]
