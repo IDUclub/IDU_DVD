@@ -1,11 +1,15 @@
 """Unit tests for src/dvd_service/modules/doc_parsers — Stage 1 + 1.5 DocumentParser.
 
 Covers: marker/heuristic detection, content hashing (dedup), block merging by boundaries,
-heuristic-only logical splitting (no LLM), and __repr__. No network — `client=None` path.
+heuristic-only logical splitting (no LLM), the refusal to structure a document when the LLM is
+gone entirely, and __repr__. No network — `client=None` or a client that only raises.
 """
 
 from __future__ import annotations
 
+import pytest
+
+from src.api_clients import LlmError
 from src.dvd_service.modules.doc_parsers import (
     DocumentParser,
     is_numbered_head,
@@ -104,6 +108,38 @@ class TestLogicalSplitHeuristicOnly:
         assert parts, "expected at least one logical part"
         assert all({"id", "text", "source_ids"} <= p.keys() for p in parts)
         assert [p["id"] for p in parts] == list(range(len(parts)))  # ids are reindexed
+
+
+class TestLlmOutage:
+    """A dead LLM must fail the document, not quietly index it without structure.
+
+    Skipping a window is a graceful degradation — the heuristic covers that stretch. Skipping
+    *every* window is an outage, and carrying on produced documents named "unknown" that later
+    uploads then joined as extra versions of. Raising hands the job back to the ingestion queue,
+    which retries and eventually dead-letters it, leaving the corpus untouched.
+    """
+
+    class DeadLlm:
+        """Every call fails the way an unreachable endpoint does."""
+
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, system, user, schema, model=None):
+            self.calls += 1
+            raise ConnectionError("[Errno 111] Connection refused")
+
+    def test_every_window_failing_raises(self, settings, sample_raw):
+        parser = DocumentParser(settings)
+        client = self.DeadLlm()
+        with pytest.raises(LlmError, match="LLM недоступен"):
+            parser.to_logical_parts(sample_raw, client)
+        assert client.calls, "the LLM must actually have been attempted"
+
+    def test_no_llm_at_all_is_still_the_heuristic_path(self, settings, sample_raw):
+        """client=None is a deliberate choice, not an outage — it must keep working."""
+        parts = DocumentParser(settings).to_logical_parts(sample_raw, client=None)
+        assert parts
 
 
 class TestRepr:

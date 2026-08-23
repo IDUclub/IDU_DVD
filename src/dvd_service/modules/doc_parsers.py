@@ -11,7 +11,7 @@ import re
 
 import structlog
 
-from src.api_clients import ChatClient, OllamaError
+from src.api_clients import ChatClient, LlmError, OllamaError
 from src.common.config import Settings
 from src.dvd_service.modules.windowing import make_windows, map_concurrent, reconcile
 
@@ -337,6 +337,17 @@ class DocumentParser:
                     decisions.append(decision)
                 if on_progress:
                     on_progress(done, len(windows), "boundaries")
+            # Losing a window is survivable — the heuristic covers that stretch. Losing *every*
+            # window is not: it means the LLM is unreachable or refusing, and carrying on would
+            # index the document with no structure and no identity, under name="unknown". Every
+            # later document then attaches to that phantom as another version of it. Failing
+            # here instead hands the job back to the queue, which retries it and eventually
+            # dead-letters it — noisy, but the corpus stays clean.
+            if windows and not decisions:
+                raise LlmError(
+                    f"LLM недоступен: ни одно из {len(windows)} окон разметки не обработано "
+                    "— документ не может быть структурирован"
+                )
             llm_dec = reconcile(decisions)
         final = ["new"]
         for i in range(1, n):

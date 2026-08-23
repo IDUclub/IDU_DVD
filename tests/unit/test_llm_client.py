@@ -227,8 +227,8 @@ class TestLifecycle:
 
 
 class TestProviderSelection:
-    def test_default_provider_is_ollama(self, monkeypatch):
-        """Historical behaviour stays the default: DVD_OLLAMA_* alone keeps working."""
+    def test_ollama_provider_returns_ollama_client(self, monkeypatch):
+        """Still available for local development, just no longer the default."""
         from src.common.config import settings
 
         monkeypatch.setattr(settings, "llm_provider", "ollama")
@@ -243,6 +243,14 @@ class TestProviderSelection:
         client = create_llm()
         assert isinstance(client, OpenAICompatibleClient)
         client.close()
+
+    def test_unknown_provider_raises_instead_of_falling_back(self, monkeypatch):
+        """The old code returned Ollama for anything unrecognized — that silence cost a corpus."""
+        from src.common.config import settings
+
+        monkeypatch.setattr(settings, "llm_provider", "vllm")
+        with pytest.raises(LlmError, match="DVD_LLM_PROVIDER"):
+            create_llm()
 
 
 class TestErrorHierarchy:

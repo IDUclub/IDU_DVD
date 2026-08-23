@@ -10,6 +10,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # Required whenever DVD_LLM_PROVIDER is openai (the default) — the code ships no default URL.
+  DVD_LLM_BASE_URL: http://localhost:8001/v1
   DVD_SERVICE_AUTH_SERVER_URL: http://localhost:9999
   DVD_SERVICE_AUTH_REALM: test
   DVD_SERVICE_AUTH_CLIENT_ID: test-client

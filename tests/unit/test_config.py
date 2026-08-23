@@ -136,6 +136,51 @@ class TestUrbanApi:
         assert Settings().urban_api_url == "http://urban-api.local"
 
 
+class TestLlmProvider:
+    """The chat provider must be explicit and reachable, or the app refuses to boot.
+
+    Both halves are scar tissue. A deploy once ran with the provider left at its old default
+    and the LLM address never configured; every markup window failed with "connection refused",
+    which the pipeline treated as a skippable degradation. The documents were indexed with no
+    structure under ``name="unknown"``, and each new one attached to that phantom as another
+    *version* of it. Nothing in the process complained.
+    """
+
+    def test_default_provider_is_openai(self):
+        assert Settings().llm_provider == "openai"
+
+    def test_unknown_provider_refuses_to_start(self):
+        with pytest.raises(ValueError, match="DVD_LLM_PROVIDER"):
+            Settings(llm_provider="vllm")
+
+    def test_typo_is_not_silently_resolved_to_a_provider(self):
+        with pytest.raises(ValueError, match="DVD_LLM_PROVIDER"):
+            Settings(llm_provider="opneai")
+
+    def test_provider_is_case_insensitive(self):
+        assert Settings(llm_provider="OpenAI").llm_provider == "openai"
+
+    def test_openai_without_a_base_url_refuses_to_start(self):
+        with pytest.raises(ValueError, match="DVD_LLM_BASE_URL"):
+            Settings(llm_provider="openai", llm_base_url="")
+
+    def test_blank_base_url_refuses_to_start(self):
+        with pytest.raises(ValueError, match="DVD_LLM_BASE_URL"):
+            Settings(llm_provider="openai", llm_base_url="   ")
+
+    def test_ollama_does_not_need_the_openai_url(self):
+        s = Settings(llm_provider="ollama", llm_base_url="")
+        assert s.llm_provider == "ollama"
+
+    def test_trailing_slash_is_normalized(self):
+        s = Settings(llm_provider="openai", llm_base_url="http://a.dgx:8010/v1/")
+        assert s.llm_base_url == "http://a.dgx:8010/v1"
+
+    def test_env_override(self, monkeypatch):
+        monkeypatch.setenv("DVD_LLM_BASE_URL", "http://llm.local:8000/v1")
+        assert Settings().llm_base_url == "http://llm.local:8000/v1"
+
+
 class TestRepr:
     def test_repr_is_concise_and_mentions_key_endpoints(self):
         r = repr(Settings())

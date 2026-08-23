@@ -18,7 +18,7 @@ a fallback provider — `DVD_EMBEDDINGS_PROVIDER`).
 | FastAPI | HTTP API; ingestion workers run as background tasks of its lifespan |
 | Qdrant | vector database; one collection per embedding space (namespaced), payload indexes |
 | Redis | ingestion queue (pending / in-flight / dead-letter), parsing job statuses, document and version registry (namespaced per collection), Kafka event outbox. Its durability is the queue's durability — run it with AOF enabled |
-| LLM backend | markup, merge, tags, document head, references. Native **Ollama** `/api/chat` or any **OpenAI-compatible** `/v1/chat/completions` server (vLLM, LM Studio, llama.cpp, OpenAI) — selected by `DVD_LLM_PROVIDER` |
+| LLM backend | markup, merge, tags, document head, references. Any **OpenAI-compatible** `/v1/chat/completions` server (vLLM, LM Studio, llama.cpp, OpenAI) by default; native **Ollama** `/api/chat` for local development — selected by `DVD_LLM_PROVIDER`. Not optional: with it unreachable a document cannot be structured, and the ingest fails rather than indexing it unnamed |
 | Ollama | the LLM when `DVD_LLM_PROVIDER=ollama`; fallback embeddings provider |
 | Urban API | territory tree for document tagging plus scenario-to-project resolution for user documents. A token is optional for private projects. Mandatory in configuration (an empty URL fails startup) |
 | giga-vectorizer | embeddings (Giga-Embeddings-instruct, 2048-d) via OpenAI-compatible `/v1/embeddings`; CUDA-only, separate repository |
