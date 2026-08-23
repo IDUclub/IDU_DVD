@@ -23,6 +23,7 @@ import structlog
 from src.api_clients.base import ChatClient, LlmError
 from src.api_clients.ollama_client import OllamaClient
 from src.common.config import settings
+from src.common.config.app_config import LLM_PROVIDERS
 
 log = structlog.get_logger(__name__)
 
@@ -133,7 +134,17 @@ class OpenAICompatibleClient:
 
 
 def create_llm() -> ChatClient:
-    """LLM client for the configured provider (``DVD_LLM_PROVIDER``)."""
+    """LLM client for the configured provider (``DVD_LLM_PROVIDER``).
+
+    An unknown provider raises instead of falling back. ``Settings`` already refuses to boot on
+    one, so this is the belt to that braces — but the braces are what matters: a silent default
+    here once sent a whole ingest run to a service nobody had configured.
+    """
     if settings.llm_provider == "openai":
         return OpenAICompatibleClient()
-    return OllamaClient()
+    if settings.llm_provider == "ollama":
+        return OllamaClient()
+    raise LlmError(
+        f"DVD_LLM_PROVIDER: неизвестный провайдер '{settings.llm_provider}' — "
+        f"допустимо: {', '.join(sorted(LLM_PROVIDERS))}"
+    )

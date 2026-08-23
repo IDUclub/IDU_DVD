@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import os
 
+# DVD_LLM_BASE_URL has no default in the code on purpose (see Settings._require_llm_endpoint),
+# so the openai provider — now the default — would refuse to build a Settings object at all.
+os.environ.setdefault("DVD_LLM_BASE_URL", "http://localhost:8001/v1")
 os.environ.setdefault("DVD_OLLAMA_BASE", "http://localhost:11434")
 os.environ.setdefault("DVD_OLLAMA_MODEL", "qwen2.5:7b-instruct")
 os.environ.setdefault("DVD_OLLAMA_EMBED_MODEL", "bge-m3")

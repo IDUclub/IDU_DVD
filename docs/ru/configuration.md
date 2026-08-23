@@ -40,8 +40,8 @@ pydantic-settings. Значения переопределяются перем�
 
 | Переменная | По умолчанию | Описание |
 |------------|--------------|----------|
-| `DVD_LLM_PROVIDER` | `ollama` | `ollama` — нативный `/api/chat`; `openai` — любой OpenAI-совместимый `/v1`-эндпоинт (vLLM, LM Studio, llama.cpp, шим `/v1` самой Ollama, OpenAI API) |
-| `DVD_LLM_BASE_URL` | `http://localhost:8001/v1` | при `provider=openai`: корень `/v1` |
+| `DVD_LLM_PROVIDER` | `openai` | `openai` — любой OpenAI-совместимый `/v1`-эндпоинт (vLLM, LM Studio, llama.cpp, шим `/v1` самой Ollama, OpenAI API); `ollama` — нативный `/api/chat`, для локальной разработки. **Неизвестное значение прерывает запуск**, а не уводит тихо к провайдеру, который никто не настраивал |
+| `DVD_LLM_BASE_URL` | — | **Обязателен при `provider=openai`, без него приложение не стартует.** Корень `/v1`, и адрес должен быть достижим *из приложения*: внутри контейнера `localhost` — это сам контейнер, поэтому нужно имя сервиса compose, `host.docker.internal` или явный хост |
 | `DVD_LLM_MODEL` | `gpt-oss-20b` | при `provider=openai`: идентификатор модели так, как его отдаёт сервер в `GET /v1/models` |
 | `DVD_LLM_API_KEY` | пусто | при `provider=openai`: уходит в `Authorization: Bearer`. Локальные серверы его игнорируют; маскируется в `GET /system/settings` |
 | `DVD_LLM_MAX_TOKENS` | `8192` | при `provider=openai`: бюджет ответа (аналог `DVD_OLLAMA_NUM_PREDICT`). Аналога `num_ctx` у OpenAI **нет** — размер контекста тот, с которым запущен сервер (`--max-model-len` в vLLM) |

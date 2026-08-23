@@ -11,7 +11,7 @@ import re
 
 import structlog
 
-from src.api_clients import ChatClient, OllamaError
+from src.api_clients import ChatClient, LlmError, OllamaError
 from src.common.config import Settings
 from src.dvd_service.modules.windowing import make_windows, map_concurrent, reconcile
 
@@ -170,6 +170,13 @@ class StructureTagger:
                 decisions.append(decision)
             if on_progress:
                 on_progress(done, len(windows))
+        # Same rule as stage 1: a lost window degrades gracefully, a lost *run* means the LLM
+        # is gone and the document would be indexed untyped and unnamed. Fail it instead.
+        if windows and not decisions:
+            raise LlmError(
+                f"LLM недоступен: ни одно из {len(windows)} окон типизации не обработано "
+                "— документ не может быть размечен"
+            )
         tags = reconcile(decisions)
         for p in parts:
             t = tags.get(p["id"])

@@ -62,12 +62,15 @@ services:
       - .env.example
     # Внутри контейнера localhost — это сам контейнер, поэтому адреса из .env.example
     # (localhost) переопределяем: Qdrant/Redis/MinIO — по именам сервисов compose-сети,
-    # Ollama и giga-vectorizer — через host.docker.internal (запущены на хосте;
+    # LLM, Ollama и giga-vectorizer — через host.docker.internal (запущены на хосте;
     # giga-vectorizer — отдельный GPU-compose из репозитория giga-vectorizer, порт 8001).
+    # DVD_LLM_BASE_URL переопределять обязательно: без него приложение не стартует, а
+    # localhost из .env.example указывал бы контейнеру на самого себя.
     environment:
       DVD_QDRANT_URL: http://qdrant:6333
       DVD_REDIS_URL: redis://redis:6379/0
       DVD_MINIO_ENDPOINT: minio:9000
+      DVD_LLM_BASE_URL: http://host.docker.internal:8001/v1
       DVD_OLLAMA_BASE: http://host.docker.internal:11434
       DVD_EMBEDDINGS_URL: http://host.docker.internal:8001
     extra_hosts:
