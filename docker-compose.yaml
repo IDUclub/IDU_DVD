@@ -16,6 +16,10 @@ services:
 
   redis:
     image: redis:7-alpine
+    # Redis holds the ingestion queue, so its durability is the documents' durability: with
+    # snapshots alone a hard kill can lose the jobs accepted since the last save. The contour's
+    # external Redis (used by the deploy compose) needs the same setting.
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "6379:6379"
     volumes:

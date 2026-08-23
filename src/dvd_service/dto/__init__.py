@@ -36,6 +36,8 @@ from src.dvd_service.dto.upload import (  # noqa: F401
     ActiveJobsResponse,
     DeleteResponse,
     JobStatusDTO,
+    QueuedJobDTO,
+    QueueStateResponse,
     UploadResponse,
 )
 from src.dvd_service.dto.user_index import (  # noqa: F401
@@ -64,6 +66,8 @@ __all__ = [
     "FragmentUpdateRequest",
     "UploadResponse",
     "ActiveJobsResponse",
+    "QueuedJobDTO",
+    "QueueStateResponse",
     "JobStatusDTO",
     "DeleteResponse",
     "SearchRequest",

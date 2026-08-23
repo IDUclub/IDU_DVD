@@ -23,6 +23,7 @@ from src.common.db.redis_client import (
     RedisClient,
     UserIndexRegistry,
 )
+from src.dvd_service.ingest_queue import IngestQueue
 from src.dvd_service.modules.doc_parsers import DocumentParser
 from src.dvd_service.modules.hierarchy import HierarchyBuilder
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
@@ -60,6 +61,7 @@ class Dependencies:
         "qdrant",
         "redis",
         "jobs",
+        "ingest_queue",
         "registry",
         "document_storage",
         "user_document_storage",
@@ -94,6 +96,7 @@ class Dependencies:
     qdrant: QdrantRepository
     redis: RedisClient
     jobs: JobStore
+    ingest_queue: IngestQueue
     registry: DocumentRegistry
     document_storage: DocumentStorage
     user_document_storage: DocumentStorage
@@ -134,6 +137,7 @@ class Dependencies:
         qdrant: QdrantRepository,
         redis: RedisClient,
         jobs: JobStore,
+        ingest_queue: IngestQueue,
         registry: DocumentRegistry,
         document_storage: DocumentStorage,
         user_document_storage: DocumentStorage,
@@ -166,6 +170,7 @@ class Dependencies:
         self.qdrant = qdrant
         self.redis = redis
         self.jobs = jobs
+        self.ingest_queue = ingest_queue
         self.registry = registry
         self.document_storage = document_storage
         self.user_document_storage = user_document_storage
@@ -290,6 +295,10 @@ class Dependencies:
     @classmethod
     def get_publisher(cls) -> KafkaPublisher:
         return cls.instance().publisher
+
+    @classmethod
+    def get_ingest_queue(cls) -> IngestQueue:
+        return cls.instance().ingest_queue
 
     @classmethod
     def get_ingestion(cls) -> IngestionService:

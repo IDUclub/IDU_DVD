@@ -14,7 +14,6 @@ from pathlib import Path
 import structlog
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -47,16 +46,17 @@ from src.dvd_service.dto import (
     UserIndexInfo,
     UserIndexListResponse,
 )
+from src.dvd_service.ingest_queue import IngestQueue
 from src.dvd_service.modules.doc_parsers import DocumentParser
 from src.dvd_service.routers._upload_common import (
     document_meta,
     download_response,
+    ingest_entry,
+    park_source,
     pick_source_point,
     queued_job,
     receive_file,
     reject_duplicate,
-    run_job,
-    save_source,
 )
 from src.dvd_service.services.dvd_service import DocumentsService
 from src.dvd_service.services.user_index_service import (
@@ -83,6 +83,15 @@ def _scoped_registry(
     return DocumentRegistry(
         redis, prefix=f"{settings.registry_prefix}:user:{user_id}:project:{project_id}"
     )
+
+
+def _scope(user_id: str, project_id: str, scenario_id: str | None) -> dict:
+    """The index a queued job belongs to — a worker rebuilds the scoped service from it."""
+    return {
+        "user_id": user_id,
+        "project_id": project_id,
+        "scenario_id": scenario_id,
+    }
 
 
 def _queued_user_job(
@@ -187,7 +196,6 @@ async def delete_index(
 
 @router.post("", response_model=UploadResponse, status_code=202)
 async def upload_user_document(
-    background: BackgroundTasks,
     file: UploadFile = File(...),
     project_id: str = Form(...),
     scenario_id: str | None = Form(None),
@@ -203,6 +211,7 @@ async def upload_user_document(
     storage: DocumentStorage = Depends(Dependencies.get_user_document_storage),
     index_registry: UserIndexRegistry = Depends(Dependencies.get_user_index_registry),
     jobs: JobStore = Depends(Dependencies.get_jobs),
+    queue: IngestQueue = Depends(Dependencies.get_ingest_queue),
     urban_api: UrbanApiClient = Depends(Dependencies.get_urban_api),
     user_id: str = Depends(get_current_user_id),
 ):
@@ -221,10 +230,10 @@ async def upload_user_document(
     ingestion = _build_ingestion(user_id, project_id, scenario_id)
 
     job_id = str(uuid.uuid4())
-    path, raw, content_hash = await receive_file(file, settings, parser, job_id)
+    path, _, content_hash = await receive_file(file, settings, parser, job_id)
     reject_duplicate(registry, ingestion.qdrant, content_hash, path)
     try:
-        source_key = await save_source(storage, path, content_hash)
+        source_key = await park_source(storage, path, content_hash)
     except Exception as exc:  # noqa: BLE001
         os.remove(path)
         raise HTTPException(502, f"Не удалось сохранить исходник в хранилище: {exc}")
@@ -241,20 +250,19 @@ async def upload_user_document(
             scenario_id=scenario_id,
         ),
     )
-    background.add_task(
-        run_job,
-        job_id,
-        path,
-        lambda: ingestion.ingest(
-            path,
-            raw,
-            content_hash,
-            version_override=version,
-            job_id=job_id,
-            name_override=name,
+    queue.enqueue(
+        ingest_entry(
+            job_id,
+            "upload",
+            content_hash=content_hash,
             source_object_key=source_key,
-            **meta,
-        ),
+            filename=file.filename,
+            name=name,
+            version=version,
+            meta=meta,
+            doc_id=str(uuid.uuid4()),
+            scope=_scope(user_id, project_id, scenario_id),
+        )
     )
     return UploadResponse(job_id=job_id, status="queued")
 
@@ -275,7 +283,6 @@ async def user_document_job_status(
 @router.patch("/{name}", response_model=UploadResponse, status_code=202)
 async def update_user_document(
     name: str,
-    background: BackgroundTasks,
     file: UploadFile = File(...),
     project_id: str | None = Query(None),
     scenario_id: str | None = Query(None),
@@ -287,6 +294,7 @@ async def update_user_document(
     storage: DocumentStorage = Depends(Dependencies.get_user_document_storage),
     urban_api: UrbanApiClient = Depends(Dependencies.get_urban_api),
     jobs: JobStore = Depends(Dependencies.get_jobs),
+    queue: IngestQueue = Depends(Dependencies.get_ingest_queue),
     user_id: str = Depends(get_current_user_id),
 ):
     """Delta update of a document already in a user index.
@@ -302,10 +310,10 @@ async def update_user_document(
     ingestion = _build_ingestion(user_id, project_id, scenario_id)
 
     job_id = str(uuid.uuid4())
-    path, raw, content_hash = await receive_file(file, settings, parser, job_id)
+    path, _, content_hash = await receive_file(file, settings, parser, job_id)
     reject_duplicate(registry, ingestion.qdrant, content_hash, path)
     try:
-        source_key = await save_source(storage, path, content_hash)
+        source_key = await park_source(storage, path, content_hash)
     except Exception as exc:  # noqa: BLE001
         os.remove(path)
         raise HTTPException(502, f"Не удалось сохранить исходник в хранилище: {exc}")
@@ -322,20 +330,18 @@ async def update_user_document(
             scenario_id=scenario_id,
         ),
     )
-    background.add_task(
-        run_job,
-        job_id,
-        path,
-        lambda: ingestion.update(
-            name,
-            path,
-            raw,
-            content_hash,
-            version_override=version,
-            job_id=job_id,
+    queue.enqueue(
+        ingest_entry(
+            job_id,
+            "update",
+            content_hash=content_hash,
             source_object_key=source_key,
-            **meta,
-        ),
+            filename=file.filename,
+            name=name,
+            version=version,
+            meta=meta,
+            scope=_scope(user_id, project_id, scenario_id),
+        )
     )
     return UploadResponse(job_id=job_id, status="queued")
 
@@ -343,7 +349,6 @@ async def update_user_document(
 @router.put("/{name}", response_model=UploadResponse, status_code=202)
 async def reload_user_document(
     name: str,
-    background: BackgroundTasks,
     file: UploadFile = File(...),
     project_id: str | None = Query(None),
     scenario_id: str | None = Query(None),
@@ -354,6 +359,7 @@ async def reload_user_document(
     storage: DocumentStorage = Depends(Dependencies.get_user_document_storage),
     urban_api: UrbanApiClient = Depends(Dependencies.get_urban_api),
     jobs: JobStore = Depends(Dependencies.get_jobs),
+    queue: IngestQueue = Depends(Dependencies.get_ingest_queue),
     user_id: str = Depends(get_current_user_id),
 ):
     """Full reload (create-or-replace) of a document in a user index.
@@ -363,12 +369,10 @@ async def reload_user_document(
     project_id = await run_in_threadpool(
         _resolve_project, urban_api, project_id, scenario_id, user_id
     )
-    ingestion = _build_ingestion(user_id, project_id, scenario_id)
-
     job_id = str(uuid.uuid4())
-    path, raw, content_hash = await receive_file(file, settings, parser, job_id)
+    path, _, content_hash = await receive_file(file, settings, parser, job_id)
     try:
-        source_key = await save_source(storage, path, content_hash)
+        source_key = await park_source(storage, path, content_hash)
     except Exception as exc:  # noqa: BLE001
         os.remove(path)
         raise HTTPException(502, f"Не удалось сохранить исходник в хранилище: {exc}")
@@ -385,20 +389,18 @@ async def reload_user_document(
             scenario_id=scenario_id,
         ),
     )
-    background.add_task(
-        run_job,
-        job_id,
-        path,
-        lambda: ingestion.reload(
-            name,
-            path,
-            raw,
-            content_hash,
-            version_override=version,
-            job_id=job_id,
+    queue.enqueue(
+        ingest_entry(
+            job_id,
+            "reload",
+            content_hash=content_hash,
             source_object_key=source_key,
-            **meta,
-        ),
+            filename=file.filename,
+            name=name,
+            version=version,
+            meta=meta,
+            scope=_scope(user_id, project_id, scenario_id),
+        )
     )
     return UploadResponse(job_id=job_id, status="queued")
 

@@ -1,8 +1,13 @@
 """Unit tests for src/dvd_service/routers — HTTP endpoints.
 
 Builds a FastAPI app from the router and overrides each per-dependency getter with a fake, so
-the endpoints are tested in isolation (no Qdrant/Redis/Ollama). Covers: upload (queued / duplicate
-/ unsupported type), job status (found / missing), and the three search endpoints.
+the endpoints are tested in isolation (no Qdrant/Ollama). Covers: upload (queued / duplicate /
+unsupported type), job status (found / missing), the ingestion queue routes, and the three
+search endpoints.
+
+An upload endpoint no longer runs the pipeline — it parks the file and appends a job to the
+durable queue — so the assertions are about what landed in the queue, checked against the real
+``IngestQueue`` over fakeredis.
 """
 
 from __future__ import annotations
@@ -180,12 +185,13 @@ class FakeTags:
 
 
 @pytest.fixture
-def client(tmp_path, fake_qdrant, fake_document_storage):
+def client(tmp_path, fake_qdrant, fake_document_storage, ingest_queue):
     fakes = {
         "settings": Settings(upload_dir=str(tmp_path)),
         "parser": FakeParser(),
         "registry": FakeRegistry(),
         "jobs": FakeJobs(),
+        "queue": ingest_queue,
         "ingestion": FakeIngestion(fake_qdrant),
         "search": FakeSearch(),
         "documents": FakeDocuments(),
@@ -204,6 +210,7 @@ def client(tmp_path, fake_qdrant, fake_document_storage):
     app.dependency_overrides[Dependencies.get_parser] = lambda: fakes["parser"]
     app.dependency_overrides[Dependencies.get_registry] = lambda: fakes["registry"]
     app.dependency_overrides[Dependencies.get_jobs] = lambda: fakes["jobs"]
+    app.dependency_overrides[Dependencies.get_ingest_queue] = lambda: fakes["queue"]
     app.dependency_overrides[Dependencies.get_ingestion] = lambda: fakes["ingestion"]
     app.dependency_overrides[Dependencies.get_search] = lambda: fakes["search"]
     app.dependency_overrides[Dependencies.get_documents] = lambda: fakes["documents"]
@@ -220,14 +227,26 @@ def client(tmp_path, fake_qdrant, fake_document_storage):
 
 
 class TestUpload:
-    def test_queues_background_ingest(self, client):
+    def test_queues_a_durable_job(self, client):
         c, fakes = client
         resp = c.post("/documents", files={"file": ("doc.docx", b"data")})
         assert resp.status_code == 202
         body = resp.json()
         assert body["status"] == "queued"
         assert body["job_id"] in fakes["jobs"].store
-        assert fakes["ingestion"].calls, "background ingest must have run"
+        [entry] = fakes["queue"].pending()
+        assert entry["job_id"] == body["job_id"]
+        assert entry["operation"] == "upload"
+        assert entry["doc_id"], "the retry needs a fixed doc_id to clean up by"
+
+    def test_scratch_file_is_released_after_parking(self, client, tmp_path):
+        """The queued job is described by its MinIO key; nothing waits on local disk."""
+        c, _ = client
+        assert (
+            c.post("/documents", files={"file": ("doc.docx", b"data")}).status_code
+            == 202
+        )
+        assert list(tmp_path.iterdir()) == []
 
     def test_exact_duplicate_rejected(self, client):
         c, fakes = client
@@ -246,7 +265,7 @@ class TestUpload:
         fakes["registry"].dup = True  # …but no points were seeded into Qdrant
         resp = c.post("/documents", files={"file": ("doc.docx", b"data")})
         assert resp.status_code == 202
-        assert fakes["ingestion"].calls, "the upload must go through"
+        assert fakes["queue"].pending(), "the upload must go through"
         assert fakes["registry"].dropped == ["N", "d1"]  # hashes + document record
 
     def test_unsupported_extension_rejected(self, client):
@@ -262,28 +281,28 @@ class TestUpload:
             data={"name": "СП 5.2025", "version": "2025"},
         )
         assert resp.status_code == 202
-        _, kwargs = fakes["ingestion"].calls[-1]
-        assert kwargs["name_override"] == "СП 5.2025"
-        assert kwargs["version_override"] == "2025"
+        [entry] = fakes["queue"].pending()
+        assert entry["name"] == "СП 5.2025"
+        assert entry["version"] == "2025"
 
     def test_saves_source_to_minio_and_forwards_object_key(self, client):
         c, fakes = client
         resp = c.post("/documents", files={"file": ("doc.docx", b"data")})
         assert resp.status_code == 202
         assert fakes["document_storage"].upload_calls  # saved before the job was queued
-        _, kwargs = fakes["ingestion"].calls[-1]
-        assert kwargs["source_object_key"] == fakes["document_storage"].upload_calls[-1]
+        [entry] = fakes["queue"].pending()
+        assert entry["source_object_key"] == fakes["document_storage"].upload_calls[-1]
 
     def test_storage_failure_rejects_upload_and_never_queues_a_job(self, client):
         c, fakes = client
         fakes["document_storage"].fail_upload = True
         resp = c.post("/documents", files={"file": ("doc.docx", b"data")})
         assert resp.status_code == 502
-        assert not fakes["ingestion"].calls
+        assert not fakes["queue"].pending()
 
 
 class TestUpdateDocument:
-    def test_queues_background_update(self, client):
+    def test_queues_a_durable_update(self, client):
         c, fakes = client
         resp = c.patch(
             "/documents/Известный документ",
@@ -291,15 +310,19 @@ class TestUpdateDocument:
             data={"version": "ред. 2"},
         )
         assert resp.status_code == 202 and resp.json()["status"] == "queued"
-        args, kwargs = fakes["ingestion"].update_calls[-1]
-        assert args[0] == "Известный документ"
-        assert kwargs["version_override"] == "ред. 2"
+        [entry] = fakes["queue"].pending()
+        assert entry["operation"] == "update"
+        assert entry["name"] == "Известный документ"
+        assert entry["version"] == "ред. 2"
+        assert (
+            entry["doc_id"] is None
+        ), "a delta update writes under the base document's id"
 
     def test_unknown_name_returns_404(self, client):
         c, fakes = client
         resp = c.patch("/documents/нет такого", files={"file": ("doc.docx", b"data")})
         assert resp.status_code == 404
-        assert not fakes["ingestion"].update_calls
+        assert not fakes["queue"].pending()
 
     def test_exact_duplicate_rejected(self, client):
         c, fakes = client
@@ -328,14 +351,15 @@ class TestUpdateDocument:
 
 
 class TestReloadDocument:
-    def test_queues_background_reload(self, client):
+    def test_queues_a_durable_reload(self, client):
         c, fakes = client
         resp = c.put(
             "/documents/Известный документ", files={"file": ("doc.docx", b"data")}
         )
         assert resp.status_code == 202 and resp.json()["status"] == "queued"
-        args, _ = fakes["ingestion"].reload_calls[-1]
-        assert args[0] == "Известный документ"
+        [entry] = fakes["queue"].pending()
+        assert entry["operation"] == "reload"
+        assert entry["name"] == "Известный документ"
 
     def test_duplicate_not_rejected(self, client):
         c, fakes = client

@@ -258,7 +258,14 @@ the ingestion path apart; deletion of a directly-ingested document still emits t
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DVD_LLM_CONCURRENCY` | `8` | independent LLM windows processed concurrently inside one document; results are reconciled in source order |
-| `DVD_INGEST_CONCURRENCY` | `1` | how many documents may run the GPU-bound pipeline (LLM markup/tags/refs + embeddings) at once; extra documents wait in status `queued`. Keep `1` for a single GPU; raise only with more GPU capacity |
+| `DVD_INGEST_CONCURRENCY` | `1` | number of ingestion workers, and therefore how many documents may run the GPU-bound pipeline (LLM markup/tags/refs + embeddings) at once; extra documents wait in the queue in status `queued`. Keep `1` for a single GPU; raise only with more GPU capacity |
+| `DVD_INGEST_QUEUE_KEY` | `dvd:ingest:pending` | Redis list of jobs waiting for a worker |
+| `DVD_INGEST_INFLIGHT_KEY` | `dvd:ingest:inflight` | Redis list of jobs claimed by a worker; a non-empty list at startup means the previous process died mid-document, and its jobs are requeued |
+| `DVD_INGEST_DEAD_KEY` | `dvd:ingest:dead` | Redis list of jobs that exhausted their attempts; inspect via `GET /documents/jobs/dead`, requeue via `POST /documents/jobs/{job_id}/retry` |
+| `DVD_INGEST_CHECKPOINT_PREFIX` | `dvd:ingest:checkpoint` | key prefix for the per-job identity checkpoint a retry uses to undo a partial write |
+| `DVD_INGEST_POLL_INTERVAL` | `2.0` | seconds a worker waits before checking an empty queue again |
+| `DVD_INGEST_MAX_ATTEMPTS` | `3` | processing attempts before a job is dead-lettered. Every restart mid-processing costs one attempt, which also caps how often a document that reliably kills the process can take the service down with it on boot |
+| `DVD_INGEST_PAYLOAD_PREFIX` | `queue` | MinIO key prefix for direct-ingestion payloads parked while queued |
 | `DVD_UPLOAD_DIR` | `./_uploads` | directory for temporary upload files |
 | `DVD_ALLOWED_EXTENSIONS` | `[".docx",".txt",".md",".html",".htm"]` | allowed extensions (OCR-free formats handled by `unstructured`; scanned PDF/OCR is deferred — add `".pdf"` once the heavy backends are provisioned) |
 

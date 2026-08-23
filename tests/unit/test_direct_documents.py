@@ -2,7 +2,9 @@
 
 Two layers:
   * the HTTP router (``/documents/direct``) with faked dependencies — batching, per-document
-    duplicate rejection, structural validation;
+    duplicate rejection, structural validation, and the parked payload + queue entry each
+    accepted document produces (the direct path has no uploaded file, so its fragments are what
+    has to survive a restart);
   * ``IngestionService.ingest_direct`` / ``reload_direct`` wired with the real registry
     (fakeredis) + Qdrant/embedder fakes — payload shape, neighbour links, registry state, events.
 """
@@ -85,11 +87,14 @@ class FakeIngestion:
 
 
 @pytest.fixture
-def client():
+def client(settings, fake_document_storage, ingest_queue):
     fakes = {
         "registry": FakeRegistry(),
         "jobs": FakeJobs(),
         "qdrant": FakeQdrant(),
+        "settings": settings,
+        "storage": fake_document_storage,
+        "queue": ingest_queue,
     }
     fakes["ingestion"] = FakeIngestion(fakes["qdrant"])
     app = FastAPI()
@@ -97,6 +102,11 @@ def client():
     app.dependency_overrides[Dependencies.get_registry] = lambda: fakes["registry"]
     app.dependency_overrides[Dependencies.get_jobs] = lambda: fakes["jobs"]
     app.dependency_overrides[Dependencies.get_ingestion] = lambda: fakes["ingestion"]
+    app.dependency_overrides[Dependencies.get_settings] = lambda: fakes["settings"]
+    app.dependency_overrides[Dependencies.get_document_storage] = lambda: fakes[
+        "storage"
+    ]
+    app.dependency_overrides[Dependencies.get_ingest_queue] = lambda: fakes["queue"]
     with TestClient(app) as c:
         yield c, fakes
 
@@ -115,7 +125,28 @@ class TestUploadDirectRouter:
         assert body[0]["status"] == "queued"
         assert body[0]["name"] == "ДОК 1"
         assert body[0]["job_id"] in fakes["jobs"].store
-        assert fakes["ingestion"].ingest_calls, "background ingest must run"
+        [entry] = fakes["queue"].pending()
+        assert entry["operation"] == "upload-direct"
+        assert entry["name"] == "ДОК 1"
+        assert entry["payload_object_key"], "fragments must be parked before queueing"
+        assert entry["doc_id"], "the retry needs a fixed doc_id to clean up by"
+
+    def test_parked_payload_round_trips_the_fragments(self, client):
+        """A worker in a later process reads the document back from MinIO, not from memory."""
+        c, fakes = client
+        c.post("/documents/direct", json=[_body("ДОК 1", "а", "б")])
+        [entry] = fakes["queue"].pending()
+        data, _ = fakes["storage"].download(entry["payload_object_key"])
+        restored = DirectDocumentIn.model_validate_json(data)
+        assert restored.name == "ДОК 1"
+        assert [f.text for f in restored.fragments] == ["а", "б"]
+
+    def test_storage_failure_queues_nothing(self, client):
+        c, fakes = client
+        fakes["storage"].fail_upload = True
+        resp = c.post("/documents/direct", json=[_body("ДОК 1", "а")])
+        assert resp.status_code == 502
+        assert not fakes["queue"].pending()
 
     def test_batch_queues_one_job_per_document(self, client):
         c, fakes = client
@@ -127,7 +158,7 @@ class TestUploadDirectRouter:
         body = resp.json()
         assert [r["status"] for r in body] == ["queued", "queued", "queued"]
         assert len({r["job_id"] for r in body}) == 3
-        assert len(fakes["ingestion"].ingest_calls) == 3
+        assert [e["name"] for e in fakes["queue"].pending()] == ["A", "B", "C"]
 
     def test_duplicate_rejected_per_document(self, client):
         c, fakes = client
@@ -140,7 +171,7 @@ class TestUploadDirectRouter:
         assert body[0]["status"] == "rejected"
         assert body[0]["job_id"] is None
         assert body[0]["error"]
-        assert not fakes["ingestion"].ingest_calls, "a duplicate must not be queued"
+        assert not fakes["queue"].pending(), "a duplicate must not be queued"
 
     def test_ghost_duplicate_is_dropped_and_document_proceeds(self, client):
         c, fakes = client
@@ -148,7 +179,7 @@ class TestUploadDirectRouter:
         resp = c.post("/documents/direct", json=[_body("ДОК 1", "а")])
         assert resp.status_code == 202
         assert resp.json()[0]["status"] == "queued"
-        assert fakes["ingestion"].ingest_calls
+        assert fakes["queue"].pending()
 
     def test_missing_name_is_422(self, client):
         c, _ = client
@@ -175,7 +206,9 @@ class TestReplaceDirectRouter:
         resp = c.put("/documents/direct", json=[_body("ДОК 1", "а")])
         assert resp.status_code == 202
         assert resp.json()[0]["status"] == "queued"
-        assert fakes["ingestion"].reload_calls
+        [entry] = fakes["queue"].pending()
+        assert entry["operation"] == "reload-direct"
+        assert entry["doc_id"] is None, "a reload wipes the name and re-creates it"
 
 
 # --------------------------------------------------------------------------------------

@@ -26,6 +26,7 @@ from src.common.db.redis_client import (
 )
 from src.common.logger import configure_logging
 from src.dependencies.dependencies import Dependencies
+from src.dvd_service.ingest_queue import IngestQueue
 from src.dvd_service.modules.doc_parsers import DocumentParser
 from src.dvd_service.modules.hierarchy import HierarchyBuilder
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
@@ -79,20 +80,40 @@ def _warn_on_registry_divergence(
         app_logger.warning("registry_divergence_check_failed", error=str(exc))
 
 
-def _abort_orphaned_jobs(jobs: JobStore, s: Settings, app_logger) -> None:
-    """Fail every job left mid-flight by the previous process and drop its scratch file.
+def _resume_interrupted_jobs(
+    queue: IngestQueue, jobs: JobStore, s: Settings, app_logger
+) -> None:
+    """Requeue whatever the previous process was holding, and clear the scratch directory.
 
-    Ingestion runs as an in-process background task, so nothing survives a restart and nothing
-    resumes: a job still marked ``queued``/``processing`` at startup belongs to a process that
-    is already gone. Left alone it would sit in the admin panel as "in progress" until its
-    Redis TTL expires (a day), which reads as "still working" rather than "lost — re-upload".
+    A job on the in-flight list at startup was claimed by a worker that no longer exists. It is
+    not lost: its source file is in MinIO and the queue entry describes the whole call, so it
+    goes back to the head of the queue and is picked up as soon as a worker starts. Documents
+    survive a restart — that is the point of the queue.
 
-    Assumes a single app instance per ``upload_dir`` (as deployed): the sweep would otherwise
-    delete scratch files of a sibling container's live uploads.
+    Jobs whose status is still ``processing`` but which are in no list at all cannot be
+    recovered (they predate the queue, or their entry was dropped); those are failed so the
+    admin panel stops showing them as running.
+
+    Assumes a single app instance per ``upload_dir`` and Redis prefix (as deployed): with
+    siblings, this would requeue jobs another instance is actively processing and delete its
+    scratch files.
     """
     try:
-        orphaned = jobs.active()
-        for job in orphaned:
+        resumed = queue.recover()
+        for entry in resumed:
+            jobs.update(
+                entry.get("job_id"),
+                status="queued",
+                error=None,
+            )
+        resumed_ids = {entry.get("job_id") for entry in resumed}
+        queued_ids = {entry.get("job_id") for entry in queue.pending()}
+        stranded = [
+            job
+            for job in jobs.active()
+            if job["job_id"] not in resumed_ids and job["job_id"] not in queued_ids
+        ]
+        for job in stranded:
             jobs.update(
                 job["job_id"],
                 status="error",
@@ -105,15 +126,18 @@ def _abort_orphaned_jobs(jobs: JobStore, s: Settings, app_logger) -> None:
                 if leftover.is_file():
                     leftover.unlink(missing_ok=True)
                     removed += 1
-        if orphaned or removed:
+        if resumed or stranded or removed:
             app_logger.warning(
-                "orphaned_jobs_aborted",
-                jobs=len(orphaned),
-                names=[job.get("filename") for job in orphaned],
+                "ingest_jobs_after_restart",
+                resumed=len(resumed),
+                resumed_names=[
+                    entry.get("name") or entry.get("filename") for entry in resumed
+                ],
+                stranded=len(stranded),
                 scratch_files_removed=removed,
             )
     except Exception as exc:  # noqa: BLE001 — cleanup must never block startup
-        app_logger.warning("orphaned_jobs_cleanup_failed", error=str(exc))
+        app_logger.warning("ingest_jobs_recovery_failed", error=str(exc))
 
 
 def init_dependencies(s: Settings = settings) -> Dependencies:
@@ -153,7 +177,8 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         qdrant.ensure_pattern_collection()
     redis = RedisClient(s)
     jobs = JobStore(redis)
-    _abort_orphaned_jobs(jobs, s, app_logger)
+    ingest_queue = IngestQueue(redis, s)
+    _resume_interrupted_jobs(ingest_queue, jobs, s, app_logger)
     registry = DocumentRegistry(redis, prefix=s.registry_prefix)
     user_index_registry = UserIndexRegistry(redis, prefix=s.registry_prefix)
     _warn_on_registry_divergence(qdrant, registry, app_logger)
@@ -235,6 +260,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         qdrant=qdrant,
         redis=redis,
         jobs=jobs,
+        ingest_queue=ingest_queue,
         registry=registry,
         document_storage=document_storage,
         user_document_storage=user_document_storage,
