@@ -1,3 +1,9 @@
+## v0.15.1 (2026-08-23)
+
+### Fix
+
+- **llm**: default to the OpenAI-compatible provider and fail loudly when it is missing (#61)
+
 ## v0.15.0 (2026-08-20)
 
 ### Feat
