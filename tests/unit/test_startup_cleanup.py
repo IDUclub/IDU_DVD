@@ -1,8 +1,10 @@
 """Unit tests for the startup housekeeping in src/dependencies/init_dependencies.
 
-Ingestion runs in-process and never resumes, so a restart must not leave jobs looking alive.
-Covers ``_abort_orphaned_jobs`` (job status + scratch-file sweep) and the registry/collection
-divergence warning. Runs the real ``JobStore`` against fakeredis.
+Ingestion is queued durably, so a restart must *resume* what was interrupted rather than
+declare it lost — and must still fail jobs that no queue entry can account for. Covers
+``_resume_interrupted_jobs`` (requeue + job status + scratch-file sweep) and the
+registry/collection divergence warning. Runs the real ``JobStore``/``IngestQueue`` against
+fakeredis.
 """
 
 from __future__ import annotations
@@ -12,13 +14,18 @@ import structlog
 from src.common.config import Settings
 from src.common.db.redis_client import JobStore, RedisClient
 from src.dependencies.init_dependencies import (
-    _abort_orphaned_jobs,
+    _resume_interrupted_jobs,
     _warn_on_registry_divergence,
 )
+from src.dvd_service.ingest_queue import IngestQueue
 
 
 def _jobs(fake_redis) -> JobStore:
     return JobStore(RedisClient(Settings()))
+
+
+def _queue(fake_redis) -> IngestQueue:
+    return IngestQueue(RedisClient(Settings()), Settings())
 
 
 def _job(job_id: str, status: str) -> dict:
@@ -30,42 +37,96 @@ def _job(job_id: str, status: str) -> dict:
     }
 
 
-class TestAbortOrphanedJobs:
-    def test_queued_and_processing_jobs_are_failed(self, fake_redis, tmp_path):
-        jobs = _jobs(fake_redis)
-        jobs.set("a", _job("a", "queued"))
-        jobs.set("b", _job("b", "processing"))
-        _abort_orphaned_jobs(
-            jobs, Settings(upload_dir=str(tmp_path)), structlog.get_logger()
+def _entry(job_id: str) -> dict:
+    return {
+        "job_id": job_id,
+        "operation": "upload",
+        "content_hash": f"hash-{job_id}",
+        "source_object_key": f"hash-{job_id}.docx",
+        "filename": f"{job_id}.docx",
+    }
+
+
+class TestResumeInterruptedJobs:
+    def test_inflight_jobs_go_back_to_the_queue(self, fake_redis, tmp_path):
+        jobs, queue = _jobs(fake_redis), _queue(fake_redis)
+        queue.enqueue(_entry("a"))
+        claimed = queue.claim()  # the process dies here
+        jobs.set(claimed["job_id"], _job("a", "processing"))
+
+        _resume_interrupted_jobs(
+            queue, jobs, Settings(upload_dir=str(tmp_path)), structlog.get_logger()
         )
-        for job_id in ("a", "b"):
-            job = jobs.get(job_id)
-            assert job["status"] == "error"
-            assert "перезапуском" in job["error"]
-        assert jobs.active() == []
+
+        assert [e["job_id"] for e in queue.pending()] == ["a"]
+        assert queue.inflight() == []
+        assert jobs.get("a")["status"] == "queued"
+
+    def test_resumed_job_keeps_its_place_at_the_head(self, fake_redis, tmp_path):
+        """A retry must not drift behind documents uploaded after it."""
+        jobs, queue = _jobs(fake_redis), _queue(fake_redis)
+        queue.enqueue(_entry("first"))
+        queue.claim()
+        queue.enqueue(_entry("later"))
+
+        _resume_interrupted_jobs(
+            queue, jobs, Settings(upload_dir=str(tmp_path)), structlog.get_logger()
+        )
+
+        assert [e["job_id"] for e in queue.pending()] == ["first", "later"]
+
+    def test_jobs_without_a_queue_entry_are_failed(self, fake_redis, tmp_path):
+        """Nothing describes them any more, so they cannot be resumed — say so."""
+        jobs, queue = _jobs(fake_redis), _queue(fake_redis)
+        jobs.set("orphan", _job("orphan", "processing"))
+
+        _resume_interrupted_jobs(
+            queue, jobs, Settings(upload_dir=str(tmp_path)), structlog.get_logger()
+        )
+
+        job = jobs.get("orphan")
+        assert job["status"] == "error"
+        assert "перезапуском" in job["error"]
+
+    def test_queued_job_still_in_the_queue_is_left_alone(self, fake_redis, tmp_path):
+        jobs, queue = _jobs(fake_redis), _queue(fake_redis)
+        queue.enqueue(_entry("waiting"))
+        jobs.set("waiting", _job("waiting", "queued"))
+
+        _resume_interrupted_jobs(
+            queue, jobs, Settings(upload_dir=str(tmp_path)), structlog.get_logger()
+        )
+
+        assert jobs.get("waiting")["status"] == "queued"
 
     def test_finished_jobs_are_left_alone(self, fake_redis, tmp_path):
-        jobs = _jobs(fake_redis)
+        jobs, queue = _jobs(fake_redis), _queue(fake_redis)
         jobs.set("done", {**_job("done", "done"), "name": "СП 1"})
         jobs.set("failed", {**_job("failed", "error"), "error": "boom"})
-        _abort_orphaned_jobs(
-            jobs, Settings(upload_dir=str(tmp_path)), structlog.get_logger()
+
+        _resume_interrupted_jobs(
+            queue, jobs, Settings(upload_dir=str(tmp_path)), structlog.get_logger()
         )
+
         assert jobs.get("done")["status"] == "done"
         assert jobs.get("failed")["error"] == "boom"  # not overwritten
 
     def test_scratch_files_are_swept(self, fake_redis, tmp_path):
         (tmp_path / "job1_doc.docx").write_bytes(b"x")
         (tmp_path / "job2_doc.txt").write_bytes(b"y")
-        _abort_orphaned_jobs(
+
+        _resume_interrupted_jobs(
+            _queue(fake_redis),
             _jobs(fake_redis),
             Settings(upload_dir=str(tmp_path)),
             structlog.get_logger(),
         )
+
         assert list(tmp_path.iterdir()) == []
 
     def test_missing_upload_dir_is_not_an_error(self, fake_redis, tmp_path):
-        _abort_orphaned_jobs(
+        _resume_interrupted_jobs(
+            _queue(fake_redis),
             _jobs(fake_redis),
             Settings(upload_dir=str(tmp_path / "nope")),
             structlog.get_logger(),
@@ -73,11 +134,17 @@ class TestAbortOrphanedJobs:
 
     def test_unreachable_redis_does_not_block_startup(self, tmp_path):
         class Exploding:
+            def recover(self):
+                raise ConnectionError("redis down")
+
             def active(self):
                 raise ConnectionError("redis down")
 
-        _abort_orphaned_jobs(
-            Exploding(), Settings(upload_dir=str(tmp_path)), structlog.get_logger()
+        _resume_interrupted_jobs(
+            Exploding(),
+            Exploding(),
+            Settings(upload_dir=str(tmp_path)),
+            structlog.get_logger(),
         )
 
 

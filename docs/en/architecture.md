@@ -3,8 +3,11 @@
 ## Overview
 
 The application is a FastAPI service that orchestrates the document processing chain and stores the
-result in Qdrant. Heavy work (document parsing, structure markup, tagging, vectorization) runs in
-the background; background job statuses and the document registry live in Redis; the large language
+result in Qdrant. Heavy work (document parsing, structure markup, tagging, vectorization) does not
+happen in the request that uploaded the document: the original goes to MinIO, the job goes onto a
+durable Redis queue, and a pool of background workers drains it — so an upload survives both a
+disconnected client and a restarted service. Job statuses, the queue and the document registry live
+in Redis; the large language
 model is called through Ollama, embeddings through the giga-vectorizer GPU service (with Ollama as
 a fallback provider — `DVD_EMBEDDINGS_PROVIDER`).
 
@@ -12,9 +15,9 @@ a fallback provider — `DVD_EMBEDDINGS_PROVIDER`).
 
 | Component | Role |
 |-----------|------|
-| FastAPI | HTTP API, background tasks |
+| FastAPI | HTTP API; ingestion workers run as background tasks of its lifespan |
 | Qdrant | vector database; one collection per embedding space (namespaced), payload indexes |
-| Redis | parsing job statuses, document and version registry (namespaced per collection), Kafka event outbox |
+| Redis | ingestion queue (pending / in-flight / dead-letter), parsing job statuses, document and version registry (namespaced per collection), Kafka event outbox. Its durability is the queue's durability — run it with AOF enabled |
 | LLM backend | markup, merge, tags, document head, references. Native **Ollama** `/api/chat` or any **OpenAI-compatible** `/v1/chat/completions` server (vLLM, LM Studio, llama.cpp, OpenAI) — selected by `DVD_LLM_PROVIDER` |
 | Ollama | the LLM when `DVD_LLM_PROVIDER=ollama`; fallback embeddings provider |
 | Urban API | territory tree for document tagging plus scenario-to-project resolution for user documents. A token is optional for private projects. Mandatory in configuration (an empty URL fails startup) |
@@ -34,7 +37,11 @@ anywhere. Endpoints receive individual dependencies through FastAPI getters, e.g
 
 The pipeline-stage classes keep no state between documents. The Ollama client (`OllamaClient`) and
 the embedder (`create_embedder()`) are created inside the services per operation, which keeps
-background processing thread-safe.
+background processing thread-safe — and is what allows more than one ingestion worker.
+
+Ingestion parallelism has exactly one limit: the number of workers (`DVD_INGEST_CONCURRENCY`). A
+document is processed by one worker from start to finish, and everything else waits as an entry in
+Redis rather than as a blocked thread, so a queue of a hundred documents costs the process nothing.
 
 Container contents:
 

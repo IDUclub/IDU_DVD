@@ -53,6 +53,9 @@ from the request body:
 | `GET /documents/{job_id}` | processing job status |
 | `GET /documents/jobs/active` | queued and currently processing jobs |
 | `GET /documents/jobs/recent` | recent jobs of every status (`?limit=20`, max 100) |
+| `GET /documents/jobs/queue` | the durable ingestion queue: pending + in-flight jobs |
+| `GET /documents/jobs/dead` | jobs that exhausted their processing attempts |
+| `POST /documents/jobs/{job_id}/retry` | put a dead-lettered job back on the queue |
 | `POST /search/texts` | search relevant text fragments |
 | `POST /search/tables` | search relevant tables |
 | `POST /search` | search across all entities (texts and tables) |
@@ -103,7 +106,8 @@ Behaviour:
   no points left (the collection was re-created, the Qdrant instance replaced), the entry is treated
   as stale, dropped with a `stale_registry_entry_dropped` warning, and the upload proceeds normally.
 - A file that could not be parsed — `422`.
-- On success — `202` and a job identifier; processing runs in the background.
+- On success — `202` and a job identifier; the file is stored and the job queued, and a worker
+  indexes it (see [The ingestion queue](#the-ingestion-queue)). The client may disconnect.
 
 Response (`202`):
 
@@ -200,7 +204,9 @@ of the name (e.g. `СП 2.13130.2020` → `2020`), else `"1"`. `embedding_provid
 choosing the vectorizer later; if given it must match the configured provider (otherwise the
 document's job fails).
 
-One background job is queued **per document** (`202`); poll `GET /documents/{job_id}` for progress.
+One job is queued **per document** (`202`); poll `GET /documents/{job_id}` for progress. The
+fragments are parked in MinIO first, so a queued direct ingestion survives a restart like an
+uploaded file does.
 An exact-content duplicate is rejected per-document (`status="rejected"`, no `job_id`); the rest are
 queued. Emits a `DirectDocumentProcessed` Kafka event per document (when Kafka is configured).
 
@@ -341,11 +347,32 @@ weighted end-to-end value. The server-side job starts at 10%, because the admin 
 10% for multipart file transfer. The same progress contract is used for upload, delta update and
 full reload.
 
-Indexing runs as a background task inside the application process and is **not resumed** after a
-restart. Every job still marked `queued`/`processing` at startup is therefore flipped to `error`
-("interrupted by a service restart"; logged as `orphaned_jobs_aborted`) and the scratch files in
-`DVD_UPLOAD_DIR` are swept. An interrupted document has to be uploaded again — its MinIO original
-and any Qdrant/Redis records are left untouched.
+### The ingestion queue
+
+Indexing does not run in the request that uploaded the document. The original is stored in MinIO,
+a job describing the whole call is appended to a durable Redis queue, and one of
+`DVD_INGEST_CONCURRENCY` background workers picks it up. Two consequences:
+
+- **The client may disconnect.** Once `202` comes back, the document is the server's problem —
+  a batch upload only has to survive its own HTTP requests, not the hours of processing.
+- **A restart resumes, it does not lose.** A job leaves the queue only after its document is
+  indexed, so whatever a dying process was holding is put back at the head of the queue on the
+  next start (logged as `ingest_jobs_after_restart`) and processed again from the beginning. A
+  retry first undoes the partial writes of the interrupted attempt, so no document is indexed
+  twice.
+
+A job that fails `DVD_INGEST_MAX_ATTEMPTS` times is *dead-lettered* — parked instead of retried,
+so a document that reliably kills the process cannot take the service down on every boot:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/documents/jobs/queue` | pending and in-flight jobs, in processing order |
+| `GET` | `/documents/jobs/dead` | jobs that exhausted their attempts (with `last_error`) |
+| `POST` | `/documents/jobs/{job_id}/retry` | put a dead-lettered job back on the queue |
+
+Requeueing does not need the file again — the original is still in MinIO. Only jobs from before
+this feature (or whose queue entry was lost) cannot be resumed; those are flipped to `error`
+("interrupted by a service restart") at startup and have to be uploaded again.
 
 ## Search
 

@@ -358,6 +358,23 @@ class QdrantRepository:
             ),
         )
 
+    def delete_by_doc(
+        self, doc_id: str, extra_must: list[FieldCondition] | None = None
+    ) -> int:
+        """Delete every point of one document instance, returning how many were removed.
+
+        Targeted by ``doc_id`` rather than name, so it removes exactly what a single ingestion
+        wrote — used to undo the partial writes of an interrupted attempt before it is retried.
+        """
+        query_filter = Filter(
+            must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]
+            + (extra_must or [])
+        )
+        removed = self.count(query_filter)
+        if removed:
+            self.client.delete(self.collection, points_selector=query_filter)
+        return removed
+
     def delete_by_filter(self, query_filter: Filter) -> None:
         """Delete every point matching an arbitrary filter (e.g. wiping a whole user index)."""
         self.client.delete(self.collection, points_selector=query_filter)
@@ -512,6 +529,9 @@ class ScopedQdrantRepository:
 
     def delete_by_name(self, name: str) -> None:
         self._inner.delete_by_name(name, extra_must=self._scope_must)
+
+    def delete_by_doc(self, doc_id: str) -> int:
+        return self._inner.delete_by_doc(doc_id, extra_must=self._scope_must)
 
     def set_other_versions(
         self, name: str, version: str, other_versions: list[str]

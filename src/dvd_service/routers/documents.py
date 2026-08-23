@@ -10,7 +10,6 @@ from pathlib import Path
 import structlog
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -32,21 +31,24 @@ from src.dvd_service.dto import (
     DeleteResponse,
     DocumentListResponse,
     JobStatusDTO,
+    QueuedJobDTO,
+    QueueStateResponse,
     UploadResponse,
 )
+from src.dvd_service.ingest_queue import IngestQueue
 from src.dvd_service.modules.doc_parsers import DocumentParser
 from src.dvd_service.routers._upload_common import document_meta as _document_meta
 from src.dvd_service.routers._upload_common import (
     download_response as _download_response,
 )
+from src.dvd_service.routers._upload_common import ingest_entry as _ingest_entry
+from src.dvd_service.routers._upload_common import park_source as _park_source
 from src.dvd_service.routers._upload_common import (
     pick_source_point as _pick_source_point,
 )
 from src.dvd_service.routers._upload_common import queued_job as _queued_job
 from src.dvd_service.routers._upload_common import receive_file as _receive_file
 from src.dvd_service.routers._upload_common import reject_duplicate as _reject_duplicate
-from src.dvd_service.routers._upload_common import run_job as _run_job
-from src.dvd_service.routers._upload_common import save_source as _save_source
 from src.dvd_service.services.dvd_service import DocumentsService, IngestionService
 
 log = structlog.get_logger(__name__)
@@ -66,7 +68,6 @@ ADMIN_ONLY = [Depends(require_admin)]
     dependencies=ADMIN_ONLY,
 )
 async def upload_document(
-    background: BackgroundTasks,
     file: UploadFile = File(...),
     name: str | None = Form(None),
     version: str | None = Form(None),
@@ -76,6 +77,7 @@ async def upload_document(
     registry: DocumentRegistry = Depends(Dependencies.get_registry),
     storage: DocumentStorage = Depends(Dependencies.get_document_storage),
     jobs: JobStore = Depends(Dependencies.get_jobs),
+    queue: IngestQueue = Depends(Dependencies.get_ingest_queue),
     ingestion: IngestionService = Depends(Dependencies.get_ingestion),
 ):
     """Upload a document. Exact text duplicate -> 400; otherwise parse + index in the background.
@@ -87,31 +89,34 @@ async def upload_document(
     stored on every node so consumer services can join, filter, and cite without re-parsing. The
     original file is saved to MinIO before indexing starts (fail-closed: a storage failure
     rejects the request outright — nothing is queued).
+
+    Indexing itself happens in a worker, not in this request: the job goes onto the durable
+    ingestion queue and outlives both the client connection and the process.
     """
     job_id = str(uuid.uuid4())
-    path, raw, content_hash = await _receive_file(file, settings, parser, job_id)
+    path, _, content_hash = await _receive_file(file, settings, parser, job_id)
     _reject_duplicate(registry, ingestion.qdrant, content_hash, path)
     try:
-        source_key = await _save_source(storage, path, content_hash)
+        source_key = await _park_source(storage, path, content_hash)
     except Exception as exc:  # noqa: BLE001
         os.remove(path)
         raise HTTPException(502, f"Не удалось сохранить исходник в хранилище: {exc}")
 
     jobs.set(job_id, _queued_job(job_id, file.filename, "upload", name))
-    background.add_task(
-        _run_job,
-        job_id,
-        path,
-        lambda: ingestion.ingest(
-            path,
-            raw,
-            content_hash,
-            version_override=version,
-            job_id=job_id,
-            name_override=name,
+    queue.enqueue(
+        _ingest_entry(
+            job_id,
+            "upload",
+            content_hash=content_hash,
             source_object_key=source_key,
-            **meta,
-        ),
+            filename=file.filename,
+            name=name,
+            version=version,
+            meta=meta,
+            # Fixed now so that a retry re-indexes under the same id — which is what makes
+            # cleaning up after an interrupted attempt exact.
+            doc_id=str(uuid.uuid4()),
+        )
     )
     return UploadResponse(job_id=job_id, status="queued")
 
@@ -124,7 +129,6 @@ async def upload_document(
 )
 async def update_document(
     name: str,
-    background: BackgroundTasks,
     file: UploadFile = File(...),
     version: str | None = Form(None),
     meta: dict = Depends(_document_meta),
@@ -133,6 +137,7 @@ async def update_document(
     registry: DocumentRegistry = Depends(Dependencies.get_registry),
     storage: DocumentStorage = Depends(Dependencies.get_document_storage),
     jobs: JobStore = Depends(Dependencies.get_jobs),
+    queue: IngestQueue = Depends(Dependencies.get_ingest_queue),
     ingestion: IngestionService = Depends(Dependencies.get_ingestion),
 ):
     """Delta update of a stored document under a new version.
@@ -145,29 +150,26 @@ async def update_document(
     if not registry.has_name(name):
         raise HTTPException(404, f"Документ не найден: {name}")
     job_id = str(uuid.uuid4())
-    path, raw, content_hash = await _receive_file(file, settings, parser, job_id)
+    path, _, content_hash = await _receive_file(file, settings, parser, job_id)
     _reject_duplicate(registry, ingestion.qdrant, content_hash, path)
     try:
-        source_key = await _save_source(storage, path, content_hash)
+        source_key = await _park_source(storage, path, content_hash)
     except Exception as exc:  # noqa: BLE001
         os.remove(path)
         raise HTTPException(502, f"Не удалось сохранить исходник в хранилище: {exc}")
 
     jobs.set(job_id, _queued_job(job_id, file.filename, "update", name))
-    background.add_task(
-        _run_job,
-        job_id,
-        path,
-        lambda: ingestion.update(
-            name,
-            path,
-            raw,
-            content_hash,
-            version_override=version,
-            job_id=job_id,
+    queue.enqueue(
+        _ingest_entry(
+            job_id,
+            "update",
+            content_hash=content_hash,
             source_object_key=source_key,
-            **meta,
-        ),
+            filename=file.filename,
+            name=name,
+            version=version,
+            meta=meta,
+        )
     )
     return UploadResponse(job_id=job_id, status="queued")
 
@@ -180,7 +182,6 @@ async def update_document(
 )
 async def reload_document(
     name: str,
-    background: BackgroundTasks,
     file: UploadFile = File(...),
     version: str | None = Form(None),
     meta: dict = Depends(_document_meta),
@@ -188,7 +189,7 @@ async def reload_document(
     parser: DocumentParser = Depends(Dependencies.get_parser),
     storage: DocumentStorage = Depends(Dependencies.get_document_storage),
     jobs: JobStore = Depends(Dependencies.get_jobs),
-    ingestion: IngestionService = Depends(Dependencies.get_ingestion),
+    queue: IngestQueue = Depends(Dependencies.get_ingest_queue),
 ):
     """Full reload (create-or-replace): wipe every stored version, then ingest from scratch.
 
@@ -196,28 +197,25 @@ async def reload_document(
     The original file is saved to MinIO before indexing starts (fail-closed).
     """
     job_id = str(uuid.uuid4())
-    path, raw, content_hash = await _receive_file(file, settings, parser, job_id)
+    path, _, content_hash = await _receive_file(file, settings, parser, job_id)
     try:
-        source_key = await _save_source(storage, path, content_hash)
+        source_key = await _park_source(storage, path, content_hash)
     except Exception as exc:  # noqa: BLE001
         os.remove(path)
         raise HTTPException(502, f"Не удалось сохранить исходник в хранилище: {exc}")
 
     jobs.set(job_id, _queued_job(job_id, file.filename, "reload", name))
-    background.add_task(
-        _run_job,
-        job_id,
-        path,
-        lambda: ingestion.reload(
-            name,
-            path,
-            raw,
-            content_hash,
-            version_override=version,
-            job_id=job_id,
+    queue.enqueue(
+        _ingest_entry(
+            job_id,
+            "reload",
+            content_hash=content_hash,
             source_object_key=source_key,
-            **meta,
-        ),
+            filename=file.filename,
+            name=name,
+            version=version,
+            meta=meta,
+        )
     )
     return UploadResponse(job_id=job_id, status="queued")
 
@@ -315,6 +313,67 @@ async def recent_jobs(
     return ActiveJobsResponse(
         count=len(recent), jobs=[JobStatusDTO(**job) for job in recent]
     )
+
+
+@router.get(
+    "/documents/jobs/queue",
+    response_model=QueueStateResponse,
+    dependencies=ADMIN_ONLY,
+)
+async def queue_state(queue: IngestQueue = Depends(Dependencies.get_ingest_queue)):
+    """The durable ingestion queue: what is waiting, what a worker holds, what gave up.
+
+    Unlike ``/documents/jobs/active`` (live pipeline progress, expires with its Redis TTL),
+    this is the persisted work list — it is exactly what the service would resume after a
+    restart. ``jobs`` lists the pending entries in processing order, then the in-flight ones.
+    """
+    pending, inflight = queue.pending(), queue.inflight()
+    return QueueStateResponse(
+        pending=len(pending),
+        inflight=len(inflight),
+        dead=len(queue.dead()),
+        jobs=[QueuedJobDTO(**entry) for entry in pending + inflight],
+    )
+
+
+@router.get(
+    "/documents/jobs/dead",
+    response_model=QueueStateResponse,
+    dependencies=ADMIN_ONLY,
+)
+async def dead_jobs(queue: IngestQueue = Depends(Dependencies.get_ingest_queue)):
+    """Jobs that exhausted their processing attempts and are no longer retried on their own.
+
+    Their originals are still in MinIO, so requeueing one (``POST
+    /documents/jobs/{job_id}/retry``) is enough — the file does not have to be uploaded again.
+    """
+    dead = queue.dead()
+    return QueueStateResponse(
+        pending=queue.size(),
+        inflight=queue.inflight_size(),
+        dead=len(dead),
+        jobs=[QueuedJobDTO(**entry) for entry in dead],
+    )
+
+
+@router.post(
+    "/documents/jobs/{job_id}/retry",
+    response_model=UploadResponse,
+    status_code=202,
+    dependencies=ADMIN_ONLY,
+)
+async def retry_dead_job(
+    job_id: str,
+    jobs: JobStore = Depends(Dependencies.get_jobs),
+    queue: IngestQueue = Depends(Dependencies.get_ingest_queue),
+):
+    """Put a dead-lettered job back on the queue with its attempt counter reset."""
+    entry = queue.requeue_dead(job_id)
+    if entry is None:
+        raise HTTPException(404, f"Задача не найдена среди отложенных: {job_id}")
+    jobs.update(job_id, status="queued", error=None)
+    log.info("ingest_job_requeued", job_id=job_id, operation=entry.get("operation"))
+    return UploadResponse(job_id=job_id, status="queued")
 
 
 @router.get("/documents/{job_id}", response_model=JobStatusDTO, dependencies=ADMIN_ONLY)

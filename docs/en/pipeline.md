@@ -1,9 +1,10 @@
 # Document processing pipeline
 
-Processing is started by `IngestionService.ingest(file_path, raw, content_hash, ...)` and runs in
-the background after the upload request is answered. The input is already-extracted "raw" blocks and
-the text hash (they are computed in the upload handler before the task is queued — this allows
-rejecting a duplicate immediately, without launching the heavy parse).
+Processing is started by `IngestionService.ingest(file_path, raw, content_hash, ...)`, called by an
+ingestion worker that claimed the job from the queue — possibly in a different process than the one
+that answered the upload. The input is already-extracted "raw" blocks and the text hash: the hash is
+computed in the upload handler so a duplicate is rejected immediately, without launching the heavy
+parse, and the blocks are re-extracted by the worker from the original stored in MinIO.
 
 > **Direct ingestion bypasses this pipeline.** `POST`/`PUT /documents/direct`
 > (`IngestionService.ingest_direct` / `reload_direct`) take caller-supplied fragments and run only
@@ -193,9 +194,10 @@ default): the LLM generalizes new extraction patterns into the base over time.
 
 ## Deduplication
 
-Before queuing the background task, the upload handler extracts the text and computes
-`content_hash`. If such a hash is already registered, the upload is rejected with code 400 — the
-text fully matches an already-loaded document.
+Before queuing the job, the upload handler extracts the text and computes `content_hash`. If such a
+hash is already registered, the upload is rejected with code 400 — the text fully matches an
+already-loaded document. The check is deliberately in the request rather than in the worker: a
+duplicate should be a synchronous `400`, not a job that fails minutes later.
 
 ## Versioning
 
