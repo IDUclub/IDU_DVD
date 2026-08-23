@@ -10,6 +10,10 @@ import re
 from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Chat providers the app knows how to build (see ``create_llm``). Anything else is a
+# configuration error, not a reason to fall back to whichever one happens to be first.
+LLM_PROVIDERS: frozenset[str] = frozenset({"openai", "ollama"})
+
 
 def _slug(value: str) -> str:
     """Qdrant/Redis-safe token from a model name (drops the author prefix).
@@ -51,13 +55,20 @@ class Settings(BaseSettings):
     ollama_timeout: float = 600.0
 
     # --- LLM provider (structure markup, merge, tags, version/head, references) ---
-    # "ollama" — native /api/chat (the historical default, keeps existing deployments
-    # working off DVD_OLLAMA_* alone); "openai" — any OpenAI-compatible /v1 endpoint
-    # (vLLM, LM Studio, llama.cpp, Ollama's own /v1 shim, the OpenAI API), configured by
-    # the llm_* settings below. Structured output is requested per provider protocol
-    # (Ollama `format`, OpenAI `response_format=json_schema`) — the schemas are unchanged.
-    llm_provider: str = "ollama"
-    llm_base_url: str = "http://localhost:8001/v1"  # must be the /v1 root
+    # "openai" — any OpenAI-compatible /v1 endpoint (vLLM, LM Studio, llama.cpp, Ollama's own
+    # /v1 shim, the OpenAI API), configured by the llm_* settings below; "ollama" — native
+    # /api/chat off DVD_OLLAMA_* alone, kept for local development. Structured output is
+    # requested per provider protocol (OpenAI `response_format=json_schema`, Ollama `format`)
+    # — the schemas are unchanged. An unrecognized value is refused at startup rather than
+    # quietly resolved to a provider nobody configured.
+    llm_provider: str = "openai"
+    # No default on purpose. The address of the LLM is deployment-specific and there is no
+    # value that is right anywhere: a `localhost` default in particular is a trap, because
+    # inside a container localhost is the container itself, so it fails with "connection
+    # refused" against a perfectly healthy server on the host. Must be the /v1 root and must
+    # be reachable *from the app* (in Docker: a service name, host.docker.internal, or an
+    # explicit host).
+    llm_base_url: str = ""
     llm_model: str = "gpt-oss-20b"
     llm_api_key: str | None = None  # optional: local servers ignore it
     # Response budget, the OpenAI counterpart of ollama_num_predict. There is no
@@ -282,6 +293,36 @@ class Settings(BaseSettings):
                 "территорий для тегирования документов (например "
                 "https://urban-api.testing.idulab.ru)"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _require_llm_endpoint(self) -> "Settings":
+        """Refuse to start on an LLM the app cannot reach, or on a provider it does not know.
+
+        Both failures used to be silent and both cost a corpus. An unknown ``llm_provider``
+        fell through to Ollama, so a typo (or an override that never arrived) sent the pipeline
+        to a service nobody had configured; and with the LLM unreachable every markup window is
+        skipped, which does not fail the ingest — it indexes the document unstructured, under
+        ``name="unknown"``, and every later document then attaches to it as another *version*
+        of that same phantom document. Catching it here, at boot, is the only place where the
+        damage is still zero.
+        """
+        provider = (self.llm_provider or "").strip().lower()
+        if provider not in LLM_PROVIDERS:
+            raise ValueError(
+                f"DVD_LLM_PROVIDER: неизвестный провайдер '{self.llm_provider}' — "
+                f"допустимо: {', '.join(sorted(LLM_PROVIDERS))}"
+            )
+        self.llm_provider = provider
+        if provider == "openai":
+            base = (self.llm_base_url or "").strip().rstrip("/")
+            if not base:
+                raise ValueError(
+                    "DVD_LLM_BASE_URL: обязательный параметр при DVD_LLM_PROVIDER=openai — "
+                    "корень /v1 OpenAI-совместимого сервера, достижимый из приложения "
+                    "(например http://a.dgx:8010/v1; в Docker localhost — это сам контейнер)"
+                )
+            self.llm_base_url = base
         return self
 
     @property

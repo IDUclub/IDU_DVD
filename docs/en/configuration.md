@@ -40,8 +40,8 @@ deliver that, each through its own protocol — Ollama's `format`, OpenAI's
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DVD_LLM_PROVIDER` | `ollama` | `ollama` — native `/api/chat`; `openai` — any OpenAI-compatible `/v1` endpoint (vLLM, LM Studio, llama.cpp, Ollama's own `/v1` shim, the OpenAI API) |
-| `DVD_LLM_BASE_URL` | `http://localhost:8001/v1` | `provider=openai`: the `/v1` root |
+| `DVD_LLM_PROVIDER` | `openai` | `openai` — any OpenAI-compatible `/v1` endpoint (vLLM, LM Studio, llama.cpp, Ollama's own `/v1` shim, the OpenAI API); `ollama` — native `/api/chat`, for local development. **An unrecognized value aborts startup** instead of falling back to a provider nobody configured |
+| `DVD_LLM_BASE_URL` | — | **Required when `provider=openai`; the app refuses to start without it.** The `/v1` root, and it must be reachable *from the app*: inside a container `localhost` is the container itself, so use a compose service name, `host.docker.internal`, or an explicit host |
 | `DVD_LLM_MODEL` | `gpt-oss-20b` | `provider=openai`: model id as the server reports it in `GET /v1/models` |
 | `DVD_LLM_API_KEY` | empty | `provider=openai`: sent as `Authorization: Bearer`. Local servers ignore it; masked in `GET /system/settings` |
 | `DVD_LLM_MAX_TOKENS` | `8192` | `provider=openai`: response budget (the counterpart of `DVD_OLLAMA_NUM_PREDICT`). There is **no** OpenAI equivalent of `num_ctx` — the context window is whatever the server was started with (`--max-model-len` in vLLM) |
