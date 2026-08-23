@@ -384,6 +384,88 @@ async def job_status(job_id: str, jobs: JobStore = Depends(Dependencies.get_jobs
     return JobStatusDTO(**job)
 
 
+@router.post(
+    "/documents/{name}/reindex",
+    response_model=UploadResponse,
+    status_code=202,
+    dependencies=ADMIN_ONLY,
+)
+async def reindex_document(
+    name: str,
+    version: str | None = Query(
+        None,
+        description="Версия, чей исходник переиспользовать; без параметра — последняя",
+    ),
+    mode: str = Query(
+        "replace",
+        description=(
+            "replace — перезалить под тем же именем; "
+            "new — проиндексировать как новый документ, определив имя и версию заново"
+        ),
+    ),
+    qdrant: QdrantRepository = Depends(Dependencies.get_qdrant),
+    storage: DocumentStorage = Depends(Dependencies.get_document_storage),
+    jobs: JobStore = Depends(Dependencies.get_jobs),
+    queue: IngestQueue = Depends(Dependencies.get_ingest_queue),
+):
+    """Re-run the pipeline over a document already in the store, without re-uploading it.
+
+    The original never left the server: it is in MinIO, and its key is on every fragment of
+    the document. So a re-run needs no file body — the job is queued straight from the stored
+    key, and the worker downloads it exactly as it would a fresh upload. Useful after a model
+    or parser change, and after an outage that indexed documents badly.
+
+    ``mode=replace`` re-ingests under the same name (wipes the stored versions first, like
+    ``PUT``). ``mode=new`` ingests it as a fresh document and lets the pipeline re-detect its
+    identity — the repair path for documents whose name was resolved wrongly, where keeping
+    the old name is the whole problem.
+
+    **Order matters**: deleting a document also deletes its originals from MinIO, so a job
+    queued against it must finish *before* the old document is deleted, not after.
+    """
+    if mode not in {"replace", "new"}:
+        raise HTTPException(422, f"mode должен быть replace или new, получено '{mode}'")
+    points = await run_in_threadpool(qdrant.points_by_name, name)
+    target = _pick_source_point(points, version)
+    key = target.get("source_object_key")
+    if not key:
+        raise HTTPException(
+            404,
+            "у документа нет сохранённого исходника — он загружен до появления MinIO-хранилища",
+        )
+    if not await run_in_threadpool(storage.exists, key):
+        raise HTTPException(
+            404,
+            f"исходник отсутствует в хранилище (ключ {key}) — переиндексация невозможна",
+        )
+
+    job_id = str(uuid.uuid4())
+    filename = target.get("source") or f"{name}{Path(key).suffix}"
+    operation = "reload" if mode == "replace" else "upload"
+    jobs.set(job_id, _queued_job(job_id, filename, operation, name))
+    queue.enqueue(
+        _ingest_entry(
+            job_id,
+            operation,
+            content_hash=target.get("content_hash") or "",
+            source_object_key=key,
+            filename=filename,
+            # mode=new deliberately passes no name: the identity is what has to be redone.
+            name=name if mode == "replace" else None,
+            doc_id=str(uuid.uuid4()) if mode == "new" else None,
+        )
+    )
+    log.info(
+        "document_reindex_queued",
+        job_id=job_id,
+        name=name,
+        version=target.get("version"),
+        mode=mode,
+        source_object_key=key,
+    )
+    return UploadResponse(job_id=job_id, status="queued")
+
+
 @router.get("/documents/{name}/source", dependencies=AUTHENTICATED)
 async def download_source(
     name: str,

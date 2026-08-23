@@ -369,6 +369,24 @@ so a document that reliably kills the process cannot take the service down on ev
 | `GET` | `/documents/jobs/queue` | pending and in-flight jobs, in processing order |
 | `GET` | `/documents/jobs/dead` | jobs that exhausted their attempts (with `last_error`) |
 | `POST` | `/documents/jobs/{job_id}/retry` | put a dead-lettered job back on the queue |
+| `POST` | `/documents/{name}/reindex` | re-run the pipeline over the stored original, no upload |
+
+Reindexing needs no file body: the original is in MinIO and its key is stored on every
+fragment of the document, so the job is queued from that key and the worker downloads it just
+as it would a fresh upload. Use it after a model or parser change, or to repair a batch that
+was indexed badly.
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `version` | latest | which stored original to reuse |
+| `mode` | `replace` | `replace` — re-ingest under the same name (wipes the stored versions first, like `PUT`); `new` — ingest as a fresh document and let the pipeline re-detect its identity |
+
+`mode=new` is the repair path for documents whose *name* was resolved wrongly — keeping the
+old name is the whole problem there.
+
+> **Order matters.** `DELETE /documents/{name}` also removes the document's originals from
+> MinIO. A reindex job queued against a document must therefore finish **before** that document
+> is deleted; deleting first leaves the job with nothing to download.
 
 Requeueing does not need the file again — the original is still in MinIO. Only jobs from before
 this feature (or whose queue entry was lost) cannot be resumed; those are flipped to `error`
