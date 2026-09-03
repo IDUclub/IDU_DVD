@@ -4,11 +4,13 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import Depends, FastAPI
 from fastapi.concurrency import run_in_threadpool
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
 from src.__version__ import VERSION
 from src.admin_service.router import router as admin_router
 from src.common.auth import require_admin
+from src.common.config import settings
 from src.common.middlewares import RequestLoggingMiddleware
 from src.dependencies import init_dependencies
 from src.dvd_service.ingest_worker import IngestWorker
@@ -105,6 +107,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_allow_origins,
+    allow_origin_regex=settings.cors_allow_origin_regex,
+    allow_credentials=settings.cors_allow_credentials,
+    allow_methods=settings.cors_allow_methods,
+    allow_headers=settings.cors_allow_headers,
+    expose_headers=settings.cors_expose_headers,
+    max_age=settings.cors_max_age,
+)
 # documents_router and library_router gate each route themselves: reading the shared corpus
 # is open to any authenticated caller, writing to it is not.
 app.include_router(documents_router)
