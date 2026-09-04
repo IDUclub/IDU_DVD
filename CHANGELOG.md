@@ -1,3 +1,9 @@
+## v0.15.2 (2026-09-04)
+
+### Fix
+
+- **cors**: answer browser preflight and expose CORS headers
+
 ## v0.15.1 (2026-08-23)
 
 ### Fix
