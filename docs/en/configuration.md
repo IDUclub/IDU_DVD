@@ -6,7 +6,8 @@ pydantic-settings. Values are overridden by environment variables with the `DVD_
 `vector_size` field corresponds to `DVD_VECTOR_SIZE`).
 
 List fields (`languages`, `allowed_extensions`) are set in the environment in JSON format, e.g.
-`DVD_ALLOWED_EXTENSIONS='[".docx",".txt",".md"]'`.
+`DVD_ALLOWED_EXTENSIONS='[".docx",".txt",".md"]'`. The `DVD_CORS_*` lists additionally accept a
+comma-separated string.
 
 Every field has a default in code, so the application starts without a `.env` at all. Two example
 files ship with the repo: **`.env.example`** — the service's network links (local
@@ -279,6 +280,31 @@ consumers (e.g. MSI-TSIM) override these per upload via form fields / `external_
 | `DVD_DEFAULT_DOC_TYPE` | `document` | default `doc_type` (`document`/`regulation`/`article`/`book`/`web`/…) |
 | `DVD_DEFAULT_CORPUS` | `default` | default logical corpus/namespace |
 | `DVD_DEFAULT_LANG` | empty | default ISO-639 language code (none = unknown) |
+
+### CORS (browser frontend)
+
+Before any non-simple request — in particular, any request carrying an `Authorization` header —
+a browser sends an `OPTIONS` preflight. With no CORS middleware FastAPI answered it
+`405 Method Not Allowed` and the browser reported the call as a CORS failure. The middleware is
+always installed and wraps every other one, so the CORS headers are present on error responses
+too.
+
+List values are given either as a JSON array or as a comma-separated string
+(`DVD_CORS_ALLOW_ORIGINS=http://10.32.11.17:3000,https://dvd.idulab.ru`); a trailing slash is
+stripped from an origin — the browser sends `Origin` without one and the comparison is verbatim.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DVD_CORS_ALLOW_ORIGINS` | `*` | origins allowed to call the service. `*` — any; on a public stand list the frontend addresses explicitly |
+| `DVD_CORS_ALLOW_ORIGIN_REGEX` | empty | a regular expression in addition to the list (e.g. `https://.*\.idulab\.ru` for every subdomain) |
+| `DVD_CORS_ALLOW_CREDENTIALS` | `true` | allow credentialed requests (`credentials: "include"`). Combined with `*`, Starlette echoes the concrete request origin back, as the specification requires. The admin panel's session cookie is `SameSite=Strict`, so it never rides along on a cross-site request anyway |
+| `DVD_CORS_ALLOW_METHODS` | `*` | allowed HTTP methods |
+| `DVD_CORS_ALLOW_HEADERS` | `*` | allowed request headers (`Authorization`, `Content-Type`, and the rest) |
+| `DVD_CORS_EXPOSE_HEADERS` | `X-Request-ID,Content-Disposition` | response headers the frontend's JS can read: the download file name and the request id to match against `GET /system/logs` |
+| `DVD_CORS_MAX_AGE` | `600` | seconds a browser caches the preflight response |
+
+Changes take effect after a restart: the middleware is assembled at application startup (these
+fields are flagged `restart_required` in `GET /system/settings`).
 
 ## Important notes
 

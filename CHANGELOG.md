@@ -1,3 +1,48 @@
+## v0.15.1 (2026-08-23)
+
+### Fix
+
+- **llm**: default to the OpenAI-compatible provider and fail loudly when it is missing (#61)
+
+## v0.15.0 (2026-08-20)
+
+### Feat
+
+- **auth**: log into the admin panel with Keycloak, not a shared password (#57)
+- **auth**: require the ADMIN realm role to change the shared corpus (#56)
+
+## v0.14.0 (2026-08-20)
+
+### Feat
+
+- **auth**: open shared-corpus reads to user tokens (#54)
+
+## v0.13.1 (2026-08-19)
+
+### Fix
+
+- **auth**: secure user documents and expose ingestion progress (#51) (#52)
+- **auth**: secure user documents and expose ingestion progress (#51)
+
+## v0.13.0 (2026-08-18)
+
+### Feat
+
+- **auth**: require service tokens (#49)
+- use Giga 2048 with parallel document LLM windows (#48)
+
+## v0.12.0 (2026-08-17)
+
+### Feat
+
+- **llm**: support any OpenAI-compatible chat endpoint (#46)
+
+## v0.11.1 (2026-08-16)
+
+### Refactor
+
+- scope user documents by project (#44)
+
 ## v0.11.0 (2026-08-05)
 
 ### Feat
