@@ -5,14 +5,33 @@ Every value can be overridden via environment variables with the ``DVD_`` prefix
 
 from __future__ import annotations
 
+import json
 import re
+from typing import Annotated, Any
 
-from pydantic import SecretStr, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import SecretStr, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # Chat providers the app knows how to build (see ``create_llm``). Anything else is a
 # configuration error, not a reason to fall back to whichever one happens to be first.
 LLM_PROVIDERS: frozenset[str] = frozenset({"openai", "ollama"})
+
+
+def _str_list(value: Any) -> Any:
+    """Parse a list-of-strings setting from JSON, from a comma-separated string, or from a list.
+
+    The repo-wide convention for list fields is JSON (``'["a","b"]'``), and it still holds here,
+    but a CORS origin list is written by whoever deploys the service rather than by whoever wrote
+    the code, and ``DVD_CORS_ALLOW_ORIGINS=http://a,http://b`` is the form they reach for first.
+    On a strictly-JSON field that costs a startup crash on a JSON parse error — a hard way to
+    learn a quoting rule — so both forms are accepted.
+    """
+    if isinstance(value, str):
+        raw = value.strip()
+        value = json.loads(raw) if raw.startswith("[") else raw.split(",")
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return value
 
 
 def _slug(value: str) -> str:
@@ -232,12 +251,48 @@ class Settings(BaseSettings):
     kafka_retry_interval: float = 5.0  # seconds to wait after a failed send
     kafka_max_attempts: int = 10  # send attempts before an event is dead-lettered
 
+    # --- CORS ---
+    cors_allow_origins: Annotated[list[str], NoDecode] = ["*"]
+    cors_allow_origin_regex: str | None = None
+    cors_allow_credentials: bool = True
+    cors_allow_methods: Annotated[list[str], NoDecode] = ["*"]
+    cors_allow_headers: Annotated[list[str], NoDecode] = ["*"]
+    cors_expose_headers: Annotated[list[str], NoDecode] = [
+        "X-Request-ID",
+        "Content-Disposition",
+    ]
+    cors_max_age: int = 600
+
     # --- Logging ---
     # Logs are written as JSON lines to a single growing file (filterable by date /
     # request_id via /system/logs) and as human-readable lines to stdout.
     log_dir: str = "./logs"
     log_file: str = "app.log"
     log_level: str = "INFO"
+
+    @field_validator(
+        "cors_allow_origins",
+        "cors_allow_methods",
+        "cors_allow_headers",
+        "cors_expose_headers",
+        mode="before",
+    )
+    @classmethod
+    def _parse_str_list(cls, value: Any) -> Any:
+        """Accept both the JSON and the comma-separated form for the CORS list settings."""
+        return _str_list(value)
+
+    @field_validator("cors_allow_origins", mode="after")
+    @classmethod
+    def _normalize_origins(cls, value: list[str]) -> list[str]:
+        """Drop a trailing slash from every origin.
+
+        A browser sends ``Origin: http://host:3000`` — never with a path, never with a trailing
+        slash — and Starlette compares the header verbatim, so a configured
+        ``http://host:3000/`` matches nothing and the request is refused with no CORS headers
+        and no hint as to why.
+        """
+        return [origin.rstrip("/") for origin in value]
 
     @model_validator(mode="before")
     @classmethod

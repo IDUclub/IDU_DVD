@@ -71,6 +71,13 @@ _RESTART_REQUIRED_FIELDS: frozenset[str] = frozenset(
         "auth_helper_url",
         "auth_helper_api_key",
         "auth_helper_timeout",
+        "cors_allow_origins",
+        "cors_allow_origin_regex",
+        "cors_allow_credentials",
+        "cors_allow_methods",
+        "cors_allow_headers",
+        "cors_expose_headers",
+        "cors_max_age",
     }
 )
 
