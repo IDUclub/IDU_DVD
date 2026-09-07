@@ -342,6 +342,17 @@ class TestScopedQdrantRepository:
         flt = client.scroll.call_args.kwargs["scroll_filter"]
         assert any(c.key == "user_id" for c in flt.must)
 
+    def test_set_document_payload_passes_exact_user_project_scope(self, scoped):
+        scoped_repo, client = scoped
+
+        scoped_repo.set_document_payload("doc-1", {"title": "new"})
+
+        flt = client.set_payload.call_args.kwargs["points"]
+        values = {condition.key: condition.match for condition in flt.must}
+        assert values["doc_id"].value == "doc-1"
+        assert values["user_id"].value == "u1"
+        assert values["project_id"].any == ["p1"]
+
     def test_set_versions_and_delete_points_pass_through_unscoped(self, scoped):
         scoped_repo, client = scoped
         scoped_repo.set_versions(["p1"], ["v1"])

@@ -11,7 +11,7 @@ There are two gates:
 
 | Gate | Accepts | Applies to |
 |------|---------|------------|
-| authenticated | any live token — a user's or a service account's | reading the shared corpus: `GET /documents`, `GET /documents/{name}/source`, all of `/library` except its `PATCH`es, all of `/search`, `GET /tags`, `GET /scopes` |
+| authenticated | any live token — a user's or a service account's | reading the shared corpus: `GET /documents`, `GET /documents/available`, `GET /documents/{name}/source`, all of `/library` except its `PATCH`es, all of `/search`, `GET /tags`, `GET /scopes`; user-scoped routes derive the owner from the token |
 | admin | a user holding the `DVD_ADMIN_ROLE` realm role (`ADMIN` by default) or a service account | everything that changes the shared corpus or the service itself: `POST`/`PATCH`/`PUT`/`DELETE /documents`, `/documents/direct`, the `/documents/jobs/*` views that track those ingests, `PATCH /library/...`, `/tagging`, `/system` |
 
 A user who is authenticated but lacks the role is answered `403`, not `401`: the token is
@@ -50,6 +50,9 @@ from the request body:
 | `POST /documents/direct` | ingest documents directly from caller-supplied fragments (no LLM pipeline) |
 | `PUT /documents/direct` | full replace of directly-ingested documents by name |
 | `GET /documents` | list ingested documents, aggregated by (name, version), with filters |
+| `GET /documents/available` | compact list of fully indexed shared documents |
+| `GET /user-documents/available` | compact list of fully indexed documents in a user project |
+| `PATCH /user-documents/{doc_id}/metadata` | update document-wide metadata in a user project |
 | `GET /documents/{job_id}` | processing job status |
 | `GET /documents/jobs/active` | queued and currently processing jobs |
 | `GET /documents/jobs/recent` | recent jobs of every status (`?limit=20`, max 100) |
@@ -314,6 +317,71 @@ curl "http://localhost:8000/documents"
 curl "http://localhost:8000/documents?name=СП%2019.13330.2019"
 curl "http://localhost:8000/documents?block=amendment&tags=зонирование&tags=здания"
 curl "http://localhost:8000/documents?uploaded_from=2026-06-01T00:00:00%2B00:00"
+```
+
+## GET /documents/available
+
+A compact list of fully indexed shared-corpus documents. A document appears only when its final
+Redis registry record and its indexed Qdrant payload are both present. Versions are returned as
+separate entries, sorted by `name` and then `version`.
+
+The optional repeatable `territory_ids` query parameter returns every document applicable to the
+requested territory: its own documents plus the regional and federal documents in force there.
+
+```json
+{
+  "count": 1,
+  "documents": [
+    {
+      "doc_id": "9f63...",
+      "name": "СП 19.13330.2019",
+      "title": "Сельскохозяйственные предприятия",
+      "version": "2019",
+      "source_file_url": "/documents/%D0%A1%D0%9F%2019.13330.2019/source?version=2019",
+      "document_level": "federal",
+      "territory_id": 0,
+      "territory_name": "Россия"
+    }
+  ]
+}
+```
+
+Fields unavailable for an older document are returned as `null`.
+
+## GET /user-documents/available
+
+The same compact listing for the current authenticated user's project. `project_id` is required;
+an unknown project returns an empty list. `territory_ids` has the same applicability semantics as
+the shared endpoint. User and shared documents are never mixed by either endpoint.
+
+```
+curl "http://localhost:8000/user-documents/available?project_id=project-1&territory_ids=54"
+```
+
+## PATCH /user-documents/{doc_id}/metadata
+
+Updates document-wide metadata on every fragment of a document owned by the current authenticated
+user in the required `project_id`. The endpoint accepts the same editable fields as the admin
+document editor: `title`, `doc_type`, `corpus`, `lang`, `status`, `effective_date`, `external_ids`,
+`metadata`, `tags`, and `territory_id`. Omitted fields remain unchanged.
+
+```
+curl -X PATCH "http://localhost:8000/user-documents/9f63.../metadata?project_id=project-1" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Reviewed title","tags":["reviewed"],"territory_id":54}'
+```
+
+An explicit `"territory_id": null` clears the administrative scope and returns it to pending
+automatic detection. An unknown territory returns `404`, an unavailable Urban API returns `502`,
+and a document outside the current `(user_id, project_id)` scope is hidden as `404`. A missing
+`project_id` returns `422`.
+
+```json
+{
+  "doc_id": "9f63...",
+  "points_updated": 266,
+  "fields_updated": ["document_level", "tags", "territory_id", "territory_name", "title"]
+}
 ```
 
 ## GET /documents/{job_id}

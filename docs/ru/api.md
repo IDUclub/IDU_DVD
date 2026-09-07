@@ -12,7 +12,7 @@
 
 | Гейт | Кого пускает | Что закрывает |
 |------|--------------|---------------|
-| authenticated | любой живой токен — пользователя или сервис-аккаунта | чтение общего корпуса: `GET /documents`, `GET /documents/{name}/source`, весь `/library` кроме его `PATCH`, весь `/search`, `GET /tags`, `GET /scopes` |
+| authenticated | любой живой токен — пользователя или сервис-аккаунта | чтение общего корпуса: `GET /documents`, `GET /documents/available`, `GET /documents/{name}/source`, весь `/library` кроме его `PATCH`, весь `/search`, `GET /tags`, `GET /scopes`; пользовательские маршруты определяют владельца по токену |
 | admin | пользователь с realm-ролью `DVD_ADMIN_ROLE` (по умолчанию `ADMIN`) или сервис-аккаунт | всё, что меняет общий корпус или сам сервис: `POST`/`PATCH`/`PUT`/`DELETE /documents`, `/documents/direct`, представления `/documents/jobs/*`, отслеживающие эти загрузки, `PATCH /library/...`, `/tagging`, `/system` |
 
 Аутентифицированный пользователь без роли получает `403`, а не `401`: с токеном всё в порядке,
@@ -51,6 +51,9 @@ auth helper (`DVD_AUTH_HELPER_URL` + `DVD_AUTH_HELPER_API_KEY` — тот же �
 | `POST /documents/direct` | прямая загрузка документов из готовых фрагментов (минуя LLM-пайплайн) |
 | `PUT /documents/direct` | полная замена прямо загруженных документов по имени |
 | `GET /documents` | список загруженных документов, агрегированных по (name, version), с фильтрами |
+| `GET /documents/available` | компактный список полностью проиндексированных общих документов |
+| `GET /user-documents/available` | компактный список полностью проиндексированных документов проекта пользователя |
+| `PATCH /user-documents/{doc_id}/metadata` | изменение общей метадаты пользовательского документа |
 | `GET /documents/{job_id}` | статус задачи обработки |
 | `GET /documents/jobs/active` | задачи в очереди и в обработке |
 | `GET /documents/jobs/recent` | последние задачи во всех статусах (`?limit=20`, максимум 100) |
@@ -322,6 +325,72 @@ curl "http://localhost:8000/documents"
 curl "http://localhost:8000/documents?name=СП%2019.13330.2019"
 curl "http://localhost:8000/documents?block=amendment&tags=зонирование&tags=здания"
 curl "http://localhost:8000/documents?uploaded_from=2026-06-01T00:00:00%2B00:00"
+```
+
+## GET /documents/available
+
+Компактный список полностью проиндексированных документов общего корпуса. Документ попадает в
+ответ, только если одновременно существуют его итоговая запись в Redis и проиндексированный
+payload в Qdrant. Версии возвращаются отдельными элементами с сортировкой по `name`, затем по
+`version`.
+
+Необязательный повторяемый query-параметр `territory_ids` возвращает все применимые к запрошенной
+территории документы: её собственные, а также действующие для неё региональные и федеральные.
+
+```json
+{
+  "count": 1,
+  "documents": [
+    {
+      "doc_id": "9f63...",
+      "name": "СП 19.13330.2019",
+      "title": "Сельскохозяйственные предприятия",
+      "version": "2019",
+      "source_file_url": "/documents/%D0%A1%D0%9F%2019.13330.2019/source?version=2019",
+      "document_level": "federal",
+      "territory_id": 0,
+      "territory_name": "Россия"
+    }
+  ]
+}
+```
+
+Недоступные для старого документа поля возвращаются со значением `null`.
+
+## GET /user-documents/available
+
+Такой же компактный список для проекта текущего аутентифицированного пользователя. Параметр
+`project_id` обязателен; для неизвестного проекта возвращается пустой список. `territory_ids`
+работает так же, как в общем эндпоинте. Пользовательские и общие документы в ответах не смешиваются.
+
+```
+curl "http://localhost:8000/user-documents/available?project_id=project-1&territory_ids=54"
+```
+
+## PATCH /user-documents/{doc_id}/metadata
+
+Изменяет общую метадату во всех фрагментах документа текущего аутентифицированного пользователя в
+обязательном `project_id`. Доступны те же поля, что и в административном редакторе документа:
+`title`, `doc_type`, `corpus`, `lang`, `status`, `effective_date`, `external_ids`, `metadata`, `tags`
+и `territory_id`. Пропущенные поля не изменяются.
+
+```
+curl -X PATCH "http://localhost:8000/user-documents/9f63.../metadata?project_id=project-1" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Проверенный заголовок","tags":["проверено"],"territory_id":54}'
+```
+
+Явное `"territory_id": null` очищает административную привязку и возвращает её в состояние
+ожидания автоматического определения. Неизвестная территория возвращает `404`, недоступный Urban
+API — `502`, а документ вне текущей пары `(user_id, project_id)` скрывается как `404`. Отсутствующий
+`project_id` возвращает `422`.
+
+```json
+{
+  "doc_id": "9f63...",
+  "points_updated": 266,
+  "fields_updated": ["document_level", "tags", "territory_id", "territory_name", "title"]
+}
 ```
 
 ## GET /documents/{job_id}
