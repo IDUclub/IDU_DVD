@@ -1,3 +1,9 @@
+## v0.15.3 (2026-09-07)
+
+### Fix
+
+- **ci**: replace develop branch references with dev (#69)
+
 ## v0.15.2 (2026-09-04)
 
 ### Fix
