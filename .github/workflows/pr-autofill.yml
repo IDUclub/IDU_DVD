@@ -1,7 +1,7 @@
 # Auto-fill the title and body of pull requests.
-#   PRs into develop:
-#     * master -> develop (release sync-back): title = the current version, body = the PR's commits;
-#     * feature/fix -> develop:                title = the source branch name, body = the PR's commits.
+#   PRs into dev:
+#     * master -> dev (release sync-back): title = the current version, body = the PR's commits;
+#     * feature/fix -> dev:                title = the source branch name, body = the PR's commits.
 #   PRs into master (release PRs):
 #     * title = the version the Release workflow will bump to on merge, predicted by commitizen
 #       (`cz bump --get-next`) from the conventional commits since the last v* tag;
@@ -61,7 +61,7 @@ jobs:
 
             # Body: every commit since the last release - the changelog's coverage.
             # Both the tag lookup and the log run against HEAD (the PR merge ref): release
-            # tags live on master and are not reachable from develop itself, but they are
+            # tags live on master and are not reachable from dev itself, but they are
             # reachable from the merge of the two.
             last_tag="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
             body="$(git log --reverse --no-merges --format='- %s' ${last_tag:+${last_tag}..}HEAD)"
@@ -72,7 +72,7 @@ jobs:
             # Title: version for the release sync-back from master, branch name otherwise.
             if [ "$HEAD_REF" = "master" ]; then
               title="$(git show "${HEAD_SHA}:pyproject.toml" | sed -nE 's/^version = "(.*)"/\1/p' | head -1)"
-              [ -z "$title" ] && title="master -> develop"
+              [ -z "$title" ] && title="master -> dev"
             else
               title="$HEAD_REF"
             fi
