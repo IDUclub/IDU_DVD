@@ -32,6 +32,7 @@ from src.common.config import Settings
 from src.common.db.minio_client import DocumentStorage
 from src.common.db.qdrant_client import (
     QdrantRepository,
+    ScopedQdrantRepository,
     scope_conditions,
     shared_only_condition,
     user_scope_conditions,
@@ -39,6 +40,8 @@ from src.common.db.qdrant_client import (
 from src.common.db.redis_client import DocumentRegistry, JobStore, UserIndexRegistry
 from src.dvd_service.dto import (
     AdministrativeScope,
+    AvailableDocumentInfo,
+    AvailableDocumentListResponse,
     DirectDocumentIn,
     DocumentDetail,
     DocumentFragment,
@@ -141,7 +144,7 @@ class IngestionService:
         version_detector: VersionDetector,
         reference_extractor: ReferenceExtractor,
         reference_resolver: ReferenceResolver,
-        qdrant: QdrantRepository,
+        qdrant: QdrantRepository | ScopedQdrantRepository,
         registry: DocumentRegistry,
         storage: DocumentStorage,
         jobs: JobStore,
@@ -1826,6 +1829,76 @@ class LibraryService:
         docs.sort(key=lambda d: (d.name, d.version))
         return DocumentList(count=len(docs), documents=docs)
 
+    def list_available_documents(
+        self,
+        *,
+        territory_ids: list[int] | None = None,
+        user_id: str | None = None,
+        project_ids: list[str] | None = None,
+    ) -> AvailableDocumentListResponse:
+        """List fully indexed documents in the shared corpus or one user project.
+
+        A document is available only when it has both its final Redis registry record and at
+        least one matching Qdrant point. The registry is written after the vector upsert, so
+        intersecting the two stores excludes partial ingests and stale registry records.
+        """
+        records = {
+            str(record["doc_id"]): record
+            for record in self.registry.all_documents()
+            if record.get("doc_id")
+        }
+        if not records:
+            return AvailableDocumentListResponse(count=0, documents=[])
+
+        conditions = scope_conditions(
+            territory_ids=territory_ids,
+            ancestor_ids=territory_ancestors(self.territory, territory_ids),
+        )
+        if user_id is not None:
+            conditions.extend(user_scope_conditions(user_id, project_ids or []))
+        else:
+            conditions.append(shared_only_condition())
+
+        payload_by_doc: dict[str, dict] = {}
+        payload_by_version: dict[tuple[str, str], dict] = {}
+        for payload in self.qdrant.scroll_payloads(Filter(must=conditions)):
+            doc_id = str(payload.get("doc_id") or "")
+            if doc_id:
+                payload_by_doc.setdefault(doc_id, payload)
+            for version in payload.get("versions") or [payload.get("version")]:
+                if version is not None:
+                    payload_by_version.setdefault(
+                        (str(payload.get("name") or ""), str(version)), payload
+                    )
+
+        documents = []
+        for doc_id, record in records.items():
+            record_key = (
+                str(record.get("name") or ""),
+                str(record.get("version") or ""),
+            )
+            payload = payload_by_doc.get(doc_id) or payload_by_version.get(record_key)
+            if payload is None:
+                continue
+            merged = {**payload, **record}
+            name = str(record.get("name") or payload.get("name") or "")
+            version = str(record.get("version") or payload.get("version") or "")
+            documents.append(
+                AvailableDocumentInfo(
+                    doc_id=record.get("doc_id") or None,
+                    name=name,
+                    title=record.get("title"),
+                    version=version,
+                    source_file_url=build_source_url(merged, name, version),
+                    document_level=payload.get("document_level"),
+                    territory_id=payload.get("territory_id"),
+                    territory_name=payload.get("territory_name"),
+                )
+            )
+
+        documents.sort(key=lambda document: (document.name, document.version))
+        return AvailableDocumentListResponse(count=len(documents), documents=documents)
+
     def get_document(self, doc_id: str) -> DocumentDetail | None:
         payloads = self.qdrant.list_by_doc(doc_id)
         if not payloads:
@@ -1936,7 +2009,7 @@ class DocumentEditorService:
 
     def __init__(
         self,
-        qdrant: QdrantRepository,
+        qdrant: QdrantRepository | ScopedQdrantRepository,
         registry: DocumentRegistry,
         settings: Settings,
         territory: TerritoryResolver | None = None,

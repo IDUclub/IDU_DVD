@@ -1,0 +1,26 @@
+name: Kubernetes dev release
+
+on:
+  push:
+    branches:
+      - dev
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    uses: IDUclub/urban-assistant-deploy/.github/workflows/reusable-application-release.yaml@main
+    with:
+      service: idu-dvd
+      test-command: |
+        python -m pip install --disable-pip-version-check uv==0.12.10
+        uv python install 3.11
+        uv sync --locked
+        export DVD_LLM_BASE_URL=http://localhost:8001/v1
+        export DVD_SERVICE_AUTH_SERVER_URL=http://localhost:9999
+        export DVD_SERVICE_AUTH_REALM=test
+        export DVD_SERVICE_AUTH_CLIENT_ID=test-client
+        export DVD_SERVICE_AUTH_CLIENT_SECRET=test-secret
+        uv run pytest --verbose tests/unit
+    secrets: inherit

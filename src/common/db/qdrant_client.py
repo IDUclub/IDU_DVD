@@ -253,12 +253,18 @@ class QdrantRepository:
     def set_point_payload(self, point_id: str, payload: dict) -> None:
         self.client.set_payload(self.collection, payload=payload, points=[point_id])
 
-    def set_document_payload(self, doc_id: str, payload: dict) -> None:
+    def set_document_payload(
+        self,
+        doc_id: str,
+        payload: dict,
+        extra_must: list[FieldCondition] | None = None,
+    ) -> None:
         self.client.set_payload(
             self.collection,
             payload=payload,
             points=Filter(
                 must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]
+                + (extra_must or [])
             ),
         )
 
@@ -526,6 +532,9 @@ class ScopedQdrantRepository:
 
     def list_by_doc(self, doc_id: str, limit: int = 10000) -> list[dict]:
         return self._inner.list_by_doc(doc_id, limit=limit, extra_must=self._scope_must)
+
+    def set_document_payload(self, doc_id: str, payload: dict) -> None:
+        self._inner.set_document_payload(doc_id, payload, extra_must=self._scope_must)
 
     def delete_by_name(self, name: str) -> None:
         self._inner.delete_by_name(name, extra_must=self._scope_must)

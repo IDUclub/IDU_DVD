@@ -14,9 +14,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from fastmcp.server.auth import AccessToken
 
+from src.api_clients import TerritoryNotFound, UrbanApiError
 from src.common.auth import keycloak_token_verifier
 from src.common.config import Settings
-from src.common.db.redis_client import RedisClient, UserIndexRegistry
+from src.common.db.redis_client import DocumentRegistry, RedisClient, UserIndexRegistry
 from src.dependencies import Dependencies
 from src.dvd_service.routers import user_documents_router
 from src.dvd_service.services.user_index_service import UserIndexService
@@ -45,6 +46,25 @@ class FakeUrbanApi:
     def project_id_for_scenario(self, _scenario_id, user_id):
         assert user_id
         return "p1"
+
+
+class FakeTerritory:
+    def filter_ids(self, territory_ids):
+        return sorted({1, *(int(value) for value in territory_ids)})
+
+    def by_territory_id(self, territory_id):
+        territory_id = int(territory_id)
+        return {
+            "document_level": "municipal",
+            "territory_id": territory_id,
+            "territory_name": "Выборгский муниципальный район",
+            "territory_type_id": 2,
+            "territory_type_name": "Муниципальное образование",
+            "territory_path": [12639, 1, territory_id],
+            "territory_source": "manual",
+            "tagging_status": "ok",
+            "tagging_error": None,
+        }
 
 
 class FakeScopedQdrant:
@@ -157,6 +177,9 @@ def client(
     app = FastAPI()
     app.state.fake_jobs = fake_jobs
     app.state.ingest_queue = ingest_queue
+    app.state.qdrant = fake_qdrant
+    app.state.redis = redis_client
+    app.state.settings = upload_settings
     app.include_router(user_documents_router)
     app.dependency_overrides[Dependencies.get_settings] = lambda: upload_settings
     app.dependency_overrides[Dependencies.get_parser] = lambda: FakeParser()
@@ -174,6 +197,7 @@ def client(
     app.dependency_overrides[Dependencies.get_jobs] = lambda: fake_jobs
     app.dependency_overrides[Dependencies.get_ingest_queue] = lambda: ingest_queue
     app.dependency_overrides[Dependencies.get_urban_api] = lambda: FakeUrbanApi()
+    app.dependency_overrides[Dependencies.get_territory] = lambda: FakeTerritory()
     with TestClient(
         app,
         headers={"Authorization": "Bearer user"},
@@ -443,6 +467,325 @@ class TestListUserDocuments:
         resp = c.get("/user-documents", params={"user_id": "u1", "project_id": "p1"})
         assert resp.status_code == 200
         assert resp.json() == {"count": 0, "documents": []}
+
+
+class TestListAvailableUserDocuments:
+    @staticmethod
+    def _seed(c):
+        from qdrant_client.models import PointStruct
+
+        settings = c.app.state.settings
+        registry = DocumentRegistry(
+            c.app.state.redis,
+            prefix=f"{settings.registry_prefix}:user:u1:project:p1",
+        )
+        registry.register_document(
+            "d1",
+            {
+                "doc_id": "d1",
+                "name": "Закон Ленобласти",
+                "title": "Региональный закон",
+                "version": "2026",
+                "source_object_key": "d1.docx",
+            },
+        )
+        c.app.state.qdrant.upsert(
+            [
+                PointStruct(
+                    id="point-d1",
+                    vector=[0.0],
+                    payload={
+                        "doc_id": "d1",
+                        "name": "Закон Ленобласти",
+                        "version": "2026",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "document_level": "regional",
+                        "territory_id": 1,
+                        "territory_name": "Ленинградская область",
+                        "territory_path": [0, 1],
+                    },
+                )
+            ]
+        )
+
+    def test_requires_project_id(self, client):
+        c, _, _, _ = client
+        assert c.get("/user-documents/available").status_code == 422
+
+    def test_returns_documents_applicable_to_territory(self, client):
+        c, _, _, _ = client
+        self._seed(c)
+
+        resp = c.get(
+            "/user-documents/available",
+            params={"project_id": "p1", "territory_ids": [54]},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "count": 1,
+            "documents": [
+                {
+                    "doc_id": "d1",
+                    "name": "Закон Ленобласти",
+                    "title": "Региональный закон",
+                    "version": "2026",
+                    "source_file_url": (
+                        "/user-documents/%D0%97%D0%B0%D0%BA%D0%BE%D0%BD%20"
+                        "%D0%9B%D0%B5%D0%BD%D0%BE%D0%B1%D0%BB%D0%B0%D1%81%D1%82%D0%B8/source"
+                        "?user_id=u1&project_id=p1&version=2026"
+                    ),
+                    "document_level": "regional",
+                    "territory_id": 1,
+                    "territory_name": "Ленинградская область",
+                }
+            ],
+        }
+
+    def test_unknown_project_returns_empty_list(self, client):
+        c, _, _, _ = client
+        self._seed(c)
+
+        resp = c.get("/user-documents/available", params={"project_id": "unknown"})
+
+        assert resp.status_code == 200
+        assert resp.json() == {"count": 0, "documents": []}
+
+
+class TestUpdateUserDocumentMetadata:
+    @staticmethod
+    def _seed(c):
+        from qdrant_client.models import PointStruct
+
+        settings = c.app.state.settings
+        registry = DocumentRegistry(
+            c.app.state.redis,
+            prefix=f"{settings.registry_prefix}:user:u1:project:p1",
+        )
+        registry.register_document(
+            "d1",
+            {
+                "doc_id": "d1",
+                "name": "СП 1",
+                "title": "Старый заголовок",
+                "version": "2026",
+            },
+        )
+        c.app.state.qdrant.upsert(
+            [
+                PointStruct(
+                    id="p1-a",
+                    vector=[0.0],
+                    payload={
+                        "doc_id": "d1",
+                        "name": "СП 1",
+                        "version": "2026",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "title": "Старый заголовок",
+                    },
+                ),
+                PointStruct(
+                    id="p1-b",
+                    vector=[0.0],
+                    payload={
+                        "doc_id": "d1",
+                        "name": "СП 1",
+                        "version": "2026",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "title": "Старый заголовок",
+                    },
+                ),
+                PointStruct(
+                    id="p2-a",
+                    vector=[0.0],
+                    payload={
+                        "doc_id": "d1",
+                        "name": "СП 1",
+                        "version": "2026",
+                        "user_id": "u1",
+                        "project_id": "p2",
+                        "title": "Чужой проект",
+                    },
+                ),
+            ]
+        )
+        return registry
+
+    def test_updates_all_editable_fields_only_in_requested_project(self, client):
+        c, _, _, _ = client
+        registry = self._seed(c)
+
+        response = c.patch(
+            "/user-documents/d1/metadata",
+            params={"project_id": "p1"},
+            json={
+                "title": "Новый заголовок",
+                "doc_type": "regulation",
+                "corpus": "project",
+                "lang": "ru",
+                "status": "active",
+                "effective_date": "2026-09-01",
+                "external_ids": {"code": "MANUAL-1"},
+                "metadata": {"owner": "user"},
+                "tags": ["проверено"],
+                "territory_id": 54,
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["doc_id"] == "d1"
+        assert body["points_updated"] == 2
+        assert set(body["fields_updated"]) >= {
+            "title",
+            "doc_type",
+            "corpus",
+            "lang",
+            "status",
+            "effective_date",
+            "external_ids",
+            "metadata",
+            "tags",
+            "territory_id",
+            "territory_name",
+            "document_level",
+        }
+        points = c.app.state.qdrant.points
+        assert points["p1-a"][1]["title"] == "Новый заголовок"
+        assert points["p1-b"][1]["territory_id"] == 54
+        assert "MANUAL-1" in points["p1-a"][1]["lookup_keys"]
+        assert points["p2-a"][1]["title"] == "Чужой проект"
+        assert registry.get_document("d1")["metadata"] == {"owner": "user"}
+
+    def test_requires_project_id(self, client):
+        c, _, _, _ = client
+        assert (
+            c.patch(
+                "/user-documents/d1/metadata", json={"title": "Новый заголовок"}
+            ).status_code
+            == 422
+        )
+
+    def test_wrong_project_is_hidden_as_not_found(self, client):
+        c, _, _, _ = client
+        self._seed(c)
+
+        response = c.patch(
+            "/user-documents/d1/metadata",
+            params={"project_id": "p2-missing"},
+            json={"title": "Новый заголовок"},
+        )
+
+        assert response.status_code == 404
+
+    @pytest.mark.parametrize(
+        ("error", "expected_status"),
+        [
+            (TerritoryNotFound("54"), 404),
+            (UrbanApiError("connection refused"), 502),
+        ],
+    )
+    def test_maps_territory_errors(self, client, error, expected_status):
+        c, _, _, _ = client
+        self._seed(c)
+
+        class BrokenTerritory:
+            def by_territory_id(self, _territory_id):
+                raise error
+
+        c.app.dependency_overrides[Dependencies.get_territory] = BrokenTerritory
+        response = c.patch(
+            "/user-documents/d1/metadata",
+            params={"project_id": "p1"},
+            json={"territory_id": 54},
+        )
+
+        assert response.status_code == expected_status
+
+    def test_explicit_null_clears_territory(self, client):
+        c, _, _, _ = client
+        self._seed(c)
+
+        response = c.patch(
+            "/user-documents/d1/metadata",
+            params={"project_id": "p1"},
+            json={"territory_id": None},
+        )
+
+        assert response.status_code == 200
+        payload = c.app.state.qdrant.points["p1-a"][1]
+        assert payload["territory_id"] is None
+        assert payload["tagging_status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_update_user_document_metadata_handler_uses_project_scope(
+    settings, fake_redis, fake_qdrant, monkeypatch
+):
+    """Exercise the handler without Starlette's synchronous TestClient boundary."""
+    from qdrant_client.models import PointStruct
+
+    import src.dvd_service.routers.user_documents as router_mod
+    from src.dvd_service.dto import DocumentUpdateRequest
+
+    async def direct_call(function, *args):
+        return function(*args)
+
+    monkeypatch.setattr(router_mod, "run_in_threadpool", direct_call)
+
+    redis = RedisClient(settings)
+    registry = DocumentRegistry(
+        redis, prefix=f"{settings.registry_prefix}:user:u1:project:p1"
+    )
+    registry.register_document(
+        "d1", {"doc_id": "d1", "name": "СП 1", "version": "2026", "title": "old"}
+    )
+    fake_qdrant.upsert(
+        [
+            PointStruct(
+                id="handler-p1",
+                vector=[0.0],
+                payload={
+                    "doc_id": "d1",
+                    "name": "СП 1",
+                    "version": "2026",
+                    "user_id": "u1",
+                    "project_id": "p1",
+                    "title": "old",
+                },
+            ),
+            PointStruct(
+                id="handler-p2",
+                vector=[0.0],
+                payload={
+                    "doc_id": "d1",
+                    "name": "СП 1",
+                    "version": "2026",
+                    "user_id": "u1",
+                    "project_id": "p2",
+                    "title": "other",
+                },
+            ),
+        ]
+    )
+
+    response = await router_mod.update_user_document_metadata(
+        doc_id="d1",
+        body=DocumentUpdateRequest(title="new"),
+        project_id="p1",
+        qdrant=fake_qdrant,
+        redis=redis,
+        settings=settings,
+        territory=FakeTerritory(),
+        user_id="u1",
+    )
+
+    assert response.points_updated == 1
+    assert fake_qdrant.points["handler-p1"][1]["title"] == "new"
+    assert fake_qdrant.points["handler-p2"][1]["title"] == "other"
 
 
 class TestDownloadUserSource:

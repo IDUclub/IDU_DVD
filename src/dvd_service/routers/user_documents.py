@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import os
 import uuid
+from functools import partial
 from pathlib import Path
 
 import structlog
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     File,
     Form,
@@ -24,11 +26,20 @@ from fastapi import (
 from fastapi.concurrency import run_in_threadpool
 from minio.error import S3Error
 
-from src.api_clients import ScenarioNotFound, UrbanApiClient, UrbanApiError
+from src.api_clients import (
+    ScenarioNotFound,
+    TerritoryNotFound,
+    UrbanApiClient,
+    UrbanApiError,
+)
 from src.common.auth import get_current_user_id
 from src.common.config import Settings
 from src.common.db.minio_client import DocumentStorage
-from src.common.db.qdrant_client import QdrantRepository, user_scope_conditions
+from src.common.db.qdrant_client import (
+    QdrantRepository,
+    ScopedQdrantRepository,
+    user_scope_conditions,
+)
 from src.common.db.redis_client import (
     DocumentRegistry,
     JobStore,
@@ -37,8 +48,11 @@ from src.common.db.redis_client import (
 )
 from src.dependencies import Dependencies
 from src.dvd_service.dto import (
+    AvailableDocumentListResponse,
     DeleteResponse,
     DocumentListResponse,
+    DocumentUpdateRequest,
+    DocumentUpdateResponse,
     JobStatusDTO,
     UploadResponse,
     UserIndexCreateRequest,
@@ -48,6 +62,7 @@ from src.dvd_service.dto import (
 )
 from src.dvd_service.ingest_queue import IngestQueue
 from src.dvd_service.modules.doc_parsers import DocumentParser
+from src.dvd_service.modules.territory import TerritoryResolver
 from src.dvd_service.routers._upload_common import (
     document_meta,
     download_response,
@@ -58,7 +73,11 @@ from src.dvd_service.routers._upload_common import (
     receive_file,
     reject_duplicate,
 )
-from src.dvd_service.services.dvd_service import DocumentsService
+from src.dvd_service.services.dvd_service import (
+    DocumentEditorService,
+    DocumentsService,
+    LibraryService,
+)
 from src.dvd_service.services.user_index_service import (
     UserIndexService,
     build_user_ingestion_from_deps,
@@ -462,6 +481,67 @@ async def list_user_documents(
         user_id=user_id,
         project_ids=[project_id],
     )
+
+
+@router.get("/available", response_model=AvailableDocumentListResponse)
+async def list_available_user_documents(
+    project_id: str = Query(...),
+    territory_ids: list[int] | None = Query(
+        None,
+        description="Urban API territory ids; includes every document in force there",
+    ),
+    qdrant: QdrantRepository = Depends(Dependencies.get_qdrant),
+    redis: RedisClient = Depends(Dependencies.get_redis),
+    settings: Settings = Depends(Dependencies.get_settings),
+    territory: TerritoryResolver = Depends(Dependencies.get_territory),
+    user_id: str = Depends(get_current_user_id),
+):
+    """Fully indexed documents owned by the current user in one project."""
+    registry = _scoped_registry(redis, settings, user_id, project_id)
+    library = LibraryService(qdrant, registry, territory=territory)
+    return await run_in_threadpool(
+        partial(
+            library.list_available_documents,
+            territory_ids=territory_ids,
+            user_id=user_id,
+            project_ids=[project_id],
+        )
+    )
+
+
+@router.patch("/{doc_id}/metadata", response_model=DocumentUpdateResponse)
+async def update_user_document_metadata(
+    doc_id: str,
+    body: DocumentUpdateRequest = Body(...),
+    project_id: str = Query(...),
+    qdrant: QdrantRepository = Depends(Dependencies.get_qdrant),
+    redis: RedisClient = Depends(Dependencies.get_redis),
+    settings: Settings = Depends(Dependencies.get_settings),
+    territory: TerritoryResolver = Depends(Dependencies.get_territory),
+    user_id: str = Depends(get_current_user_id),
+):
+    """Update document-wide metadata inside the current user's project only."""
+    scoped_qdrant = ScopedQdrantRepository(
+        qdrant, user_id=user_id, project_id=project_id
+    )
+    editor = DocumentEditorService(
+        scoped_qdrant,
+        _scoped_registry(redis, settings, user_id, project_id),
+        settings,
+        territory=territory,
+    )
+    try:
+        return await run_in_threadpool(
+            editor.update_document, doc_id, body.model_dump(exclude_unset=True)
+        )
+    except TerritoryNotFound as exc:
+        raise HTTPException(404, f"территория не найдена в Urban API: {exc}")
+    except UrbanApiError as exc:
+        raise HTTPException(502, f"Urban API недоступен: {exc}")
+    except KeyError as exc:
+        raise HTTPException(404, str(exc.args[0]))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
 
 
 @router.get("/{name}/source")
