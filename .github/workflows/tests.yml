@@ -2,7 +2,7 @@ name: Tests
 
 on:
   pull_request:
-    branches: [develop]
+    branches: [dev]
 
 # Cancel stale runs when a new commit is pushed to the PR.
 concurrency:
