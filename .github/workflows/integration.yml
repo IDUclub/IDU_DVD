@@ -1,7 +1,7 @@
 name: Integration tests
 
 # Integration tests against disposable infrastructure — nightly, on demand, and
-# on PRs to develop via the Tests workflow (workflow_call, after unit tests and
+# on PRs to dev via the Tests workflow (workflow_call, after unit tests and
 # formatting pass):
 #   - kafka-integration: the broker outbox->Kafka->consumer round-trip
 #     (Kafka KRaft + Schema Registry via tests/integration/kafka-compose.yaml).
