@@ -16,7 +16,7 @@ from fastmcp.server.auth import AccessToken
 
 from src.common.auth import keycloak_token_verifier
 from src.common.config import Settings
-from src.common.db.redis_client import RedisClient, UserIndexRegistry
+from src.common.db.redis_client import DocumentRegistry, RedisClient, UserIndexRegistry
 from src.dependencies import Dependencies
 from src.dvd_service.routers import user_documents_router
 from src.dvd_service.services.user_index_service import UserIndexService
@@ -45,6 +45,25 @@ class FakeUrbanApi:
     def project_id_for_scenario(self, _scenario_id, user_id):
         assert user_id
         return "p1"
+
+
+class FakeTerritory:
+    def filter_ids(self, territory_ids):
+        return sorted({1, *(int(value) for value in territory_ids)})
+
+    def by_territory_id(self, territory_id):
+        territory_id = int(territory_id)
+        return {
+            "document_level": "municipal",
+            "territory_id": territory_id,
+            "territory_name": "Выборгский муниципальный район",
+            "territory_type_id": 2,
+            "territory_type_name": "Муниципальное образование",
+            "territory_path": [12639, 1, territory_id],
+            "territory_source": "manual",
+            "tagging_status": "ok",
+            "tagging_error": None,
+        }
 
 
 class FakeScopedQdrant:
@@ -157,6 +176,9 @@ def client(
     app = FastAPI()
     app.state.fake_jobs = fake_jobs
     app.state.ingest_queue = ingest_queue
+    app.state.qdrant = fake_qdrant
+    app.state.redis = redis_client
+    app.state.settings = upload_settings
     app.include_router(user_documents_router)
     app.dependency_overrides[Dependencies.get_settings] = lambda: upload_settings
     app.dependency_overrides[Dependencies.get_parser] = lambda: FakeParser()
@@ -174,6 +196,7 @@ def client(
     app.dependency_overrides[Dependencies.get_jobs] = lambda: fake_jobs
     app.dependency_overrides[Dependencies.get_ingest_queue] = lambda: ingest_queue
     app.dependency_overrides[Dependencies.get_urban_api] = lambda: FakeUrbanApi()
+    app.dependency_overrides[Dependencies.get_territory] = lambda: FakeTerritory()
     with TestClient(
         app,
         headers={"Authorization": "Bearer user"},
@@ -441,6 +464,90 @@ class TestListUserDocuments:
     def test_accepts_project_id_directly(self, client):
         c, _, _, _ = client
         resp = c.get("/user-documents", params={"user_id": "u1", "project_id": "p1"})
+        assert resp.status_code == 200
+        assert resp.json() == {"count": 0, "documents": []}
+
+
+class TestListAvailableUserDocuments:
+    @staticmethod
+    def _seed(c):
+        from qdrant_client.models import PointStruct
+
+        settings = c.app.state.settings
+        registry = DocumentRegistry(
+            c.app.state.redis,
+            prefix=f"{settings.registry_prefix}:user:u1:project:p1",
+        )
+        registry.register_document(
+            "d1",
+            {
+                "doc_id": "d1",
+                "name": "Закон Ленобласти",
+                "title": "Региональный закон",
+                "version": "2026",
+                "source_object_key": "d1.docx",
+            },
+        )
+        c.app.state.qdrant.upsert(
+            [
+                PointStruct(
+                    id="point-d1",
+                    vector=[0.0],
+                    payload={
+                        "doc_id": "d1",
+                        "name": "Закон Ленобласти",
+                        "version": "2026",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "document_level": "regional",
+                        "territory_id": 1,
+                        "territory_name": "Ленинградская область",
+                        "territory_path": [0, 1],
+                    },
+                )
+            ]
+        )
+
+    def test_requires_project_id(self, client):
+        c, _, _, _ = client
+        assert c.get("/user-documents/available").status_code == 422
+
+    def test_returns_documents_applicable_to_territory(self, client):
+        c, _, _, _ = client
+        self._seed(c)
+
+        resp = c.get(
+            "/user-documents/available",
+            params={"project_id": "p1", "territory_ids": [54]},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "count": 1,
+            "documents": [
+                {
+                    "doc_id": "d1",
+                    "name": "Закон Ленобласти",
+                    "title": "Региональный закон",
+                    "version": "2026",
+                    "source_file_url": (
+                        "/user-documents/%D0%97%D0%B0%D0%BA%D0%BE%D0%BD%20"
+                        "%D0%9B%D0%B5%D0%BD%D0%BE%D0%B1%D0%BB%D0%B0%D1%81%D1%82%D0%B8/source"
+                        "?user_id=u1&project_id=p1&version=2026"
+                    ),
+                    "document_level": "regional",
+                    "territory_id": 1,
+                    "territory_name": "Ленинградская область",
+                }
+            ],
+        }
+
+    def test_unknown_project_returns_empty_list(self, client):
+        c, _, _, _ = client
+        self._seed(c)
+
+        resp = c.get("/user-documents/available", params={"project_id": "unknown"})
+
         assert resp.status_code == 200
         assert resp.json() == {"count": 0, "documents": []}
 

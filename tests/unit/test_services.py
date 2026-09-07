@@ -1077,6 +1077,22 @@ class TestScopeFilters:
         listing = wired.documents.list_documents(tagging_status="pending")
         assert listing.count == 1
 
+    def test_available_documents_include_every_scope_in_force(
+        self, wired_with_territory, sample_raw
+    ):
+        wired = wired_with_territory()
+        self._ingest(wired, sample_raw, "СП федеральный", COUNTRY_TERRITORY_ID)
+        self._ingest(wired, sample_raw, "ПЗЗ Выборга", 54)
+        self._ingest(wired, sample_raw, "Закон Ленобласти", 1)
+
+        listing = wired.library.list_available_documents(territory_ids=[54])
+
+        assert {document.name for document in listing.documents} == {
+            "СП федеральный",
+            "Закон Ленобласти",
+            "ПЗЗ Выборга",
+        }
+
 
 class TestSearch:
     def test_search_returns_hits_after_ingest(self, wired, sample_raw):
@@ -1539,6 +1555,88 @@ class TestLibrary:
         assert summary.source_file_url is not None
         assert summary.source_file_url.startswith("/documents/")
         assert wired.library.get_document(res["doc_id"]).source_file_url is not None
+
+    def test_available_documents_return_compact_completed_records(
+        self, wired, sample_raw
+    ):
+        from urllib.parse import quote
+
+        from qdrant_client.models import PointStruct
+
+        completed = wired.ingestion.ingest(
+            "doc.docx",
+            sample_raw,
+            DocumentParser.content_hash(sample_raw),
+            title="Требования безопасности",
+            source_object_key="completed.docx",
+        )
+        wired.qdrant.upsert(
+            [
+                PointStruct(
+                    id="partial-point",
+                    vector=[0.0],
+                    payload={
+                        "doc_id": "partial",
+                        "name": "Частично загруженный",
+                        "version": "1",
+                    },
+                )
+            ]
+        )
+        wired.registry.register_document(
+            "stale",
+            {"doc_id": "stale", "name": "Устаревший", "version": "1"},
+        )
+
+        listing = wired.library.list_available_documents()
+
+        assert listing.count == 1
+        assert listing.documents[0].model_dump() == {
+            "doc_id": completed["doc_id"],
+            "name": completed["name"],
+            "title": "Требования безопасности",
+            "version": completed["version"],
+            "source_file_url": (
+                f"/documents/%D0%A2%D0%95%D0%A1%D0%A2%201/source"
+                f"?version={quote(completed['version'], safe='')}"
+            ),
+            "document_level": None,
+            "territory_id": None,
+            "territory_name": None,
+        }
+
+    def test_available_documents_list_each_registered_version(self, wired):
+        from qdrant_client.models import PointStruct
+
+        wired.qdrant.upsert(
+            [
+                PointStruct(
+                    id="shared-point",
+                    vector=[0.0],
+                    payload={
+                        "doc_id": "version-1",
+                        "name": "СП 1",
+                        "version": "1",
+                        "versions": ["1", "2"],
+                    },
+                )
+            ]
+        )
+        wired.registry.register_document(
+            "version-1", {"doc_id": "version-1", "name": "СП 1", "version": "1"}
+        )
+        wired.registry.register_document(
+            "version-2", {"doc_id": "version-2", "name": "СП 1", "version": "2"}
+        )
+
+        listing = wired.library.list_available_documents()
+
+        assert [
+            (document.name, document.version) for document in listing.documents
+        ] == [
+            ("СП 1", "1"),
+            ("СП 1", "2"),
+        ]
 
 
 class TestDocumentEditor:

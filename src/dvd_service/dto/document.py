@@ -39,6 +39,24 @@ class DocumentListResponse(BaseModel):
     documents: list[DocumentInfo]
 
 
+class AvailableDocumentInfo(BaseModel):
+    """Compact identity of a document whose ingestion completed successfully."""
+
+    doc_id: str | None = None
+    name: str
+    title: str | None = None
+    version: str
+    source_file_url: str | None = None
+    document_level: str | None = None
+    territory_id: int | None = None
+    territory_name: str | None = None
+
+
+class AvailableDocumentListResponse(BaseModel):
+    count: int
+    documents: list[AvailableDocumentInfo]
+
+
 class DocumentSummary(AdministrativeScope):
     doc_id: str
     name: str

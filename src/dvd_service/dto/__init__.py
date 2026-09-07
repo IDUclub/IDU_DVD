@@ -10,6 +10,8 @@ from src.dvd_service.dto.direct import (  # noqa: F401
     DirectJobResult,
 )
 from src.dvd_service.dto.document import (  # noqa: F401
+    AvailableDocumentInfo,
+    AvailableDocumentListResponse,
     DocumentDetail,
     DocumentFragment,
     DocumentInfo,
@@ -50,6 +52,8 @@ from src.dvd_service.dto.user_index import (  # noqa: F401
 __all__ = [
     "NodePayload",
     "AdministrativeScope",
+    "AvailableDocumentInfo",
+    "AvailableDocumentListResponse",
     "DirectDocumentIn",
     "DirectFragmentIn",
     "DirectJobResult",

@@ -25,6 +25,8 @@ from src.common.auth import (
 from src.common.config import Settings
 from src.dependencies import Dependencies
 from src.dvd_service.dto import (
+    AvailableDocumentInfo,
+    AvailableDocumentListResponse,
     DocumentListResponse,
     SearchHit,
     SearchResponse,
@@ -175,6 +177,29 @@ class FakeDocuments:
         return DocumentListResponse(count=0, documents=[])
 
 
+class FakeLibrary:
+    def __init__(self):
+        self.available_calls = []
+
+    def list_available_documents(self, *, territory_ids=None):
+        self.available_calls.append(territory_ids)
+        return AvailableDocumentListResponse(
+            count=1,
+            documents=[
+                AvailableDocumentInfo(
+                    doc_id=None,
+                    name="СП 1",
+                    title=None,
+                    version="2026",
+                    source_file_url=None,
+                    document_level="federal",
+                    territory_id=1,
+                    territory_name="Россия",
+                )
+            ],
+        )
+
+
 class FakeTags:
     def __init__(self):
         self.calls = []
@@ -195,6 +220,7 @@ def client(tmp_path, fake_qdrant, fake_document_storage, ingest_queue):
         "ingestion": FakeIngestion(fake_qdrant),
         "search": FakeSearch(),
         "documents": FakeDocuments(),
+        "library": FakeLibrary(),
         "tags": FakeTags(),
         "qdrant": fake_qdrant,
         "document_storage": fake_document_storage,
@@ -214,6 +240,7 @@ def client(tmp_path, fake_qdrant, fake_document_storage, ingest_queue):
     app.dependency_overrides[Dependencies.get_ingestion] = lambda: fakes["ingestion"]
     app.dependency_overrides[Dependencies.get_search] = lambda: fakes["search"]
     app.dependency_overrides[Dependencies.get_documents] = lambda: fakes["documents"]
+    app.dependency_overrides[Dependencies.get_library] = lambda: fakes["library"]
     app.dependency_overrides[Dependencies.get_tags] = lambda: fakes["tags"]
     app.dependency_overrides[Dependencies.get_qdrant] = lambda: fakes["qdrant"]
     app.dependency_overrides[Dependencies.get_document_storage] = lambda: fakes[
@@ -510,6 +537,30 @@ class TestListDocuments:
         )
         assert resp.status_code == 200
         assert fakes["documents"].scope_calls[-1] == ("municipal", [54, 1], "pending")
+
+
+class TestListAvailableDocuments:
+    def test_returns_compact_documents_and_forwards_territory_filter(self, client):
+        c, fakes = client
+        resp = c.get("/documents/available", params={"territory_ids": [54, 1]})
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "count": 1,
+            "documents": [
+                {
+                    "doc_id": None,
+                    "name": "СП 1",
+                    "title": None,
+                    "version": "2026",
+                    "source_file_url": None,
+                    "document_level": "federal",
+                    "territory_id": 1,
+                    "territory_name": "Россия",
+                }
+            ],
+        }
+        assert fakes["library"].available_calls == [[54, 1]]
 
 
 class TestJobStatus:

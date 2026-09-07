@@ -28,6 +28,7 @@ from src.common.db.redis_client import DocumentRegistry, JobStore
 from src.dependencies import Dependencies
 from src.dvd_service.dto import (
     ActiveJobsResponse,
+    AvailableDocumentListResponse,
     DeleteResponse,
     DocumentListResponse,
     JobStatusDTO,
@@ -49,7 +50,11 @@ from src.dvd_service.routers._upload_common import (
 from src.dvd_service.routers._upload_common import queued_job as _queued_job
 from src.dvd_service.routers._upload_common import receive_file as _receive_file
 from src.dvd_service.routers._upload_common import reject_duplicate as _reject_duplicate
-from src.dvd_service.services.dvd_service import DocumentsService, IngestionService
+from src.dvd_service.services.dvd_service import (
+    DocumentsService,
+    IngestionService,
+    LibraryService,
+)
 
 log = structlog.get_logger(__name__)
 router = APIRouter(tags=["documents"])
@@ -283,6 +288,24 @@ async def list_documents(
             territory_ids=territory_ids,
             tagging_status=tagging_status,
         )
+    )
+
+
+@router.get(
+    "/documents/available",
+    response_model=AvailableDocumentListResponse,
+    dependencies=AUTHENTICATED,
+)
+async def list_available_documents(
+    territory_ids: list[int] | None = Query(
+        None,
+        description="Urban API territory ids; includes every document in force there",
+    ),
+    library: LibraryService = Depends(Dependencies.get_library),
+):
+    """Fully indexed shared-corpus documents, optionally filtered by applicability."""
+    return await run_in_threadpool(
+        partial(library.list_available_documents, territory_ids=territory_ids)
     )
 
 

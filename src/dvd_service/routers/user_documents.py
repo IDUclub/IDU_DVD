@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from functools import partial
 from pathlib import Path
 
 import structlog
@@ -37,6 +38,7 @@ from src.common.db.redis_client import (
 )
 from src.dependencies import Dependencies
 from src.dvd_service.dto import (
+    AvailableDocumentListResponse,
     DeleteResponse,
     DocumentListResponse,
     JobStatusDTO,
@@ -48,6 +50,7 @@ from src.dvd_service.dto import (
 )
 from src.dvd_service.ingest_queue import IngestQueue
 from src.dvd_service.modules.doc_parsers import DocumentParser
+from src.dvd_service.modules.territory import TerritoryResolver
 from src.dvd_service.routers._upload_common import (
     document_meta,
     download_response,
@@ -58,7 +61,11 @@ from src.dvd_service.routers._upload_common import (
     receive_file,
     reject_duplicate,
 )
-from src.dvd_service.services.dvd_service import DocumentsService
+from src.dvd_service.services.dvd_service import (
+    DocumentEditorService,
+    DocumentsService,
+    LibraryService,
+)
 from src.dvd_service.services.user_index_service import (
     UserIndexService,
     build_user_ingestion_from_deps,
@@ -461,6 +468,32 @@ async def list_user_documents(
         uploaded_to,
         user_id=user_id,
         project_ids=[project_id],
+    )
+
+
+@router.get("/available", response_model=AvailableDocumentListResponse)
+async def list_available_user_documents(
+    project_id: str = Query(...),
+    territory_ids: list[int] | None = Query(
+        None,
+        description="Urban API territory ids; includes every document in force there",
+    ),
+    qdrant: QdrantRepository = Depends(Dependencies.get_qdrant),
+    redis: RedisClient = Depends(Dependencies.get_redis),
+    settings: Settings = Depends(Dependencies.get_settings),
+    territory: TerritoryResolver = Depends(Dependencies.get_territory),
+    user_id: str = Depends(get_current_user_id),
+):
+    """Fully indexed documents owned by the current user in one project."""
+    registry = _scoped_registry(redis, settings, user_id, project_id)
+    library = LibraryService(qdrant, registry, territory=territory)
+    return await run_in_threadpool(
+        partial(
+            library.list_available_documents,
+            territory_ids=territory_ids,
+            user_id=user_id,
+            project_ids=[project_id],
+        )
     )
 
 
