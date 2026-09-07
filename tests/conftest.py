@@ -169,9 +169,12 @@ class FakeQdrantRepo:
         vector, current = self.points[str(point_id)]
         self.points[str(point_id)] = (vector, {**current, **payload})
 
-    def set_document_payload(self, doc_id, payload):
+    def set_document_payload(self, doc_id, payload, extra_must=None):
         for point_id, (vector, current) in list(self.points.items()):
-            if current.get("doc_id") == doc_id:
+            if current.get("doc_id") == doc_id and (
+                not extra_must
+                or all(self._matches(current, condition) for condition in extra_must)
+            ):
                 self.points[point_id] = (vector, {**current, **payload})
 
     def set_other_versions(

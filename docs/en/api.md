@@ -52,6 +52,7 @@ from the request body:
 | `GET /documents` | list ingested documents, aggregated by (name, version), with filters |
 | `GET /documents/available` | compact list of fully indexed shared documents |
 | `GET /user-documents/available` | compact list of fully indexed documents in a user project |
+| `PATCH /user-documents/{doc_id}/metadata` | update document-wide metadata in a user project |
 | `GET /documents/{job_id}` | processing job status |
 | `GET /documents/jobs/active` | queued and currently processing jobs |
 | `GET /documents/jobs/recent` | recent jobs of every status (`?limit=20`, max 100) |
@@ -355,6 +356,32 @@ the shared endpoint. User and shared documents are never mixed by either endpoin
 
 ```
 curl "http://localhost:8000/user-documents/available?project_id=project-1&territory_ids=54"
+```
+
+## PATCH /user-documents/{doc_id}/metadata
+
+Updates document-wide metadata on every fragment of a document owned by the current authenticated
+user in the required `project_id`. The endpoint accepts the same editable fields as the admin
+document editor: `title`, `doc_type`, `corpus`, `lang`, `status`, `effective_date`, `external_ids`,
+`metadata`, `tags`, and `territory_id`. Omitted fields remain unchanged.
+
+```
+curl -X PATCH "http://localhost:8000/user-documents/9f63.../metadata?project_id=project-1" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Reviewed title","tags":["reviewed"],"territory_id":54}'
+```
+
+An explicit `"territory_id": null` clears the administrative scope and returns it to pending
+automatic detection. An unknown territory returns `404`, an unavailable Urban API returns `502`,
+and a document outside the current `(user_id, project_id)` scope is hidden as `404`. A missing
+`project_id` returns `422`.
+
+```json
+{
+  "doc_id": "9f63...",
+  "points_updated": 266,
+  "fields_updated": ["document_level", "tags", "territory_id", "territory_name", "title"]
+}
 ```
 
 ## GET /documents/{job_id}

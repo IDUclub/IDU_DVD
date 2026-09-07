@@ -32,6 +32,7 @@ from src.common.config import Settings
 from src.common.db.minio_client import DocumentStorage
 from src.common.db.qdrant_client import (
     QdrantRepository,
+    ScopedQdrantRepository,
     scope_conditions,
     shared_only_condition,
     user_scope_conditions,
@@ -143,7 +144,7 @@ class IngestionService:
         version_detector: VersionDetector,
         reference_extractor: ReferenceExtractor,
         reference_resolver: ReferenceResolver,
-        qdrant: QdrantRepository,
+        qdrant: QdrantRepository | ScopedQdrantRepository,
         registry: DocumentRegistry,
         storage: DocumentStorage,
         jobs: JobStore,
@@ -2008,7 +2009,7 @@ class DocumentEditorService:
 
     def __init__(
         self,
-        qdrant: QdrantRepository,
+        qdrant: QdrantRepository | ScopedQdrantRepository,
         registry: DocumentRegistry,
         settings: Settings,
         territory: TerritoryResolver | None = None,

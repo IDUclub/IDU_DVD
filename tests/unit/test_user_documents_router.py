@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from fastmcp.server.auth import AccessToken
 
+from src.api_clients import TerritoryNotFound, UrbanApiError
 from src.common.auth import keycloak_token_verifier
 from src.common.config import Settings
 from src.common.db.redis_client import DocumentRegistry, RedisClient, UserIndexRegistry
@@ -550,6 +551,241 @@ class TestListAvailableUserDocuments:
 
         assert resp.status_code == 200
         assert resp.json() == {"count": 0, "documents": []}
+
+
+class TestUpdateUserDocumentMetadata:
+    @staticmethod
+    def _seed(c):
+        from qdrant_client.models import PointStruct
+
+        settings = c.app.state.settings
+        registry = DocumentRegistry(
+            c.app.state.redis,
+            prefix=f"{settings.registry_prefix}:user:u1:project:p1",
+        )
+        registry.register_document(
+            "d1",
+            {
+                "doc_id": "d1",
+                "name": "СП 1",
+                "title": "Старый заголовок",
+                "version": "2026",
+            },
+        )
+        c.app.state.qdrant.upsert(
+            [
+                PointStruct(
+                    id="p1-a",
+                    vector=[0.0],
+                    payload={
+                        "doc_id": "d1",
+                        "name": "СП 1",
+                        "version": "2026",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "title": "Старый заголовок",
+                    },
+                ),
+                PointStruct(
+                    id="p1-b",
+                    vector=[0.0],
+                    payload={
+                        "doc_id": "d1",
+                        "name": "СП 1",
+                        "version": "2026",
+                        "user_id": "u1",
+                        "project_id": "p1",
+                        "title": "Старый заголовок",
+                    },
+                ),
+                PointStruct(
+                    id="p2-a",
+                    vector=[0.0],
+                    payload={
+                        "doc_id": "d1",
+                        "name": "СП 1",
+                        "version": "2026",
+                        "user_id": "u1",
+                        "project_id": "p2",
+                        "title": "Чужой проект",
+                    },
+                ),
+            ]
+        )
+        return registry
+
+    def test_updates_all_editable_fields_only_in_requested_project(self, client):
+        c, _, _, _ = client
+        registry = self._seed(c)
+
+        response = c.patch(
+            "/user-documents/d1/metadata",
+            params={"project_id": "p1"},
+            json={
+                "title": "Новый заголовок",
+                "doc_type": "regulation",
+                "corpus": "project",
+                "lang": "ru",
+                "status": "active",
+                "effective_date": "2026-09-01",
+                "external_ids": {"code": "MANUAL-1"},
+                "metadata": {"owner": "user"},
+                "tags": ["проверено"],
+                "territory_id": 54,
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["doc_id"] == "d1"
+        assert body["points_updated"] == 2
+        assert set(body["fields_updated"]) >= {
+            "title",
+            "doc_type",
+            "corpus",
+            "lang",
+            "status",
+            "effective_date",
+            "external_ids",
+            "metadata",
+            "tags",
+            "territory_id",
+            "territory_name",
+            "document_level",
+        }
+        points = c.app.state.qdrant.points
+        assert points["p1-a"][1]["title"] == "Новый заголовок"
+        assert points["p1-b"][1]["territory_id"] == 54
+        assert "MANUAL-1" in points["p1-a"][1]["lookup_keys"]
+        assert points["p2-a"][1]["title"] == "Чужой проект"
+        assert registry.get_document("d1")["metadata"] == {"owner": "user"}
+
+    def test_requires_project_id(self, client):
+        c, _, _, _ = client
+        assert (
+            c.patch(
+                "/user-documents/d1/metadata", json={"title": "Новый заголовок"}
+            ).status_code
+            == 422
+        )
+
+    def test_wrong_project_is_hidden_as_not_found(self, client):
+        c, _, _, _ = client
+        self._seed(c)
+
+        response = c.patch(
+            "/user-documents/d1/metadata",
+            params={"project_id": "p2-missing"},
+            json={"title": "Новый заголовок"},
+        )
+
+        assert response.status_code == 404
+
+    @pytest.mark.parametrize(
+        ("error", "expected_status"),
+        [
+            (TerritoryNotFound("54"), 404),
+            (UrbanApiError("connection refused"), 502),
+        ],
+    )
+    def test_maps_territory_errors(self, client, error, expected_status):
+        c, _, _, _ = client
+        self._seed(c)
+
+        class BrokenTerritory:
+            def by_territory_id(self, _territory_id):
+                raise error
+
+        c.app.dependency_overrides[Dependencies.get_territory] = BrokenTerritory
+        response = c.patch(
+            "/user-documents/d1/metadata",
+            params={"project_id": "p1"},
+            json={"territory_id": 54},
+        )
+
+        assert response.status_code == expected_status
+
+    def test_explicit_null_clears_territory(self, client):
+        c, _, _, _ = client
+        self._seed(c)
+
+        response = c.patch(
+            "/user-documents/d1/metadata",
+            params={"project_id": "p1"},
+            json={"territory_id": None},
+        )
+
+        assert response.status_code == 200
+        payload = c.app.state.qdrant.points["p1-a"][1]
+        assert payload["territory_id"] is None
+        assert payload["tagging_status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_update_user_document_metadata_handler_uses_project_scope(
+    settings, fake_redis, fake_qdrant, monkeypatch
+):
+    """Exercise the handler without Starlette's synchronous TestClient boundary."""
+    from qdrant_client.models import PointStruct
+
+    import src.dvd_service.routers.user_documents as router_mod
+    from src.dvd_service.dto import DocumentUpdateRequest
+
+    async def direct_call(function, *args):
+        return function(*args)
+
+    monkeypatch.setattr(router_mod, "run_in_threadpool", direct_call)
+
+    redis = RedisClient(settings)
+    registry = DocumentRegistry(
+        redis, prefix=f"{settings.registry_prefix}:user:u1:project:p1"
+    )
+    registry.register_document(
+        "d1", {"doc_id": "d1", "name": "СП 1", "version": "2026", "title": "old"}
+    )
+    fake_qdrant.upsert(
+        [
+            PointStruct(
+                id="handler-p1",
+                vector=[0.0],
+                payload={
+                    "doc_id": "d1",
+                    "name": "СП 1",
+                    "version": "2026",
+                    "user_id": "u1",
+                    "project_id": "p1",
+                    "title": "old",
+                },
+            ),
+            PointStruct(
+                id="handler-p2",
+                vector=[0.0],
+                payload={
+                    "doc_id": "d1",
+                    "name": "СП 1",
+                    "version": "2026",
+                    "user_id": "u1",
+                    "project_id": "p2",
+                    "title": "other",
+                },
+            ),
+        ]
+    )
+
+    response = await router_mod.update_user_document_metadata(
+        doc_id="d1",
+        body=DocumentUpdateRequest(title="new"),
+        project_id="p1",
+        qdrant=fake_qdrant,
+        redis=redis,
+        settings=settings,
+        territory=FakeTerritory(),
+        user_id="u1",
+    )
+
+    assert response.points_updated == 1
+    assert fake_qdrant.points["handler-p1"][1]["title"] == "new"
+    assert fake_qdrant.points["handler-p2"][1]["title"] == "other"
 
 
 class TestDownloadUserSource:

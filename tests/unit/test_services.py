@@ -15,6 +15,7 @@ import pytest
 import src.dvd_service.services.dvd_service as svc
 from src.api_clients import COUNTRY_TERRITORY_ID
 from src.broker.outbox import EventOutbox
+from src.common.db.qdrant_client import ScopedQdrantRepository
 from src.common.db.redis_client import DocumentRegistry, JobStore, RedisClient
 from src.dvd_service.dto import SearchRequest
 from src.dvd_service.modules.doc_parsers import DocumentParser
@@ -1661,6 +1662,35 @@ class TestDocumentEditor:
         assert wired.registry.get_document(result["doc_id"])["metadata"] == {
             "owner": "admin"
         }
+
+    def test_user_scoped_editor_does_not_touch_same_doc_id_in_another_project(
+        self, wired
+    ):
+        common = {"doc_id": "same-id", "name": "СП 1", "version": "2026"}
+        wired.qdrant.points["project-1"] = (
+            [0.1],
+            {**common, "user_id": "u1", "project_id": "p1", "title": "old"},
+        )
+        wired.qdrant.points["project-2"] = (
+            [0.2],
+            {**common, "user_id": "u1", "project_id": "p2", "title": "other"},
+        )
+        registry = DocumentRegistry(
+            SimpleNS(r=wired.registry.r), prefix="test:user:u1:project:p1"
+        )
+        registry.register_document("same-id", {**common, "title": "old"})
+        editor = DocumentEditorService(
+            ScopedQdrantRepository(wired.qdrant, user_id="u1", project_id="p1"),
+            registry,
+            wired.editor.settings,
+        )
+
+        response = editor.update_document("same-id", {"title": "new"})
+
+        assert response.points_updated == 1
+        assert wired.qdrant.points["project-1"][1]["title"] == "new"
+        assert wired.qdrant.points["project-2"][1]["title"] == "other"
+        assert registry.get_document("same-id")["title"] == "new"
 
     def test_text_edit_reembeds_fragment(self, wired, sample_raw):
         result = wired.ingestion.ingest(

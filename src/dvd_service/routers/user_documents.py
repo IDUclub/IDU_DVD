@@ -15,6 +15,7 @@ from pathlib import Path
 import structlog
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     File,
     Form,
@@ -25,11 +26,20 @@ from fastapi import (
 from fastapi.concurrency import run_in_threadpool
 from minio.error import S3Error
 
-from src.api_clients import ScenarioNotFound, UrbanApiClient, UrbanApiError
+from src.api_clients import (
+    ScenarioNotFound,
+    TerritoryNotFound,
+    UrbanApiClient,
+    UrbanApiError,
+)
 from src.common.auth import get_current_user_id
 from src.common.config import Settings
 from src.common.db.minio_client import DocumentStorage
-from src.common.db.qdrant_client import QdrantRepository, user_scope_conditions
+from src.common.db.qdrant_client import (
+    QdrantRepository,
+    ScopedQdrantRepository,
+    user_scope_conditions,
+)
 from src.common.db.redis_client import (
     DocumentRegistry,
     JobStore,
@@ -41,6 +51,8 @@ from src.dvd_service.dto import (
     AvailableDocumentListResponse,
     DeleteResponse,
     DocumentListResponse,
+    DocumentUpdateRequest,
+    DocumentUpdateResponse,
     JobStatusDTO,
     UploadResponse,
     UserIndexCreateRequest,
@@ -495,6 +507,41 @@ async def list_available_user_documents(
             project_ids=[project_id],
         )
     )
+
+
+@router.patch("/{doc_id}/metadata", response_model=DocumentUpdateResponse)
+async def update_user_document_metadata(
+    doc_id: str,
+    body: DocumentUpdateRequest = Body(...),
+    project_id: str = Query(...),
+    qdrant: QdrantRepository = Depends(Dependencies.get_qdrant),
+    redis: RedisClient = Depends(Dependencies.get_redis),
+    settings: Settings = Depends(Dependencies.get_settings),
+    territory: TerritoryResolver = Depends(Dependencies.get_territory),
+    user_id: str = Depends(get_current_user_id),
+):
+    """Update document-wide metadata inside the current user's project only."""
+    scoped_qdrant = ScopedQdrantRepository(
+        qdrant, user_id=user_id, project_id=project_id
+    )
+    editor = DocumentEditorService(
+        scoped_qdrant,
+        _scoped_registry(redis, settings, user_id, project_id),
+        settings,
+        territory=territory,
+    )
+    try:
+        return await run_in_threadpool(
+            editor.update_document, doc_id, body.model_dump(exclude_unset=True)
+        )
+    except TerritoryNotFound as exc:
+        raise HTTPException(404, f"территория не найдена в Urban API: {exc}")
+    except UrbanApiError as exc:
+        raise HTTPException(502, f"Urban API недоступен: {exc}")
+    except KeyError as exc:
+        raise HTTPException(404, str(exc.args[0]))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
 
 
 @router.get("/{name}/source")

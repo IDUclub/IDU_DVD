@@ -53,6 +53,7 @@ auth helper (`DVD_AUTH_HELPER_URL` + `DVD_AUTH_HELPER_API_KEY` — тот же �
 | `GET /documents` | список загруженных документов, агрегированных по (name, version), с фильтрами |
 | `GET /documents/available` | компактный список полностью проиндексированных общих документов |
 | `GET /user-documents/available` | компактный список полностью проиндексированных документов проекта пользователя |
+| `PATCH /user-documents/{doc_id}/metadata` | изменение общей метадаты пользовательского документа |
 | `GET /documents/{job_id}` | статус задачи обработки |
 | `GET /documents/jobs/active` | задачи в очереди и в обработке |
 | `GET /documents/jobs/recent` | последние задачи во всех статусах (`?limit=20`, максимум 100) |
@@ -364,6 +365,32 @@ payload в Qdrant. Версии возвращаются отдельными э
 
 ```
 curl "http://localhost:8000/user-documents/available?project_id=project-1&territory_ids=54"
+```
+
+## PATCH /user-documents/{doc_id}/metadata
+
+Изменяет общую метадату во всех фрагментах документа текущего аутентифицированного пользователя в
+обязательном `project_id`. Доступны те же поля, что и в административном редакторе документа:
+`title`, `doc_type`, `corpus`, `lang`, `status`, `effective_date`, `external_ids`, `metadata`, `tags`
+и `territory_id`. Пропущенные поля не изменяются.
+
+```
+curl -X PATCH "http://localhost:8000/user-documents/9f63.../metadata?project_id=project-1" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Проверенный заголовок","tags":["проверено"],"territory_id":54}'
+```
+
+Явное `"territory_id": null` очищает административную привязку и возвращает её в состояние
+ожидания автоматического определения. Неизвестная территория возвращает `404`, недоступный Urban
+API — `502`, а документ вне текущей пары `(user_id, project_id)` скрывается как `404`. Отсутствующий
+`project_id` возвращает `422`.
+
+```json
+{
+  "doc_id": "9f63...",
+  "points_updated": 266,
+  "fields_updated": ["document_level", "tags", "territory_id", "territory_name", "title"]
+}
 ```
 
 ## GET /documents/{job_id}
