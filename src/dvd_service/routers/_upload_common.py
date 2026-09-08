@@ -230,7 +230,8 @@ def pick_source_point(points: list[dict], version: str | None) -> dict:
     """Select the point to serve a document's original file from.
 
     With an explicit ``version``, only points carrying it (in ``version`` or the multi-valued
-    ``versions``) qualify. Without one, prefers each candidate's own ``version`` field so a
+    ``versions``) qualify; prefer the edition's own origin point over shared fragments.
+    Without one, prefers each candidate's own ``version`` field so a
     fragment merely *shared* with a later version doesn't shadow that version's own origin point;
     ties broken by the lexicographically latest version string (mirrors ``find_node``).
     """
@@ -246,7 +247,13 @@ def pick_source_point(points: list[dict], version: str | None) -> dict:
             raise HTTPException(404, f"версия не найдена: {version}")
     else:
         candidates = points
-    return max(candidates, key=lambda p: p.get("version", ""))
+    return max(
+        candidates,
+        key=lambda p: (
+            version is not None and p.get("version") == version,
+            p.get("version", ""),
+        ),
+    )
 
 
 def download_response(data: bytes, content_type: str | None, filename: str) -> Response:

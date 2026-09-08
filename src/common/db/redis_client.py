@@ -138,6 +138,46 @@ class DocumentRegistry:
         self.r.srem(f"{self.prefix}:versions:{name}", version)
         self.r.delete(f"{self.prefix}:blocks:{name}:{version}")
 
+    def rename_version(self, name: str, old: str, new: str) -> None:
+        """Rename an edition in this registry, retaining dedup and delta fingerprints.
+
+        The editor validates the edition against Qdrant first (legacy documents may lack
+        registry entries). All Redis writes are committed together.
+        """
+        if old == new:
+            return
+        if self.version_exists(name, new):
+            raise ValueError(f"version already exists: {new}")
+        pipe = self.r.pipeline()
+        pipe.srem(f"{self.prefix}:versions:{name}", old)
+        pipe.sadd(f"{self.prefix}:versions:{name}", new)
+        pipe.sadd(f"{self.prefix}:names", name)
+        old_blocks = f"{self.prefix}:blocks:{name}:{old}"
+        blocks = self.r.get(old_blocks)
+        if blocks is not None:
+            pipe.set(f"{self.prefix}:blocks:{name}:{new}", blocks)
+            pipe.delete(old_blocks)
+        for key in self.r.scan_iter(match=f"{self.prefix}:hash:*"):
+            raw = self.r.get(key)
+            info = json.loads(raw) if raw else {}
+            if info.get("name") == name and info.get("version") == old:
+                info["version"] = new
+                pipe.set(key, json.dumps(info, ensure_ascii=False))
+        for record in self.all_documents():
+            if record.get("name") != name:
+                continue
+            if record.get("version") == old:
+                record["version"] = new
+            record["other_versions"] = sorted(
+                {new if v == old else v for v in record.get("other_versions", []) or []}
+                - {record.get("version")}
+            )
+            pipe.set(
+                f"{self.prefix}:doc:{record['doc_id']}",
+                json.dumps(record, ensure_ascii=False),
+            )
+        pipe.execute()
+
     def unregister_name(self, name: str) -> None:
         """Forget a document entirely: its version set, block fingerprints and name entry."""
         self.r.delete(f"{self.prefix}:versions:{name}")

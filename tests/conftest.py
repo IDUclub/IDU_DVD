@@ -169,6 +169,10 @@ class FakeQdrantRepo:
         vector, current = self.points[str(point_id)]
         self.points[str(point_id)] = (vector, {**current, **payload})
 
+    def set_points_payload(self, point_ids, payload):
+        for point_id in point_ids:
+            self.set_point_payload(point_id, payload)
+
     def set_document_payload(self, doc_id, payload, extra_must=None):
         for point_id, (vector, current) in list(self.points.items()):
             if current.get("doc_id") == doc_id and (

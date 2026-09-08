@@ -554,6 +554,173 @@ class TestListAvailableUserDocuments:
 
 
 class TestUpdateUserDocumentMetadata:
+    def test_download_after_rename_prefers_the_editions_own_source(self, client):
+        c, _, _, storage = client
+        self._seed(c)
+        points = c.app.state.qdrant.points
+        points["p1-a"][1].update(
+            version="2025", versions=["2025", "2026"], source_object_key="old.docx"
+        )
+        points["p1-b"][1].update(versions=["2026"], source_object_key="new.docx")
+        storage.upload("old.docx", b"old source", "application/octet-stream")
+        storage.upload("new.docx", b"new source", "application/octet-stream")
+        # Arbitrary labels may reverse lexical order; shared points must not win.
+        response = c.patch(
+            "/user-documents/d1/metadata",
+            params={"project_id": "p1"},
+            json={"current_version": "2026", "version": "2024"},
+        )
+        assert response.status_code == 200, response.text
+        source = c.get(
+            "/user-documents/СП 1/source",
+            params={"project_id": "p1", "version": "2024"},
+        )
+        assert source.status_code == 200
+        assert source.content == b"new source"
+        assert (
+            c.get(
+                "/user-documents/СП 1/source",
+                params={"project_id": "p1", "version": "2026"},
+            ).status_code
+            == 404
+        )
+
+    def test_rename_and_territory_update_preserve_content_and_project_isolation(
+        self, client
+    ):
+        from copy import deepcopy
+
+        c, _, _, _ = client
+        registry = self._seed(c)
+        registry.register("hash-original", "СП 1", "2026", "d1")
+        registry.register_blocks("СП 1", "2026", ["block-1"])
+        points = c.app.state.qdrant.points
+        for pid in ("p1-a", "p1-b"):
+            points[pid][1].update(
+                versions=["2026"],
+                content_hash="hash-original",
+                version_id="stable-version-id",
+                source_object_key="original.docx",
+                text="Содержимое документа",
+            )
+        # Same doc id/name in another user's project and in the shared corpus.
+        points["other-user"] = ([0.2], {**points["p1-a"][1], "user_id": "u2"})
+        shared = dict(points["p1-a"][1])
+        shared.pop("user_id")
+        shared.pop("project_id")
+        points["shared"] = ([0.3], shared)
+        before = deepcopy(points)
+
+        response = c.patch(
+            "/user-documents/d1/metadata",
+            params={"project_id": "p1"},
+            json={"version": "2026.2", "territory_id": 54},
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["points_updated"] == 2
+        assert {"version", "versions", "territory_id"} <= set(
+            response.json()["fields_updated"]
+        )
+        for pid in ("p1-a", "p1-b"):
+            vector, payload = points[pid]
+            assert payload["version"] == "2026.2"
+            assert payload["versions"] == ["2026.2"]
+            assert payload["territory_id"] == 54
+            assert payload["territory_source"] == "manual"
+            assert vector == before[pid][0]
+            for key in ("text", "content_hash", "version_id", "source_object_key"):
+                assert payload[key] == before[pid][1][key]
+        for pid in ("p2-a", "other-user", "shared"):
+            assert points[pid] == before[pid]
+        assert registry.versions("СП 1") == ["2026.2"]
+        assert registry.hash_info("hash-original")["version"] == "2026.2"
+        assert registry.get_blocks("СП 1", "2026.2") == ["block-1"]
+        assert registry.get_blocks("СП 1", "2026") is None
+        assert registry.get_document("d1")["version"] == "2026.2"
+        listing = c.get(
+            "/user-documents", params={"project_id": "p1", "version": "2026.2"}
+        )
+        assert listing.status_code == 200
+        assert listing.json()["count"] == 1
+        assert (
+            c.get(
+                "/user-documents", params={"project_id": "p1", "version": "2026"}
+            ).json()["count"]
+            == 0
+        )
+
+    def test_renames_only_selected_edition_with_shared_fragments(self, client):
+        c, _, _, _ = client
+        registry = self._seed(c)
+        points = c.app.state.qdrant.points
+        points["p1-a"][1].update(
+            versions=["2025", "2026"], version="2025", other_versions=["2026"]
+        )
+        points["p1-b"][1].update(versions=["2026"], other_versions=["2025"])
+        for version in ("2025", "2026"):
+            registry.register("hash-" + version, "СП 1", version, "d1")
+        response = c.patch(
+            "/user-documents/d1/metadata",
+            params={"project_id": "p1"},
+            json={"current_version": "2026", "version": "2026.2"},
+        )
+        assert response.status_code == 200, response.text
+        assert points["p1-a"][1]["version"] == "2025"
+        assert points["p1-a"][1]["versions"] == ["2025", "2026.2"]
+        assert points["p1-a"][1]["other_versions"] == ["2026.2"]
+        assert points["p1-b"][1]["versions"] == ["2026.2"]
+        assert points["p1-b"][1]["other_versions"] == ["2025"]
+        assert registry.hash_info("hash-2025")["version"] == "2025"
+        assert registry.versions("СП 1") == ["2025", "2026.2"]
+
+    @pytest.mark.parametrize(
+        "body,status",
+        [
+            ({"version": None}, 422),
+            ({"version": "  "}, 422),
+            ({"current_version": "2026"}, 422),
+            ({"current_version": None, "version": "new"}, 422),
+            ({"current_version": "missing", "version": "new"}, 404),
+            ({"version": "2025"}, 422),
+            ({"current_version": "2026", "version": "2025"}, 422),
+        ],
+    )
+    def test_invalid_rename_does_not_change_territory_or_registry(
+        self, client, body, status
+    ):
+        from copy import deepcopy
+
+        c, _, _, _ = client
+        registry = self._seed(c)
+        points = c.app.state.qdrant.points
+        points["p1-a"][1]["versions"] = ["2025", "2026"]
+        registry.register("hash", "СП 1", "2026", "d1")
+        before = deepcopy(points)
+        record = registry.get_document("d1")
+        response = c.patch(
+            "/user-documents/d1/metadata",
+            params={"project_id": "p1"},
+            json={**body, "territory_id": 54},
+        )
+        assert response.status_code == status, response.text
+        assert points == before
+        assert registry.get_document("d1") == record
+        assert registry.versions("СП 1") == ["2026"]
+
+    def test_same_version_can_be_reapplied_to_legacy_document(self, client):
+        c, _, _, _ = client
+        registry = self._seed(c)
+        for _ in range(2):
+            response = c.patch(
+                "/user-documents/d1/metadata",
+                params={"project_id": "p1"},
+                json={"version": "2026"},
+            )
+            assert response.status_code == 200, response.text
+        assert registry.get_document("d1")["version"] == "2026"
+        assert c.app.state.qdrant.points["p1-a"][1]["versions"] == ["2026"]
+
     @staticmethod
     def _seed(c):
         from qdrant_client.models import PointStruct

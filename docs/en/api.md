@@ -363,13 +363,42 @@ curl "http://localhost:8000/user-documents/available?project_id=project-1&territ
 Updates document-wide metadata on every fragment of a document owned by the current authenticated
 user in the required `project_id`. The endpoint accepts the same editable fields as the admin
 document editor: `title`, `doc_type`, `corpus`, `lang`, `status`, `effective_date`, `external_ids`,
-`metadata`, `tags`, and `territory_id`. Omitted fields remain unchanged.
+`metadata`, `tags`, `territory_id` and `version`. Omitted fields remain unchanged. Obtain `doc_id`
+from `GET /user-documents/available?project_id=project-1`.
+
+Update the territory and version label together using JSON, without a file or reindexing:
 
 ```
 curl -X PATCH "http://localhost:8000/user-documents/9f63.../metadata?project_id=project-1" \
+  -H "Authorization: Bearer USER_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"title":"Reviewed title","tags":["reviewed"],"territory_id":54}'
+  -d '{"territory_id":54,"version":"2026.2"}'
 ```
+
+Service tokens additionally require `X-User-Id` identifying the document owner. `territory_id`
+is one Urban API territory ID; its level, name and ancestor path are derived automatically.
+The manual territory applies to every fragment of this `doc_id`.
+
+`version` **renames an existing edition**, preserving content, source file, `doc_id`, `version_id`
+and embeddings. A single edition is selected automatically. If the `doc_id` has multiple editions,
+specify the old label using `current_version`:
+
+```json
+{"territory_id":54,"current_version":"2026","version":"2026.2"}
+```
+
+Other editions are preserved. The update rewrites `version`/`versions`, sibling `other_versions`
+for the same name in this project, the version registry, dedup records and block fingerprints.
+`points_updated` also counts sibling fragments whose `other_versions` changed. Searches and source
+downloads use the new version label after the rename. Null/blank labels, an existing destination
+version, an ambiguous edition without `current_version`, or `current_version` without `version`
+return `422`; an unknown source edition returns `404`. Version validation and territory resolution
+finish before changes are written.
+
+For **new content**, use `PATCH /user-documents/{name}?project_id=...` with multipart `file` and
+`version` fields: it adds an edition while preserving earlier ones. `PUT` at the same URL fully
+replaces the document and deletes all earlier editions. Both return `202` with `job_id`; poll
+`GET /user-documents/jobs/{job_id}`. An exact content duplicate submitted via `PATCH` returns `400`.
 
 An explicit `"territory_id": null` clears the administrative scope and returns it to pending
 automatic detection. An unknown territory returns `404`, an unavailable Urban API returns `502`,
@@ -380,7 +409,7 @@ and a document outside the current `(user_id, project_id)` scope is hidden as `4
 {
   "doc_id": "9f63...",
   "points_updated": 266,
-  "fields_updated": ["document_level", "tags", "territory_id", "territory_name", "title"]
+  "fields_updated": ["document_level", "tagging_error", "tagging_status", "territory_id", "territory_name", "territory_path", "territory_source", "territory_type_id", "territory_type_name", "version", "versions"]
 }
 ```
 
@@ -623,6 +652,10 @@ curl "http://localhost:8000/documents?document_level=municipal&territory_ids=54"
 ```
 
 ## Library (document read API)
+
+Admin `PATCH /library/documents/{doc_id}` accepts the same metadata fields, including
+`territory_id`, `version` and `current_version`, with the same edition-renaming rules as
+`PATCH /user-documents/{doc_id}/metadata` above.
 
 A consumer-facing read API (e.g. for the MSI-TSIM service) that complements semantic search with
 direct, per-document access: enumerate documents and fetch one by `doc_id` as assembled text +
