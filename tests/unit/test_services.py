@@ -1641,6 +1641,61 @@ class TestLibrary:
 
 
 class TestDocumentEditor:
+    def test_renamed_edition_can_be_updated_and_deleted(self, wired, sample_raw):
+        result = wired.ingestion.ingest(
+            "doc.docx",
+            sample_raw,
+            DocumentParser.content_hash(sample_raw),
+            name_override="СП 1",
+            version_override="2025",
+        )
+        original_blocks = wired.registry.get_blocks("СП 1", "2025")
+        wired.editor.update_document(result["doc_id"], {"version": "2026"})
+        assert wired.registry.get_blocks("СП 1", "2026") == original_blocks
+        updated = wired.ingestion.update(
+            "СП 1",
+            "doc.docx",
+            sample_raw,
+            "different-hash",
+            version_override="2027",
+        )
+        assert updated["reused_nodes"] > 0
+        assert wired.registry.versions("СП 1") == ["2026", "2027"]
+        deleted = wired.ingestion.delete_document("СП 1", "2026")
+        assert deleted["versions_removed"] == ["2026"]
+        assert wired.registry.versions("СП 1") == ["2027"]
+        assert wired.registry.hash_info(DocumentParser.content_hash(sample_raw)) is None
+        assert wired.qdrant.points_by_name("СП 1")
+
+    def test_rename_updates_sibling_edition_hints_but_preserves_private_documents(
+        self, wired
+    ):
+        from copy import deepcopy
+
+        for version in ("2025", "2026"):
+            payload = {
+                "doc_id": "doc-" + version,
+                "name": "СП 1",
+                "version": version,
+                "versions": [version],
+                "other_versions": ["2026" if version == "2025" else "2025"],
+            }
+            wired.qdrant.points[version] = ([0.1], payload)
+            wired.registry.register(
+                "hash-" + version, "СП 1", version, payload["doc_id"]
+            )
+            wired.registry.register_document(payload["doc_id"], dict(payload))
+        wired.qdrant.points["private"] = (
+            [0.2],
+            {**wired.qdrant.points["2025"][1], "user_id": "u1", "project_id": "p1"},
+        )
+        private = deepcopy(wired.qdrant.points["private"])
+        wired.editor.update_document("doc-2025", {"version": "2024"})
+        assert wired.qdrant.points["2026"][1]["version"] == "2026"
+        assert wired.qdrant.points["2026"][1]["other_versions"] == ["2024"]
+        assert wired.registry.get_document("doc-2026")["other_versions"] == ["2024"]
+        assert wired.qdrant.points["private"] == private
+
     def test_updates_document_metadata_and_all_fragment_tags(self, wired, sample_raw):
         result = wired.ingestion.ingest(
             "doc.docx", sample_raw, DocumentParser.content_hash(sample_raw)

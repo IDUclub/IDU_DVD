@@ -253,6 +253,13 @@ class QdrantRepository:
     def set_point_payload(self, point_id: str, payload: dict) -> None:
         self.client.set_payload(self.collection, payload=payload, points=[point_id])
 
+    def set_points_payload(self, point_ids: Sequence[str], payload: dict) -> None:
+        """Update payload only, preserving vectors, for previously selected point ids."""
+        if point_ids:
+            self.client.set_payload(
+                self.collection, payload=payload, points=list(point_ids), wait=True
+            )
+
     def set_document_payload(
         self,
         doc_id: str,
@@ -557,6 +564,9 @@ class ScopedQdrantRepository:
         )
 
     # --- point-id-targeted operations: already scoped by construction, pass straight through ---
+    def set_points_payload(self, point_ids: Sequence[str], payload: dict) -> None:
+        self._inner.set_points_payload(point_ids, payload)
+
     def set_versions(self, point_ids: Sequence[str], versions: list[str]) -> None:
         self._inner.set_versions(point_ids, versions)
 

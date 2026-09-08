@@ -20,6 +20,7 @@ class TestDefaults:
         assert ".docx" in s.allowed_extensions  # OCR-free formats; PDF deferred
         assert ".pdf" not in s.allowed_extensions
         assert s.redis_job_ttl == 86400
+        assert Settings.model_fields["llm_concurrency"].default == 64
 
     def test_embedding_model_name_follows_provider(self):
         assert Settings().embedding_model_name == "ai-sage/Giga-Embeddings-instruct"

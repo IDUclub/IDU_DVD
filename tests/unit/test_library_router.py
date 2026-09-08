@@ -62,6 +62,15 @@ def test_document_metadata_patch_forwards_only_supplied_fields():
         ]
 
 
+def test_document_metadata_patch_accepts_version_and_territory():
+    client, editor = _client()
+    body = {"current_version": "2025", "version": "2026", "territory_id": 54}
+    with client:
+        response = client.patch("/library/documents/doc-1", json=body)
+    assert response.status_code == 200
+    assert editor.document_calls == [("doc-1", body)]
+
+
 def test_fragment_patch_returns_edited_fragment():
     client, editor = _client()
     with client:
