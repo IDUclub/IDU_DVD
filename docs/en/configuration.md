@@ -258,7 +258,7 @@ the ingestion path apart; deletion of a directly-ingested document still emits t
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DVD_LLM_CONCURRENCY` | `8` | independent LLM windows processed concurrently inside one document; results are reconciled in source order |
+| `DVD_LLM_CONCURRENCY` | `64` | independent LLM windows processed concurrently inside one document; results are reconciled in source order |
 | `DVD_INGEST_CONCURRENCY` | `1` | number of ingestion workers, and therefore how many documents may run the GPU-bound pipeline (LLM markup/tags/refs + embeddings) at once; extra documents wait in the queue in status `queued`. Keep `1` for a single GPU; raise only with more GPU capacity |
 | `DVD_INGEST_QUEUE_KEY` | `dvd:ingest:pending` | Redis list of jobs waiting for a worker |
 | `DVD_INGEST_INFLIGHT_KEY` | `dvd:ingest:inflight` | Redis list of jobs claimed by a worker; a non-empty list at startup means the previous process died mid-document, and its jobs are requeued |
