@@ -1,3 +1,9 @@
+## v0.16.0 (2026-09-08)
+
+### Feat
+
+- allow document territory and version metadata updates (#71)
+
 ## v0.15.3 (2026-09-07)
 
 ### Fix
