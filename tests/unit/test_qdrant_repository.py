@@ -29,6 +29,21 @@ def repo_and_client(settings):
         yield repo, client
 
 
+def test_bulk_metadata_update_preserves_vectors_and_waits_for_completion(
+    repo_and_client,
+):
+    repo, client = repo_and_client
+    scoped = ScopedQdrantRepository(repo, user_id="u1", project_id="p1")
+    scoped.set_points_payload(["selected-a", "selected-b"], {"versions": ["2026"]})
+    client.set_payload.assert_called_once_with(
+        repo.collection,
+        payload={"versions": ["2026"]},
+        points=["selected-a", "selected-b"],
+        wait=True,
+    )
+    client.upsert.assert_not_called()
+
+
 class TestEnsureCollection:
     def test_creates_collection_and_indexes_when_absent(self, repo_and_client):
         repo, client = repo_and_client

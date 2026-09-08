@@ -371,14 +371,43 @@ curl "http://localhost:8000/user-documents/available?project_id=project-1&territ
 
 Изменяет общую метадату во всех фрагментах документа текущего аутентифицированного пользователя в
 обязательном `project_id`. Доступны те же поля, что и в административном редакторе документа:
-`title`, `doc_type`, `corpus`, `lang`, `status`, `effective_date`, `external_ids`, `metadata`, `tags`
-и `territory_id`. Пропущенные поля не изменяются.
+`title`, `doc_type`, `corpus`, `lang`, `status`, `effective_date`, `external_ids`, `metadata`, `tags`,
+`territory_id` и `version`. Пропущенные поля не изменяются. `doc_id` можно получить через
+`GET /user-documents/available?project_id=project-1`.
+
+Территорию и обозначение версии можно изменить одним JSON-запросом, без файла и переиндексации:
 
 ```
 curl -X PATCH "http://localhost:8000/user-documents/9f63.../metadata?project_id=project-1" \
+  -H "Authorization: Bearer USER_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"title":"Проверенный заголовок","tags":["проверено"],"territory_id":54}'
+  -d '{"territory_id":54,"version":"2026.2"}'
 ```
+
+Для сервисного токена дополнительно нужен заголовок `X-User-Id` с ID владельца документа.
+`territory_id` — один ID территории Urban API; уровень, название и цепочка предков вычисляются
+автоматически. Ручная привязка действует на все фрагменты данного `doc_id`.
+
+`version` **переименовывает существующую редакцию**, сохраняя её содержимое, исходник, `doc_id`,
+`version_id` и эмбеддинги. Если у `doc_id` одна версия, она выбирается автоматически. Если несколько,
+обязательно укажите прежнее обозначение в `current_version`:
+
+```json
+{"territory_id":54,"current_version":"2026","version":"2026.2"}
+```
+
+Остальные версии сохраняются. Обновляются метки `version`/`versions`, ссылки `other_versions`
+у редакций того же имени в текущем проекте, реестр версий, записи дедупликации и отпечатки блоков.
+`points_updated` учитывает также фрагменты соседних редакций, в которых изменился `other_versions`.
+Поиск и скачивание исходника после переименования используют новое обозначение версии.
+`null`, пустая строка версии, совпадение с другой существующей версией, отсутствие `current_version`
+при нескольких редакциях или `current_version` без `version` возвращают `422`; неизвестная исходная
+версия — `404`. Проверки версии и разрешение территории выполняются до записи изменений.
+
+Для **нового содержимого** используйте `PATCH /user-documents/{name}?project_id=...` с multipart-полями
+`file` и `version`: он добавляет редакцию, сохраняя прежние. `PUT` по тому же адресу полностью заменяет
+документ и удаляет все прежние версии. Оба метода возвращают `202` с `job_id`; статус —
+`GET /user-documents/jobs/{job_id}`. Полный дубликат содержимого через `PATCH` отклоняется с `400`.
 
 Явное `"territory_id": null` очищает административную привязку и возвращает её в состояние
 ожидания автоматического определения. Неизвестная территория возвращает `404`, недоступный Urban
@@ -389,7 +418,7 @@ API — `502`, а документ вне текущей пары `(user_id, pro
 {
   "doc_id": "9f63...",
   "points_updated": 266,
-  "fields_updated": ["document_level", "tags", "territory_id", "territory_name", "title"]
+  "fields_updated": ["document_level", "tagging_error", "tagging_status", "territory_id", "territory_name", "territory_path", "territory_source", "territory_type_id", "territory_type_name", "version", "versions"]
 }
 ```
 
@@ -632,6 +661,10 @@ curl "http://localhost:8000/documents?document_level=municipal&territory_ids=54"
 ```
 
 ## Library (документ-API чтения)
+
+Административный `PATCH /library/documents/{doc_id}` принимает те же поля метаданных, включая
+`territory_id`, `version` и `current_version`, с теми же правилами переименования версии, что и
+`PATCH /user-documents/{doc_id}/metadata` выше.
 
 API чтения для потребителей (например, для сервиса MSI-TSIM), дополняющее семантический поиск
 прямым доступом по документам: перечислить документы и получить один по `doc_id` как собранный

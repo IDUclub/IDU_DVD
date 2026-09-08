@@ -138,6 +138,14 @@ class DocumentList(BaseModel):
 class DocumentUpdateRequest(BaseModel):
     """Editable document-wide payload fields; omitted fields stay unchanged."""
 
+    version: str | None = Field(
+        None,
+        description="New non-empty version label; renames an existing edition without reindexing",
+    )
+    current_version: str | None = Field(
+        None,
+        description="Version to rename; required when this doc_id has multiple editions",
+    )
     title: str | None = None
     doc_type: str | None = None
     corpus: str | None = None

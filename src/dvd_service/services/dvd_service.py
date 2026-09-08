@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import json
 import os
 import uuid
 from collections.abc import Callable
@@ -2031,12 +2032,92 @@ class DocumentEditorService:
             return untagged_scope()
         return self.territory.by_territory_id(int(territory_id))
 
+    def _prepare_version_rename(
+        self, doc_id: str, points: list[dict], updates: dict
+    ) -> tuple[str, str, list[dict]]:
+        """Validate before any metadata is written; load every edition in this scope."""
+        new = updates["version"]
+        if not isinstance(new, str) or not new.strip():
+            raise ValueError("version must be a non-empty string")
+        new = new.strip()
+        name = points[0]["name"]
+        if isinstance(self.qdrant, ScopedQdrantRepository):
+            related = self.qdrant.points_by_name(name)
+        else:
+            related = self.qdrant.points_by_name(
+                name, extra_must=[shared_only_condition()]
+            )
+        versions = {
+            v
+            for point in related
+            if point.get("doc_id") == doc_id
+            for v in IngestionService._version_tags(point)
+        }
+        old = updates.get("current_version")
+        if "current_version" in updates:
+            if not isinstance(old, str) or not old.strip():
+                raise ValueError("current_version must be a non-empty string")
+            old = old.strip()
+        elif len(versions) == 1:
+            old = next(iter(versions))
+        else:
+            raise ValueError(
+                "current_version is required for a document with multiple versions"
+            )
+        if old not in versions:
+            raise KeyError(f"version not found: {old}")
+        known = set(self.registry.versions(name)) | {
+            v for point in related for v in IngestionService._version_tags(point)
+        }
+        if new != old and new in known:
+            raise ValueError(f"version already exists: {new}")
+        return old, new, related
+
+    def _rename_version(
+        self, old: str, new: str, points: list[dict], edited_at: str
+    ) -> tuple[set[str], set[str]]:
+        """Rewrite version labels in batches, preserving other editions and all vectors."""
+        groups: dict[str, tuple[dict, list[str]]] = {}
+        changed_ids: set[str] = set()
+        fields = {"version"}
+        for point in points:
+            changes = {}
+            if point.get("version") == old:
+                changes["version"] = new
+            tags = IngestionService._version_tags(point)
+            if old in tags:
+                changes["versions"] = [new if v == old else v for v in tags]
+            others = point.get("other_versions") or []
+            if old in others:
+                changes["other_versions"] = sorted(
+                    {new if v == old else v for v in others}
+                    - {changes.get("version", point.get("version"))}
+                )
+            if not changes:
+                continue
+            fields.update(changes)
+            changes["manual_edited_at"] = edited_at
+            key = json.dumps(changes, sort_keys=True)
+            groups.setdefault(key, (changes, []))[1].append(point["id"])
+            changed_ids.add(point["id"])
+        for changes, ids in groups.values():
+            self.qdrant.set_points_payload(ids, changes)
+        self.registry.rename_version(points[0]["name"], old, new)
+        return changed_ids, fields
+
     def update_document(self, doc_id: str, updates: dict) -> DocumentUpdateResponse:
         points = self.qdrant.list_by_doc(doc_id)
         if not points:
             raise KeyError("document not found")
         changes = {k: v for k, v in updates.items() if k in self.DOCUMENT_FIELDS}
-        if not changes:
+        if "current_version" in updates and "version" not in updates:
+            raise ValueError("current_version requires version")
+        rename = (
+            self._prepare_version_rename(doc_id, points, updates)
+            if "version" in updates
+            else None
+        )
+        if not changes and rename is None:
             raise ValueError("no editable fields supplied")
         if "territory_id" in changes:
             # A document's scope is one fact spread over several fields — write them together.
@@ -2049,20 +2130,36 @@ class DocumentEditorService:
             changes["lookup_keys"] = build_lookup_keys(
                 first.get("name", ""), external_ids
             )
-        changes["manual_edited_at"] = datetime.now(timezone.utc).isoformat()
-        self.qdrant.set_document_payload(doc_id, changes)
+        edited_at = datetime.now(timezone.utc).isoformat()
+        changed_ids: set[str] = set()
+        fields = set(changes)
+        if rename is not None:
+            changed_ids, version_fields = self._rename_version(*rename, edited_at)
+            fields.update(version_fields)
+        if changes:
+            changes["manual_edited_at"] = edited_at
+            self.qdrant.set_document_payload(doc_id, changes)
+            changed_ids.update(p["id"] for p in points)
 
         record = self.registry.get_document(doc_id) or {
             k: first.get(k) for k in DocumentSummary.model_fields
         }
+        if rename is not None:
+            old, new, _ = rename
+            if record.get("version") == old:
+                record["version"] = new
+            record["other_versions"] = sorted(
+                {new if v == old else v for v in record.get("other_versions", []) or []}
+                - {record.get("version")}
+            )
         record.update(
             {k: v for k, v in changes.items() if k in DocumentSummary.model_fields}
         )
         self.registry.register_document(doc_id, record)
         return DocumentUpdateResponse(
             doc_id=doc_id,
-            points_updated=len(points),
-            fields_updated=sorted(k for k in changes if k != "manual_edited_at"),
+            points_updated=len(changed_ids),
+            fields_updated=sorted(fields),
         )
 
     def update_fragment(self, doc_id: str, fragment_id: str, updates: dict) -> dict:
