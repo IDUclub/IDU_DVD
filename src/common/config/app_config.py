@@ -181,7 +181,7 @@ class Settings(BaseSettings):
 
     # Independent LLM windows inside one document. The contour vLLM handles concurrent
     # requests efficiently; result order is preserved before overlap reconciliation.
-    llm_concurrency: int = 8
+    llm_concurrency: int = 64
 
     # --- Ingestion queue ---
     # Uploads are not processed in the request that brought them: the job is appended to a
