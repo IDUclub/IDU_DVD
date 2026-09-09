@@ -61,6 +61,7 @@ from src.dvd_service.dto import (
     TerritoryScope,
 )
 from src.dvd_service.modules.doc_parsers import PARSER_VERSION, DocumentParser
+from src.dvd_service.modules.fragment_structure import NAME_FIELDS, annotate_fragments
 from src.dvd_service.modules.hierarchy import HierarchyBuilder
 from src.dvd_service.modules.identity import (
     build_aliases,
@@ -407,8 +408,22 @@ class IngestionService:
         node_tags: dict[str, list],
         node_refs: dict[str, list],
         identity: dict,
+        ancestor_nodes: list[dict] | None = None,
     ) -> list[PointStruct]:
         """Assemble Qdrant points for nodes; ``identity`` holds the shared payload fields."""
+        annotated = annotate_fragments(
+            [
+                {
+                    **n,
+                    "doc_id": doc_id,
+                    "user_id": identity.get("user_id"),
+                    "project_id": identity.get("project_id"),
+                }
+                for n in (ancestor_nodes or []) + nodes
+            ]
+        )
+        by_id = {n["id"]: n for n in annotated}
+        nodes = [by_id[n["id"]] for n in nodes]
         return [
             PointStruct(
                 id=n["id"],
@@ -432,6 +447,7 @@ class IngestionService:
                     references=node_refs.get(n["id"], []),
                     src_block_ids=n.get("src_ids", []),
                     text=n["text"],
+                    **{k: n[k] for k in NAME_FIELDS},
                     **identity,
                     **self._grounding(n, spans, doc_id),
                 ).model_dump(),
@@ -850,7 +866,14 @@ class IngestionService:
             }
             progress.stage("indexing")
             points = self._build_points(
-                new_nodes, vectors, spans, doc_id, node_tags, node_refs, identity
+                new_nodes,
+                vectors,
+                spans,
+                doc_id,
+                node_tags,
+                node_refs,
+                identity,
+                ancestor_nodes=[p for p in base_points if p["id"] in reused_ids],
             )
             count = self.qdrant.upsert(points)
 
@@ -1012,12 +1035,16 @@ class IngestionService:
                 "metadata": {**doc_metadata, **(frag.metadata or {})},
                 "table_html": frag.table_html,
                 "text": frag.text,
+                "fragment_name": frag.fragment_name,
             }
             points.append(
                 PointStruct(
                     id=node_id, vector=vec, payload=NodePayload(**payload).model_dump()
                 )
             )
+        annotated = annotate_fragments([{**p.payload, "id": str(p.id)} for p in points])
+        for point, node in zip(points, annotated):
+            point.payload.update({k: node[k] for k in NAME_FIELDS})
         return points
 
     def ingest_direct(
@@ -1520,6 +1547,9 @@ class SearchService:
             hits.append(
                 SearchHit(
                     id=str(p.id),
+                    fragment_name=pl.get("fragment_name"),
+                    fragment_name_path=pl.get("fragment_name_path", []) or [],
+                    structure_path=pl.get("structure_path", []) or [],
                     score=p.score,
                     doc_id=pl.get("doc_id", ""),
                     name=pl.get("name", ""),
@@ -1980,7 +2010,14 @@ class LibraryService:
 
     def find_documents(self, key: str) -> DocumentList:
         """Resolve documents by an exact lookup key / external id value."""
-        doc_ids = self.qdrant.doc_ids_by_lookup_key(key)
+        from src.dvd_service.modules.identity import normalize_key
+
+        doc_ids = list(
+            dict.fromkeys(
+                self.qdrant.doc_ids_by_lookup_key(key)
+                + self.qdrant.doc_ids_by_lookup_key(normalize_key(key))
+            )
+        )
         docs: list[DocumentSummary] = []
         for did in doc_ids:
             rec = self.registry.get_document(did)
@@ -2203,6 +2240,13 @@ class DocumentEditorService:
                     }
                 )
                 self.registry.register_document(doc_id, record)
+        if "text" in changes:
+            nodes = self.qdrant.list_by_doc(doc_id)
+            for node in annotate_fragments(nodes):
+                fields = {k: node[k] for k in NAME_FIELDS}
+                self.qdrant.set_points_payload([node["id"]], fields)
+                if node["id"] == fragment_id:
+                    edited.update(fields)
         return {**edited, "id": fragment_id}
 
 

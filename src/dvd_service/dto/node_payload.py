@@ -116,6 +116,13 @@ class NodePayload(BaseModel):
     kind: str = "text"  # text | table — tables are separate entities
     type: str  # structural element type
     numbering: str = ""
+    fragment_name: str | None = None
+    fragment_name_key: str = ""
+    fragment_name_path: list[str] = Field(default_factory=list)
+    structure_path: list[str] = Field(default_factory=list)
+    ancestor_ids: list[str] = Field(default_factory=list)
+    fragment_name_source: str = "none"
+    fragment_name_schema: int = 0
     block: str = "main"  # main | amendment
     depth: int = 0
     order: int = 0  # position in document reading order (for reconstruction)

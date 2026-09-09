@@ -38,6 +38,9 @@ _PAYLOAD_INDEXES: dict[str, PayloadSchemaType] = {
     "content_hash": PayloadSchemaType.KEYWORD,
     "tags": PayloadSchemaType.KEYWORD,
     "numbering": PayloadSchemaType.KEYWORD,  # resolve a clause reference to a node
+    "fragment_name_key": PayloadSchemaType.KEYWORD,
+    "ancestor_ids": PayloadSchemaType.KEYWORD,
+    "fragment_name_schema": PayloadSchemaType.INTEGER,
     "references[].target_name": PayloadSchemaType.KEYWORD,  # find who references a document
     # general-purpose identity / corpus filters
     "doc_type": PayloadSchemaType.KEYWORD,
@@ -221,6 +224,40 @@ class QdrantRepository:
             if offset is None:
                 break
         return out
+
+    def scan_points(
+        self, query_filter: Filter | None = None, max_points: int = 50000
+    ) -> list[dict]:
+        """Complete bounded scan with stable point ids; never silently truncate a search."""
+        out = []
+        for point in self.iter_points(query_filter):
+            out.append(point)
+            if len(out) > max_points:
+                raise ValueError(
+                    "structural scan exceeds limit; narrow document/project scope"
+                )
+        return out
+
+    def iter_points(
+        self,
+        query_filter: Filter | None = None,
+        payload_fields: list[str] | None = None,
+    ):
+        """Stream scoped payloads; identity discovery need not load the corpus text."""
+        offset = None
+        while True:
+            records, offset = self.client.scroll(
+                self.collection,
+                scroll_filter=query_filter,
+                limit=256,
+                offset=offset,
+                with_payload=payload_fields if payload_fields is not None else True,
+                with_vectors=False,
+            )
+            for record in records:
+                yield {**(record.payload or {}), "id": str(record.id)}
+            if offset is None:
+                return
 
     def retrieve(self, ids: Sequence[str]) -> dict[str, dict]:
         if not ids:

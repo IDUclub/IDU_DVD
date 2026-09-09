@@ -28,6 +28,7 @@ STRUCT_SCHEMA = {
                     "id": {"type": "integer"},
                     "type": {"type": "string"},
                     "numbering": {"type": "string"},
+                    "fragment_name": {"type": "string"},
                     "relation": {
                         "type": "string",
                         "enum": ["top", "deeper", "same", "shallower"],
@@ -42,8 +43,11 @@ STRUCT_SCHEMA = {
     "required": ["nodes"],
 }
 STRUCT_SYSTEM = (
+    "fragment_name — собственное наименование фрагмента: заголовок, определяемый термин "
+    "или подпись таблицы. Копируй дословный непрерывный фрагмент исходного текста без номера; "
+    "если явного наименования нет — пустая строка. Не придумывай краткое описание.\n"
     "Ты анализируешь структуру документа ЛЮБОГО типа и языка. Дан список логических частей по "
-    "порядку, каждая с id. Для каждой части верни пять полей.\n"
+    "порядку, каждая с id. Для каждой части верни все поля схемы.\n"
     "type - вид структурного элемента ПО СОДЕРЖАНИЮ (title_page, toc, preface, introduction, "
     "chapter, section, clause, subclause, list_item, paragraph, table, note, definition, "
     "appendix, conclusion, bibliography, reference). Иначе придумай краткий snake_case. Не other.\n"
@@ -145,6 +149,7 @@ class StructureTagger:
                 it["relation"],
                 it.get("block", "main"),
                 self._clean_tags(it.get("tags")),
+                it.get("fragment_name", ""),
             )
             for it in data["nodes"]
         }
@@ -187,9 +192,17 @@ class StructureTagger:
                     p["relation"],
                     p["block"],
                     p["tags"],
-                ) = ("paragraph", "", "deeper", "main", [])
+                    p["fragment_name"],
+                ) = ("paragraph", "", "deeper", "main", [], "")
             else:
-                p["raw_type"], p["numbering"], p["relation"], p["block"], p["tags"] = t
+                (
+                    p["raw_type"],
+                    p["numbering"],
+                    p["relation"],
+                    p["block"],
+                    p["tags"],
+                    p["fragment_name"],
+                ) = t
             p["text"] = self.strip_leading_numbering(p["text"], p["numbering"])
             p["type"] = self.categorize(
                 p["raw_type"]

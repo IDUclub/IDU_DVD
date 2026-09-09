@@ -68,6 +68,9 @@ class SearchRequest(BaseModel):
 
 class SearchHit(AdministrativeScope):
     id: str
+    fragment_name: str | None = None
+    fragment_name_path: list[str] = Field(default_factory=list)
+    structure_path: list[str] = Field(default_factory=list)
     score: float
     doc_id: str
     name: str

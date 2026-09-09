@@ -22,6 +22,7 @@ class DirectFragmentIn(BaseModel):
     type: str = "paragraph"  # structural element type
     kind: str = "text"  # text | table
     numbering: str = ""
+    fragment_name: str | None = Field(None, max_length=180)
     block: str = "main"  # main | amendment
     tags: list[str] = Field(default_factory=list)
     metadata: dict = Field(
