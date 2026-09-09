@@ -18,9 +18,40 @@ from src.dvd_service.dto import (
     SearchResponse,
     TagsResponse,
 )
+from src.dvd_service.dto.fragment_search import (
+    FragmentSearchRequest,
+    FragmentSearchResponse,
+)
 from src.dvd_service.services.dvd_service import SearchService, TagsService
+from src.dvd_service.services.fragment_search import FragmentSearchService
 
 router = APIRouter(tags=["search"], dependencies=[Depends(require_authenticated)])
+
+
+@router.post("/search/structure", response_model=FragmentSearchResponse)
+@router.post("/search/names", response_model=FragmentSearchResponse)
+async def search_fragments(
+    req: FragmentSearchRequest,
+    search: SearchService = Depends(Dependencies.get_search),
+    user_id: str | None = Depends(get_effective_user_id),
+):
+    """Exact/masked/ranged structure and strict/expanded name search (AND when combined).
+
+    Type-independent; returns descendants and a continuation cursor. Every page repeats
+    the same selectors and authenticated scope. Never silently relaxes a selector.
+    """
+    if req.user_id or req.project_id or req.scenario_id:
+        if not user_id:
+            raise HTTPException(401, "user index search requires an authenticated user")
+        req = _pin_owner(req, user_id)
+    try:
+        return await run_in_threadpool(FragmentSearchService(search).search, req)
+    except ScenarioNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except UrbanApiError as exc:
+        raise HTTPException(502, str(exc)) from exc
 
 
 def _pin_owner(req: SearchRequest, user_id: str) -> SearchRequest:
