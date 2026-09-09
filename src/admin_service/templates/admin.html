@@ -65,8 +65,8 @@
     <form id="upload-form" class="dialog-card">
       <div class="dialog-head"><div><p class="eyebrow">ДОКУМЕНТ</p><h2 id="upload-title">Загрузка</h2></div><button type="button" class="icon-button close-dialog">×</button></div>
       <label>Операция<select id="upload-operation"><option value="upload">Новый документ</option><option value="update">Новая версия (PATCH)</option><option value="reload">Полная замена (PUT)</option></select></label>
-      <label>Файл<input id="upload-file" type="file" required></label>
-      <div class="two-col"><label>Название<input id="upload-name" placeholder="СП 1.13130.2020"></label><label>Версия<input id="upload-version" placeholder="2026"></label></div>
+      <label><span id="upload-file-label">Файлы</span><input id="upload-file" type="file" multiple required><small id="upload-file-hint" class="muted">Можно выбрать несколько документов.</small></label>
+      <div class="two-col"><label>Название<input id="upload-name" placeholder="СП 1.13130.2020"><small id="upload-name-hint" class="muted">Необязательно. Для нескольких файлов название определяется отдельно для каждого документа.</small></label><label>Версия<input id="upload-version" placeholder="2026"></label></div>
       <label>Территория действия<input id="upload-territory" list="territory-options" placeholder="Начните вводить: Ленинградская область, Выборгский…" autocomplete="off"><small class="muted">Если не задать — уровень и территория определяются автоматически по тексту документа.</small></label>
       <datalist id="territory-options"></datalist>
       <details><summary>Дополнительные метаданные</summary><div class="two-col details-grid"><label>Заголовок<input id="upload-doc-title"></label><label>Тип<input id="upload-doc-type" placeholder="regulation"></label><label>Корпус<input id="upload-corpus"></label><label>Язык<input id="upload-lang" placeholder="ru"></label></div></details>

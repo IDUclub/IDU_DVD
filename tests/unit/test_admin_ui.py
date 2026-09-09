@@ -219,3 +219,17 @@ def test_panel_exposes_the_scope_controls():
         assert "pending-filter" in markup and "run-backfill" in markup
         assert "meta-territory" in page and "/tagging/backfill" in page
         assert "/admin/ui/territories" in page
+
+
+def test_panel_supports_selecting_and_queueing_multiple_documents():
+    with _client() as client:
+        _login(client)
+        markup = client.get("/admin/ui").text
+        script = client.get("/admin/ui/assets/admin.js").text
+
+        assert 'id="upload-file" type="file" multiple' in markup
+        assert "syncUploadControls" in script
+        assert 'openUpload("upload", "", true)' in script
+        assert 'const files = [...$("#upload-file").files]' in script
+        assert "for (const [index, file] of files.entries())" in script
+        assert "files.length !== 1" in script

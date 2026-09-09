@@ -28,6 +28,10 @@ same service behind gMART's `/auth/token`), and the panel opens only for a holde
 role. The session cookie stores the issued access token itself, so the panel's own API calls
 are ordinary bearer requests and the session ends when the token expires.
 
+The upload dialog accepts multiple files for new documents and sends one `POST /documents`
+request per file, showing aggregate transfer progress. Shared metadata and territory fields apply
+to every selected file. Delta updates and full reloads remain single-file operations.
+
 ### Who the request acts as
 
 Endpoints that can reach a private user index resolve the acting user themselves, and never
