@@ -77,6 +77,55 @@ def test_exact_reference_finds_definition_and_children_without_vectors(fragments
     assert response.hits[0].version == "2020"
 
 
+@pytest.mark.parametrize(
+    "selector", [{"pattern": "3.3"}, {"name_query": "огнезащитное покрытие"}]
+)
+def test_context_restores_neighbours_without_changing_hits(fragments, selector):
+    svc, ids = fragments
+    svc.qdrant.set_points_payload([ids[1]], {"prev_id": ids[0], "next_id": ids[2]})
+    request = FragmentSearchRequest(
+        **selector, doc_id="doc", include_children=False, context_height=1
+    )
+    response = svc.search(request)
+    assert [h.id for h in response.hits] == [ids[1]]
+    assert response.total == 1 and response.complete
+    assert response.hits[0].context == (
+        "Пожарная безопасность вспучивающееся огнезащитное покрытие: Полное определение. Первое требование."
+    )
+    assert (
+        svc.search(request.model_copy(update={"context_height": 0})).hits[0].context
+        is None
+    )
+
+
+@pytest.mark.parametrize("neighbour", [5, 6])
+def test_context_cannot_follow_private_or_other_document_links(fragments, neighbour):
+    svc, ids = fragments
+    svc.qdrant.set_points_payload([ids[1]], {"next_id": ids[neighbour]})
+    response = svc.search(
+        FragmentSearchRequest(
+            pattern="3.3",
+            include_children=False,
+            context_height=5,
+            name="СП 2.13130.2020",
+        )
+    )
+    assert response.hits[0].context == response.hits[0].text
+
+
+def test_context_stops_cycles_and_clamps_height(fragments):
+    svc, ids = fragments
+    svc.qdrant.set_points_payload([ids[1]], {"prev_id": ids[1], "next_id": ids[2]})
+    svc.qdrant.set_points_payload([ids[2]], {"next_id": ids[1]})
+    response = svc.search(
+        FragmentSearchRequest(
+            pattern="3.3", doc_id="doc", include_children=False, context_height=100000
+        )
+    )
+    assert response.hits[0].context.count("Полное определение.") == 1
+    assert response.hits[0].context.count("Первое требование.") == 1
+
+
 def test_mask_range_and_exact_boundaries(fragments):
     svc, ids = fragments
     r = svc.search(FragmentSearchRequest(pattern="3.3–3.4", doc_id="doc"))

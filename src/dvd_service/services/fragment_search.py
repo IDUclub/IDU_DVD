@@ -38,6 +38,8 @@ def _snapshot(nodes: list[dict], parameters: dict) -> str:
             n.get("version"),
             n.get("versions"),
             n.get("order"),
+            n.get("prev_id"),
+            n.get("next_id"),
         )
         for n in nodes
     ]
@@ -68,6 +70,30 @@ def _cosine(a, b):
         if denominator and len(a) == len(b)
         else 0.0
     )
+
+
+def _scoped_context(node: dict, by_id: dict[str, dict], height: int) -> str:
+    """Expand only within the already-authorized document/edition snapshot."""
+    identity_fields = ("doc_id", "user_id", "project_id", "scenario_id", "version_id")
+    identity = tuple(node.get(k) for k in identity_fields)
+    texts, seen = [node.get("text", "")], {node["id"]}
+    for direction in ("prev_id", "next_id"):
+        current = node
+        for _ in range(height):
+            neighbour = by_id.get(current.get(direction))
+            if (
+                not neighbour
+                or neighbour["id"] in seen
+                or tuple(neighbour.get(k) for k in identity_fields) != identity
+            ):
+                break
+            seen.add(neighbour["id"])
+            if direction == "prev_id":
+                texts.insert(0, neighbour.get("text", ""))
+            else:
+                texts.append(neighbour.get("text", ""))
+            current = neighbour
+    return " ".join(t for t in texts if t)
 
 
 class FragmentSearchService:
@@ -252,7 +278,21 @@ class FragmentSearchService:
                 matched=n["id"] in root_ids,
                 match_kind=kind,
                 matched_ancestor_ids=ancestors,
-                context=None,
+                context=(
+                    _scoped_context(
+                        n,
+                        by_id,
+                        max(
+                            0,
+                            min(
+                                req.context_height,
+                                self.search_service.settings.max_context_height,
+                            ),
+                        ),
+                    )
+                    if req.context_height
+                    else None
+                ),
             )
             hits.append(FragmentMatch(**payload))
         candidates = [
