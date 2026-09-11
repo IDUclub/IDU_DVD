@@ -15,6 +15,11 @@ class SourceStructure:
         r"\((?:в\s+ред\.|част[ьи]|пункт|п\.|абзац|введ[её]н|утратил|измен[её]нная\s+редакция)",
         re.I,
     )
+    WRITTEN_DATE = re.compile(
+        r"^\s*\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|"
+        r"сентября|октября|ноября|декабря)\s+\d{4}\b",
+        re.I,
+    )
     NUMBER = re.compile(r"^\s*(\d{1,3}(?:\.\d{1,3})*)([.)]?)(?=\s)\s+\S")
     LETTER = re.compile(r"^\s*([а-яёa-z])[)]\s+\S", re.I)
 
@@ -22,6 +27,8 @@ class SourceStructure:
     def anchor(cls, text):
         if cls.NOTE.match(text):
             return {"type": "note", "numbering": "", "block": "amendment"}
+        if cls.WRITTEN_DATE.match(text):
+            return {"type": "paragraph", "numbering": ""}
         heading = cls.HEADING.match(text)
         if heading:
             typ = {"глава": "chapter", "раздел": "section", "статья": "article"}.get(

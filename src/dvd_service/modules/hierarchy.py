@@ -26,6 +26,25 @@ class HierarchyBuilder:
             return max(1, top_depth - 1)
         return top_depth
 
+    @staticmethod
+    def _heading_parent(stack, node, root):
+        levels = {"section": 1, "chapter": 2, "article": 3}
+        level = node.get("source_heading_level") or levels[node["type"]]
+        parents = [
+            ancestor
+            for ancestor in stack
+            if ancestor["type"] in levels
+            # An inferred section in a preface or wrapped title must not own
+            # explicit source chapters/articles.
+            and (
+                not node.get("source_heading_level")
+                or ancestor.get("source_heading_level")
+            )
+            and (ancestor.get("source_heading_level") or levels[ancestor["type"]])
+            < level
+        ]
+        return parents[-1] if parents else root
+
     def build(self, parts, rank_map, title="document"):
         nodes = [
             {
@@ -71,15 +90,7 @@ class HierarchyBuilder:
             top = stack[-1]
             article = next((a for a in reversed(stack) if a["type"] == "article"), None)
             if n.get("source_heading_level") or n["type"] == "article":
-                levels = {"section": 1, "chapter": 2, "article": 3}
-                parents = [
-                    a
-                    for a in stack
-                    if a["type"] in levels
-                    and (a.get("source_heading_level") or levels[a["type"]])
-                    < (n.get("source_heading_level") or levels[n["type"]])
-                ]
-                parent = parents[-1] if parents else nodes[0]
+                parent = self._heading_parent(stack, n, nodes[0])
                 stack = stack[: stack.index(parent) + 1]
             elif article is not None:
                 if n["numbering"]:

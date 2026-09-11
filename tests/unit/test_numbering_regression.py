@@ -218,3 +218,45 @@ def test_editorial_revision_labels_are_notes_not_duplicate_headings(settings, te
     parser = DocumentParser(settings)
     assert parser._heuristic_boundary(text, "продолжение текста") == "new"
     assert parser._heuristic_boundary("предыдущий текст", text) == "new"
+
+
+@pytest.mark.parametrize(
+    "text", ["29  декабря  2004  года\tN 190-ФЗ", "29 декабря 2004 года N 190-ФЗ"]
+)
+def test_written_dates_have_no_own_number(text):
+    from src.dvd_service.modules.source_structure import SourceStructure
+
+    assert SourceStructure.anchor(text).get("numbering") == ""
+
+
+def test_source_headings_ignore_inferred_sections_in_preface_and_continuations():
+    from src.dvd_service.modules.source_structure import SourceStructure
+
+    texts = [
+        ("Список изменяющих документов", "section"),
+        ("Глава 2. Полномочия органов государственной власти", "chapter"),
+        ("ОРГАНОВ МЕСТНОГО САМОУПРАВЛЕНИЯ", "section"),
+        ("Глава 6. Строительство", "chapter"),
+        ("Статья 52. Осуществление строительства", "article"),
+        ("3.3. По решению застройщика", "clause"),
+    ]
+    parts = [
+        {
+            "id": i,
+            "text": text,
+            "type": typ,
+            "relation": "deeper",
+            **SourceStructure.anchor(text),
+        }
+        for i, (text, typ) in enumerate(texts)
+    ]
+    hb = HierarchyBuilder()
+    nodes = hb.flatten(hb.build(parts, StructureTagger(None).numbering_ranks(parts)))
+    by_id = {n["id"]: n for n in nodes}
+    for n in nodes:
+        if n["type"] == "chapter":
+            assert by_id[n["parent_id"]]["type"] == "document"
+    clause = next(n for n in nodes if n["numbering"] == "3.3")
+    article = by_id[clause["parent_id"]]
+    assert article["numbering"] == "52"
+    assert by_id[article["parent_id"]]["numbering"] == "6"
