@@ -349,3 +349,22 @@ def test_expanded_names_use_name_vectors_and_preserve_structural_filter(
     )
     assert [h.id for h in r.hits] == [ids[1]]
     assert r.hits[0].match_kind == "semantic"
+
+
+def test_edition_whitespace_matches_without_crossing_editions_or_scope(fragments):
+    svc, ids = fragments
+    edition = "N\u202f190‑ФЗ (ред. от\u00a030.01.2026)"
+    svc.qdrant.set_points_payload(ids[:5], {"version": edition, "versions": [edition]})
+    req = FragmentSearchRequest(
+        pattern="3.3",
+        doc_id="doc",
+        version=edition.replace("\u00a0", " ").replace("\u202f", " "),
+    )
+    result = svc.search(req)
+    assert [h.id for h in result.hits] == ids[1:3]
+    assert (
+        svc.search(
+            req.model_copy(update={"version": "N 190‑ФЗ (ред. от 30.01.2025)"})
+        ).hits
+        == []
+    )

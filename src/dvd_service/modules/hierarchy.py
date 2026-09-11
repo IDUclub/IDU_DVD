@@ -56,6 +56,8 @@ class HierarchyBuilder:
                     "fragment_name": p.get("fragment_name"),
                     "rank": rank_map.get(num) if num else None,
                     "relation": p.get("relation", "deeper"),
+                    "source_delimiter": p.get("source_delimiter", ""),
+                    "source_heading_level": p.get("source_heading_level"),
                     "block": p.get("block", "main"),
                     "is_table": p.get("category") == "Table",
                     "html": p.get("html"),
@@ -67,14 +69,60 @@ class HierarchyBuilder:
         stack = [nodes[0]]
         for n in nodes[1:]:
             top = stack[-1]
-            d = (
-                max(1, n["rank"])
-                if n["rank"] is not None
-                else max(1, self._depth_from_relation(top["depth"], n["relation"]))
-            )
-            while len(stack) > 1 and stack[-1]["depth"] >= d:
-                stack.pop()
-            parent = stack[-1]
+            article = next((a for a in reversed(stack) if a["type"] == "article"), None)
+            if n.get("source_heading_level") or n["type"] == "article":
+                levels = {"section": 1, "chapter": 2, "article": 3}
+                parents = [
+                    a
+                    for a in stack
+                    if a["type"] in levels
+                    and (a.get("source_heading_level") or levels[a["type"]])
+                    < (n.get("source_heading_level") or levels[n["type"]])
+                ]
+                parent = parents[-1] if parents else nodes[0]
+                stack = stack[: stack.index(parent) + 1]
+            elif article is not None:
+                if n["numbering"]:
+                    # Inserted legal parts (3.1, 3.3) are siblings of part 3.
+                    # Parenthesized list items remain below the current part.
+                    is_item = n["source_delimiter"] == ")" or n["numbering"].endswith(
+                        ")"
+                    )
+                    parent = article
+                    if is_item:
+                        numeric = n["numbering"].rstrip(").").replace(".", "").isdigit()
+                        candidates = [
+                            a
+                            for a in stack[stack.index(article) + 1 :]
+                            if a["numbering"]
+                            and (
+                                a.get("source_delimiter") != ")"
+                                if numeric
+                                else a["numbering"]
+                                .rstrip(").")
+                                .replace(".", "")
+                                .isdigit()
+                            )
+                        ]
+                        if candidates:
+                            parent = candidates[-1]
+                    stack = stack[: stack.index(parent) + 1]
+                else:
+                    # Notes and continuations belong to the preceding provision,
+                    # never to a chain of unrelated unnumbered paragraphs.
+                    parent = next(
+                        (a for a in reversed(stack) if a["numbering"]), article
+                    )
+                    stack = stack[: stack.index(parent) + 1]
+            else:
+                d = (
+                    max(1, n["rank"])
+                    if n["rank"] is not None
+                    else max(1, self._depth_from_relation(top["depth"], n["relation"]))
+                )
+                while len(stack) > 1 and stack[-1]["depth"] >= d:
+                    stack.pop()
+                parent = stack[-1]
             n["parent"] = parent["_id"]
             n["depth"] = parent["depth"] + 1
             stack.append(n)

@@ -308,10 +308,56 @@ class FragmentSearchService:
                     "fragment_name",
                     "structure_path",
                     "block",
+                    "parent_id",
+                    "type",
                 )
             }
             for n in roots[:200]
         ]
+        for candidate in candidates:
+            root = by_id[candidate["id"]]
+            address_nodes = [by_id[i] for i in root["ancestor_ids"] if i in by_id] + [
+                root
+            ]
+            kind_labels = {"article": "статья", "chapter": "глава", "section": "раздел"}
+            candidate["selection_path"] = (
+                [
+                    " ".join(
+                        filter(
+                            None, [kind_labels.get(n.get("type")), n.get("numbering")]
+                        )
+                    )
+                    for n in address_nodes
+                    if n.get("numbering")
+                ]
+                if root.get("numbering")
+                else root.get("structure_path", [])
+            )
+            candidate["excerpt"] = " ".join(root.get("text", "").split())[:200]
+            # Include descendants: identical root text alone does not prove that
+            # two provisions (with exceptions or tables) have the same content.
+            subtree = [
+                n
+                for n in nodes
+                if n["id"] == root["id"] or root["id"] in n["ancestor_ids"]
+            ]
+            positions = {n["id"]: i for i, n in enumerate(subtree)}
+            candidate["content_digest"] = hashlib.sha256(
+                json.dumps(
+                    [
+                        (
+                            n.get("type"),
+                            n.get("numbering"),
+                            n.get("text"),
+                            n.get("table_html"),
+                            n.get("block"),
+                            positions.get(n.get("parent_id")),
+                        )
+                        for n in subtree
+                    ],
+                    ensure_ascii=False,
+                ).encode()
+            ).hexdigest()
         concrete = req.pattern and not any(c in req.pattern for c in "*?[–—-")
         return FragmentSearchResponse(
             count=len(hits),

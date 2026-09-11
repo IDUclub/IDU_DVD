@@ -13,6 +13,7 @@ import structlog
 
 from src.api_clients import ChatClient, LlmError, OllamaError
 from src.common.config import Settings
+from src.dvd_service.modules.source_structure import SourceStructure
 from src.dvd_service.modules.windowing import make_windows, map_concurrent, reconcile
 
 log = structlog.get_logger(__name__)
@@ -110,7 +111,7 @@ class StructureTagger:
     def strip_leading_numbering(text: str, numbering: str) -> str:
         if not numbering:
             return text
-        m = re.match(r"\s*" + re.escape(numbering) + r"(?![\w.])[.)\s]*", text)
+        m = re.match(r"\s*" + re.escape(numbering) + r"(?!\w|\.\d)[.)\s]*", text)
         if m:
             rest = text[m.end() :]
             return rest if rest.strip() else text
@@ -183,6 +184,7 @@ class StructureTagger:
                 "— документ не может быть размечен"
             )
         tags = reconcile(decisions)
+        in_article = False
         for p in parts:
             t = tags.get(p["id"])
             if t is None:
@@ -203,7 +205,23 @@ class StructureTagger:
                     p["tags"],
                     p["fragment_name"],
                 ) = t
-            p["text"] = self.strip_leading_numbering(p["text"], p["numbering"])
+            anchor = SourceStructure.anchor(p["text"])
+            if anchor.get("type") in {"article", "chapter", "section"}:
+                in_article = anchor["type"] == "article"
+            if in_article and anchor.get("numbering") and not anchor.get("type"):
+                anchor["type"] = (
+                    "list_item" if anchor.get("source_delimiter") == ")" else "clause"
+                )
+            if anchor:
+                p.update(anchor)
+                if anchor.get("type"):
+                    p["raw_type"] = anchor["type"]
+            elif p["numbering"] and not re.match(
+                r"^\s*" + re.escape(p["numbering"]) + r"(?:[.)]?\s+)", p["text"]
+            ):
+                p["numbering"] = ""
+            if anchor.get("type") not in {"article", "chapter", "section"}:
+                p["text"] = self.strip_leading_numbering(p["text"], p["numbering"])
             p["type"] = self.categorize(
                 p["raw_type"]
             )  # NB: do not touch p['category'] (from unstructured)

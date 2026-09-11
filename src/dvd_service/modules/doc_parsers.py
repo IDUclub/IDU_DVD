@@ -13,11 +13,13 @@ import structlog
 
 from src.api_clients import ChatClient, LlmError, OllamaError
 from src.common.config import Settings
+from src.dvd_service.modules.docx_reader import DocxReader
+from src.dvd_service.modules.source_structure import SourceStructure
 from src.dvd_service.modules.windowing import make_windows, map_concurrent, reconcile
 
 log = structlog.get_logger(__name__)
 
-PARSER_VERSION = "dvd-parser-2"  # 2: adds source grounding (offsets/page/bbox/span_id)
+PARSER_VERSION = "dvd-parser-3"  # Word numbering and source paragraph boundaries
 
 SKIP_CATEGORIES = {"Header", "Footer", "PageBreak"}
 
@@ -26,9 +28,9 @@ LIST_MARKER = re.compile(
 )
 TERMINALS = (".", "!", "?", ";", ":", "…", "。", "！", "？", "»", '"', ")")
 OPEN_START = ("[", "(", "«", '"')
-# Do NOT split on dashes: in legal texts "–" is usually punctuation, not a list marker.
+# A new line can start a list item; an inline number may be a reference or date.
 MARKER_INLINE = re.compile(
-    r"(?<=\S)\s+(?=(?:\d+(?:\.\d+)+[.)]?|\d+\)|[а-яёa-z]\)|[•·‣◦])\s)", re.I | re.U
+    r"\n[ \t]*(?=(?:\d+(?:\.\d+)*[.)]?|[а-яёa-z]\)|[•·‣◦])\s)", re.I | re.U
 )
 RU_ABBR = {
     "г",
@@ -143,20 +145,15 @@ class DocumentParser:
 
     # --- extraction and hashing (for dedup before the heavy LLM pass) ---
     def extract_raw(self, path: str) -> list[dict]:
-        # For .docx use partition_docx directly: it pulls no heavy backends (torch/OCR), which
-        # segfault on some environments (Windows), and it is faster. Otherwise fall back to auto.
         if os.path.splitext(str(path))[1].lower() == ".docx":
-            from unstructured.partition.docx import partition_docx
+            return DocxReader().read(path)
+        from unstructured.partition.auto import partition
 
-            els = partition_docx(filename=str(path))
-        else:
-            from unstructured.partition.auto import partition
-
-            els = partition(
-                filename=str(path),
-                languages=self.settings.languages,
-                strategy=self.settings.partition_strategy,
-            )
+        els = partition(
+            filename=str(path),
+            languages=self.settings.languages,
+            strategy=self.settings.partition_strategy,
+        )
         raw = []
         for el in els:
             text = (el.text or "").strip()
@@ -239,6 +236,8 @@ class DocumentParser:
     def _heuristic_boundary(self, prev, cur, prev_cat=None, cur_cat=None) -> str:
         if cur_cat == "Table" or prev_cat == "Table":
             return "new"
+        if SourceStructure.starts_part(cur) or SourceStructure.NOTE.match(prev):
+            return "new"
         if starts_new_marker(cur):
             return "new"
         p, c = prev.strip(), cur.strip()
@@ -268,7 +267,7 @@ class DocumentParser:
 
     def _split_block(self, text: str) -> list[str]:
         segments = [s.strip() for s in MARKER_INLINE.split(text) if s.strip()]
-        if not self.settings.split_sentences:
+        if not self.settings.split_sentences or SourceStructure.starts_part(text):
             return segments
         out: list[str] = []
         for seg in segments:
@@ -282,7 +281,7 @@ class DocumentParser:
     def _split_into_segments(self, raw):
         blocks = []
         for ri, b in enumerate(raw):
-            if b["category"] == "Table":
+            if b["category"] == "Table" or b.get("source_paragraph"):
                 segs = [b["text"]]
             else:
                 segs = self._split_block(b["text"])
@@ -419,6 +418,8 @@ class DocumentParser:
                 and not is_table
                 and not prev_table
                 and not is_numbered_head(p["text"])
+                and not SourceStructure.starts_part(p["text"])
+                and not SourceStructure.NOTE.match(cur["text"])
                 and dec.get(i, "new") == "continuation"
             )
             if join:
