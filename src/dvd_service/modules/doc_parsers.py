@@ -11,11 +11,16 @@ import re
 
 import structlog
 
-from src.api_clients import ChatClient, LlmError, OllamaError
+from src.api_clients import ChatClient
 from src.common.config import Settings
 from src.dvd_service.modules.docx_reader import DocxReader
 from src.dvd_service.modules.source_structure import SourceStructure
-from src.dvd_service.modules.windowing import make_windows, map_concurrent, reconcile
+from src.dvd_service.modules.windowing import (
+    chat_window,
+    make_windows,
+    map_concurrent,
+    reconcile,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -299,9 +304,10 @@ class DocumentParser:
 
     # --- boundary stitching (Stage 1) ---
     def _llm_boundaries(self, client: ChatClient, window_texts):
-        user = "\n".join("[%d] %s" % (i, t) for i, t in enumerate(window_texts))
-        data = client.chat(BOUNDARY_SYSTEM, user, BOUNDARY_SCHEMA)
-        return {item["id"]: item["boundary"] for item in data["blocks"]}
+        rows = chat_window(
+            client, BOUNDARY_SYSTEM, window_texts, BOUNDARY_SCHEMA, "blocks"
+        )
+        return {item["id"]: item["boundary"] for item in rows}
 
     def _assemble_boundaries(self, blocks, client, on_progress=None):
         n = len(blocks)
@@ -324,29 +330,17 @@ class DocumentParser:
                 texts = [blocks[k]["text"] for k in range(s, e)]
                 try:
                     return s, self._llm_boundaries(client, texts)
-                except (OllamaError, Exception) as exc:  # noqa: BLE001
-                    log.warning("stage1_window_skipped", start=s, end=e, error=str(exc))
-                    return None
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("stage1_window_failed", start=s, end=e, error=str(exc))
+                    raise
 
             results = map_concurrent(
                 process, windows, max_workers=self.settings.llm_concurrency
             )
             for done, decision in enumerate(results, 1):
-                if decision is not None:
-                    decisions.append(decision)
+                decisions.append(decision)
                 if on_progress:
                     on_progress(done, len(windows), "boundaries")
-            # Losing a window is survivable — the heuristic covers that stretch. Losing *every*
-            # window is not: it means the LLM is unreachable or refusing, and carrying on would
-            # index the document with no structure and no identity, under name="unknown". Every
-            # later document then attaches to that phantom as another version of it. Failing
-            # here instead hands the job back to the queue, which retries it and eventually
-            # dead-letters it — noisy, but the corpus stays clean.
-            if windows and not decisions:
-                raise LlmError(
-                    f"LLM недоступен: ни одно из {len(windows)} окон разметки не обработано "
-                    "— документ не может быть структурирован"
-                )
             llm_dec = reconcile(decisions)
         final = ["new"]
         for i in range(1, n):
@@ -379,11 +373,12 @@ class DocumentParser:
 
     # --- semantic merge (Stage 1.5) ---
     def _llm_semantic_merge(self, client, window_texts):
-        user = "\n".join("[%d] %s" % (i, t) for i, t in enumerate(window_texts))
-        data = client.chat(SEMANTIC_MERGE_SYSTEM, user, SEMANTIC_MERGE_SCHEMA)
+        rows = chat_window(
+            client, SEMANTIC_MERGE_SYSTEM, window_texts, SEMANTIC_MERGE_SCHEMA, "parts"
+        )
         return {
             item["id"]: ("continuation" if item["merge_with_previous"] else "new")
-            for item in data["parts"]
+            for item in rows
         }
 
     def _semantic_merge_pass(self, parts, client, on_progress=None, npass=1):
@@ -395,16 +390,15 @@ class DocumentParser:
             texts = [parts[k]["text"] for k in range(s, e)]
             try:
                 return s, self._llm_semantic_merge(client, texts)
-            except (OllamaError, Exception) as exc:  # noqa: BLE001
-                log.warning("stage15_window_skipped", start=s, end=e, error=str(exc))
-                return None
+            except Exception as exc:  # noqa: BLE001
+                log.warning("stage15_window_failed", start=s, end=e, error=str(exc))
+                raise
 
         results = map_concurrent(
             process, windows, max_workers=self.settings.llm_concurrency
         )
         for done, decision in enumerate(results, 1):
-            if decision is not None:
-                decisions.append(decision)
+            decisions.append(decision)
             if on_progress:
                 on_progress(done, len(windows), f"semantic-merge pass {npass}")
         dec = reconcile(decisions)

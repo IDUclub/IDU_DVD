@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
 from src.dvd_service.modules.windowing import make_windows, map_concurrent, reconcile
 
 
@@ -80,3 +82,42 @@ class TestConcurrentMap:
             return value * 2
 
         assert list(map_concurrent(worker, range(4), max_workers=4)) == [0, 2, 4, 6]
+
+
+@pytest.mark.parametrize("ids", [[0], [0, 0], [0, 2], [False, 1], [0, 1, 2]])
+def test_chat_window_rejects_incomplete_ids(ids, monkeypatch):
+    from src.api_clients import LlmError
+    from src.dvd_service.modules.structure import STRUCT_SCHEMA
+    from src.dvd_service.modules.windowing import chat_window
+    from tests.conftest import FakeOllama
+
+    monkeypatch.setattr("src.dvd_service.modules.windowing.time.sleep", lambda _: None)
+    client = FakeOllama(lambda *_: {"nodes": [{"id": i} for i in ids]})
+    with pytest.raises(LlmError, match="Неполное окно"):
+        chat_window(client, "system", ["a", "b"], STRUCT_SCHEMA, "nodes")
+    assert len(client.chat_calls) == 3
+
+
+def test_chat_window_retries_bad_window_and_keeps_schema_unchanged(monkeypatch):
+    from copy import deepcopy
+
+    from src.dvd_service.modules.structure import STRUCT_SCHEMA
+    from src.dvd_service.modules.windowing import chat_window
+    from tests.conftest import FakeOllama
+
+    monkeypatch.setattr("src.dvd_service.modules.windowing.time.sleep", lambda _: None)
+    original = deepcopy(STRUCT_SCHEMA)
+    calls = []
+
+    def handler(system, user, schema):
+        calls.append(user)
+        array = schema["properties"]["nodes"]
+        assert array["minItems"] == array["maxItems"] == 2
+        assert array["items"]["properties"]["id"]["maximum"] == 1
+        return {"nodes": [{"id": 0}] if len(calls) == 2 else [{"id": 0}, {"id": 1}]}
+
+    client = FakeOllama(handler)
+    chat_window(client, "sys", ["good", "window"], STRUCT_SCHEMA, "nodes")
+    chat_window(client, "sys", ["retry", "window"], STRUCT_SCHEMA, "nodes")
+    assert len(calls) == 3 and calls[0] != calls[1] == calls[2]
+    assert STRUCT_SCHEMA == original

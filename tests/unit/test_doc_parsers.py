@@ -113,10 +113,8 @@ class TestLogicalSplitHeuristicOnly:
 class TestLlmOutage:
     """A dead LLM must fail the document, not quietly index it without structure.
 
-    Skipping a window is a graceful degradation — the heuristic covers that stretch. Skipping
-    *every* window is an outage, and carrying on produced documents named "unknown" that later
-    uploads then joined as extra versions of. Raising hands the job back to the ingestion queue,
-    which retries and eventually dead-letters it, leaving the corpus untouched.
+    Every failed window is retried. Exhausted retries fail ingestion before indexing,
+    leaving the corpus untouched. Explicit client=None retains the heuristic path.
     """
 
     class DeadLlm:

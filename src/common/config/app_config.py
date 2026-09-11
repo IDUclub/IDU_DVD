@@ -95,6 +95,8 @@ class Settings(BaseSettings):
     # started with (vLLM --max-model-len), so size it there, not here.
     llm_max_tokens: int = 8192
     llm_timeout: float = 600.0
+    # None selects low for gpt-oss and leaves other models at their server default.
+    llm_reasoning_effort: str | None = None
 
     # --- Embeddings provider (vectorizer) ---
     # "giga" — the GPU giga-vectorizer service (OpenAI-compatible /v1/embeddings,

@@ -423,6 +423,37 @@ class TestIngest:
             wired.ingestion.ingest("doc.docx", sample_raw, h)
         assert wired.outbox.size() == 0
 
+    @pytest.mark.parametrize("stage", ["blocks", "parts", "nodes", "items"])
+    def test_incomplete_window_never_publishes_document(
+        self, wired, sample_raw, monkeypatch, stage
+    ):
+        from src.api_clients import LlmError
+        from tests.conftest import pipeline_chat_handler
+
+        monkeypatch.setattr(
+            "src.dvd_service.modules.windowing.time.sleep", lambda _: None
+        )
+        attempts = []
+
+        def incomplete(system, user, schema):
+            data = pipeline_chat_handler(system, user, schema)
+            if stage in data:
+                attempts.append(user)
+                data[stage] = data[stage][:-1]
+            return data
+
+        monkeypatch.setattr(wired.ollama, "chat", incomplete)
+        with pytest.raises(LlmError, match="Неполное окно"):
+            wired.ingestion.ingest(
+                "doc.docx", sample_raw, "incomplete", job_id="bad-window"
+            )
+        assert len(attempts) == 3
+        assert wired.qdrant.points == {}
+        assert wired.registry.names() == []
+        assert wired.outbox.size() == 0
+        assert wired.jobs.get("bad-window")["status"] == "error"
+        assert "Неполное окно" in wired.jobs.get("bad-window")["error"]
+
     def test_version_override_wins(self, wired, sample_raw):
         h = DocumentParser.content_hash(sample_raw)
         res = wired.ingestion.ingest(
