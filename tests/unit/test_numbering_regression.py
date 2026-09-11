@@ -260,3 +260,28 @@ def test_source_headings_ignore_inferred_sections_in_preface_and_continuations()
     article = by_id[clause["parent_id"]]
     assert article["numbering"] == "52"
     assert by_id[article["parent_id"]]["numbering"] == "6"
+
+
+def test_source_article_keeps_chapter_after_inferred_title_resets_stack():
+    from src.dvd_service.modules.source_structure import SourceStructure
+
+    texts = [
+        ("Глава 6.1. Саморегулирование", "chapter", "top"),
+        ("В ОБЛАСТИ СТРОИТЕЛЬСТВА", "section", "top"),
+        ("Статья 55.1. Основные цели", "article", "same"),
+    ]
+    parts = [
+        {
+            "id": i,
+            "text": text,
+            "type": typ,
+            "relation": rel,
+            **SourceStructure.anchor(text),
+        }
+        for i, (text, typ, rel) in enumerate(texts)
+    ]
+    hb = HierarchyBuilder()
+    nodes = hb.flatten(hb.build(parts, StructureTagger(None).numbering_ranks(parts)))
+    by_id = {n["id"]: n for n in nodes}
+    article = next(n for n in nodes if n["type"] == "article")
+    assert by_id[article["parent_id"]]["numbering"] == "6.1"

@@ -86,10 +86,25 @@ class HierarchyBuilder:
                 }
             )
         stack = [nodes[0]]
+        source_headings = []
+        node_by_id = {n["_id"]: n for n in nodes}
         for n in nodes[1:]:
             top = stack[-1]
             article = next((a for a in reversed(stack) if a["type"] == "article"), None)
-            if n.get("source_heading_level") or n["type"] == "article":
+            if n.get("source_heading_level"):
+                # Source headings have their own stack: an inferred preface or
+                # wrapped title may reset the LLM stack, but cannot end a chapter.
+                level = n["source_heading_level"]
+                source_headings = [
+                    a for a in source_headings if a["source_heading_level"] < level
+                ]
+                parent = self._heading_parent(source_headings, n, nodes[0])
+                source_headings.append(n)
+                stack = [parent]
+                while stack[-1]["parent"] is not None:
+                    stack.append(node_by_id[stack[-1]["parent"]])
+                stack.reverse()
+            elif n["type"] == "article":
                 parent = self._heading_parent(stack, n, nodes[0])
                 stack = stack[: stack.index(parent) + 1]
             elif article is not None:
