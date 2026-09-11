@@ -200,3 +200,21 @@ def test_letter_list_items_are_siblings_under_numeric_item():
     letters = [n for n in nodes if n["numbering"] in ["а)", "б)"]]
     assert [by_id[n["parent_id"]]["numbering"] for n in letters] == ["1", "1"]
     assert by_id[nodes[-1]["parent_id"]]["numbering"] == "3.3"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Раздел 2 (Измененная редакция, Изм. № 1).",
+        "Пункт 3.3 (Измененная редакция, Изм. № 1).",
+        "(Измененная редакция, Изм. № 1).",
+    ],
+)
+def test_editorial_revision_labels_are_notes_not_duplicate_headings(settings, text):
+    from src.dvd_service.modules.source_structure import SourceStructure
+
+    anchor = SourceStructure.anchor(text)
+    assert anchor == {"type": "note", "numbering": "", "block": "amendment"}
+    parser = DocumentParser(settings)
+    assert parser._heuristic_boundary(text, "продолжение текста") == "new"
+    assert parser._heuristic_boundary("предыдущий текст", text) == "new"
