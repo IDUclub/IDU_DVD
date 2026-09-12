@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 import json
 import os
+import unicodedata
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -1425,6 +1426,31 @@ class SearchService:
         )
 
     def _build_filter(self, req: SearchRequest, kind: str | None) -> Filter | None:
+        if req.version:
+            # Resolve presentation-only differences against authorized stored editions.
+            # Keep the original values in Qdrant; this also works for legacy payloads.
+            base = self._build_filter(req.model_copy(update={"version": None}), kind)
+            key = lambda v: " ".join(unicodedata.normalize("NFKC", v).split())
+            versions = {req.version}
+            for node in self.qdrant.iter_points(base, ["version", "versions"]):
+                for value in [node.get("version"), *(node.get("versions") or [])]:
+                    if value and key(value) == key(req.version):
+                        versions.add(value)
+            return base.model_copy(
+                update={
+                    "must": [
+                        *(base.must or []),
+                        Filter(
+                            should=[
+                                FieldCondition(
+                                    key=field, match=MatchAny(any=sorted(versions))
+                                )
+                                for field in ("version", "versions")
+                            ]
+                        ),
+                    ]
+                }
+            )
         must = []
         if kind:
             must.append(FieldCondition(key="kind", match=MatchValue(value=kind)))

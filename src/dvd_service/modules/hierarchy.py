@@ -26,6 +26,25 @@ class HierarchyBuilder:
             return max(1, top_depth - 1)
         return top_depth
 
+    @staticmethod
+    def _heading_parent(stack, node, root):
+        levels = {"section": 1, "chapter": 2, "article": 3}
+        level = node.get("source_heading_level") or levels[node["type"]]
+        parents = [
+            ancestor
+            for ancestor in stack
+            if ancestor["type"] in levels
+            # An inferred section in a preface or wrapped title must not own
+            # explicit source chapters/articles.
+            and (
+                not node.get("source_heading_level")
+                or ancestor.get("source_heading_level")
+            )
+            and (ancestor.get("source_heading_level") or levels[ancestor["type"]])
+            < level
+        ]
+        return parents[-1] if parents else root
+
     def build(self, parts, rank_map, title="document"):
         nodes = [
             {
@@ -56,6 +75,8 @@ class HierarchyBuilder:
                     "fragment_name": p.get("fragment_name"),
                     "rank": rank_map.get(num) if num else None,
                     "relation": p.get("relation", "deeper"),
+                    "source_delimiter": p.get("source_delimiter", ""),
+                    "source_heading_level": p.get("source_heading_level"),
                     "block": p.get("block", "main"),
                     "is_table": p.get("category") == "Table",
                     "html": p.get("html"),
@@ -65,16 +86,69 @@ class HierarchyBuilder:
                 }
             )
         stack = [nodes[0]]
+        source_headings = []
+        node_by_id = {n["_id"]: n for n in nodes}
         for n in nodes[1:]:
             top = stack[-1]
-            d = (
-                max(1, n["rank"])
-                if n["rank"] is not None
-                else max(1, self._depth_from_relation(top["depth"], n["relation"]))
-            )
-            while len(stack) > 1 and stack[-1]["depth"] >= d:
-                stack.pop()
-            parent = stack[-1]
+            article = next((a for a in reversed(stack) if a["type"] == "article"), None)
+            if n.get("source_heading_level"):
+                # Source headings have their own stack: an inferred preface or
+                # wrapped title may reset the LLM stack, but cannot end a chapter.
+                level = n["source_heading_level"]
+                source_headings = [
+                    a for a in source_headings if a["source_heading_level"] < level
+                ]
+                parent = self._heading_parent(source_headings, n, nodes[0])
+                source_headings.append(n)
+                stack = [parent]
+                while stack[-1]["parent"] is not None:
+                    stack.append(node_by_id[stack[-1]["parent"]])
+                stack.reverse()
+            elif n["type"] == "article":
+                parent = self._heading_parent(stack, n, nodes[0])
+                stack = stack[: stack.index(parent) + 1]
+            elif article is not None:
+                if n["numbering"]:
+                    # Inserted legal parts (3.1, 3.3) are siblings of part 3.
+                    # Parenthesized list items remain below the current part.
+                    is_item = n["source_delimiter"] == ")" or n["numbering"].endswith(
+                        ")"
+                    )
+                    parent = article
+                    if is_item:
+                        numeric = n["numbering"].rstrip(").").replace(".", "").isdigit()
+                        candidates = [
+                            a
+                            for a in stack[stack.index(article) + 1 :]
+                            if a["numbering"]
+                            and (
+                                a.get("source_delimiter") != ")"
+                                if numeric
+                                else a["numbering"]
+                                .rstrip(").")
+                                .replace(".", "")
+                                .isdigit()
+                            )
+                        ]
+                        if candidates:
+                            parent = candidates[-1]
+                    stack = stack[: stack.index(parent) + 1]
+                else:
+                    # Notes and continuations belong to the preceding provision,
+                    # never to a chain of unrelated unnumbered paragraphs.
+                    parent = next(
+                        (a for a in reversed(stack) if a["numbering"]), article
+                    )
+                    stack = stack[: stack.index(parent) + 1]
+            else:
+                d = (
+                    max(1, n["rank"])
+                    if n["rank"] is not None
+                    else max(1, self._depth_from_relation(top["depth"], n["relation"]))
+                )
+                while len(stack) > 1 and stack[-1]["depth"] >= d:
+                    stack.pop()
+                parent = stack[-1]
             n["parent"] = parent["_id"]
             n["depth"] = parent["depth"] + 1
             stack.append(n)

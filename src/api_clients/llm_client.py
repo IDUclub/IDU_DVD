@@ -42,12 +42,18 @@ class OpenAICompatibleClient:
         api_key: str | None = None,
         max_tokens: int | None = None,
         timeout: float | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         self.base = (base or settings.llm_base_url).rstrip("/")
         self.model = model or settings.llm_model
         self.api_key = api_key if api_key is not None else settings.llm_api_key
         self.max_tokens = max_tokens or settings.llm_max_tokens
         self.timeout = timeout or settings.llm_timeout
+        self.reasoning_effort = (
+            reasoning_effort
+            if reasoning_effort is not None
+            else settings.llm_reasoning_effort
+        )
         self._client = httpx.Client(timeout=self.timeout)
 
     def __repr__(self) -> str:
@@ -82,26 +88,30 @@ class OpenAICompatibleClient:
     def chat(
         self, system: str, user: str, schema: dict, model: str | None = None
     ) -> dict:
-        resp = self._client.post(
-            self.base + "/chat/completions",
-            headers=self._headers(),
-            json={
-                "model": model or self.model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "temperature": 0,
-                "max_tokens": self.max_tokens,
-                "response_format": {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "dvd_response",
-                        "schema": schema,
-                        "strict": True,
-                    },
+        body = {
+            "model": model or self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0,
+            "max_tokens": self.max_tokens,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "dvd_response",
+                    "schema": schema,
+                    "strict": True,
                 },
             },
+        }
+        effort = self.reasoning_effort
+        if not effort and "gpt-oss" in (model or self.model).lower().replace("_", "-"):
+            effort = "low"
+        if effort:
+            body["reasoning_effort"] = effort
+        resp = self._client.post(
+            self.base + "/chat/completions", headers=self._headers(), json=body
         )
         resp.raise_for_status()
         choice = (resp.json().get("choices") or [{}])[0]

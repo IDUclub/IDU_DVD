@@ -47,9 +47,13 @@ deliver that, each through its own protocol — Ollama's `format`, OpenAI's
 | `DVD_LLM_API_KEY` | empty | `provider=openai`: sent as `Authorization: Bearer`. Local servers ignore it; masked in `GET /system/settings` |
 | `DVD_LLM_MAX_TOKENS` | `8192` | `provider=openai`: response budget (the counterpart of `DVD_OLLAMA_NUM_PREDICT`). There is **no** OpenAI equivalent of `num_ctx` — the context window is whatever the server was started with (`--max-model-len` in vLLM) |
 | `DVD_LLM_TIMEOUT` | `600.0` | `provider=openai`: request timeout, seconds |
+| `DVD_LLM_REASONING_EFFORT` | unset | OpenAI-compatible reasoning effort override; unset selects `low` for gpt-oss and omits the field for other models |
 
 Unlike `DVD_EMBEDDINGS_PROVIDER`, these are **not** restart-required: the chat client is built per
 operation, so a change through `PUT /system/settings` is picked up by the next ingest or backfill job.
+
+
+Windowed LLM stages require exactly one response per fragment ID. Failed requests and incomplete responses are retried up to three times per window. If a window still fails, ingestion reports an error before publishing the document; completed windows are not silently substituted with heuristic defaults. This is separate from the durable job retry limit.
 
 ### Ollama
 

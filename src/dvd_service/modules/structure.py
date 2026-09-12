@@ -11,9 +11,15 @@ import re
 
 import structlog
 
-from src.api_clients import ChatClient, LlmError, OllamaError
+from src.api_clients import ChatClient
 from src.common.config import Settings
-from src.dvd_service.modules.windowing import make_windows, map_concurrent, reconcile
+from src.dvd_service.modules.source_structure import SourceStructure
+from src.dvd_service.modules.windowing import (
+    chat_window,
+    make_windows,
+    map_concurrent,
+    reconcile,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -34,9 +40,21 @@ STRUCT_SCHEMA = {
                         "enum": ["top", "deeper", "same", "shallower"],
                     },
                     "block": {"type": "string", "enum": ["main", "amendment"]},
-                    "tags": {"type": "array", "items": {"type": "string"}},
+                    "tags": {
+                        "type": "array",
+                        "maxItems": 6,
+                        "items": {"type": "string"},
+                    },
                 },
-                "required": ["id", "type", "numbering", "relation", "block", "tags"],
+                "required": [
+                    "id",
+                    "type",
+                    "numbering",
+                    "fragment_name",
+                    "relation",
+                    "block",
+                    "tags",
+                ],
             },
         }
     },
@@ -110,7 +128,7 @@ class StructureTagger:
     def strip_leading_numbering(text: str, numbering: str) -> str:
         if not numbering:
             return text
-        m = re.match(r"\s*" + re.escape(numbering) + r"(?![\w.])[.)\s]*", text)
+        m = re.match(r"\s*" + re.escape(numbering) + r"(?!\w|\.\d)[.)\s]*", text)
         if m:
             rest = text[m.end() :]
             return rest if rest.strip() else text
@@ -140,8 +158,7 @@ class StructureTagger:
         return [str(x).strip().lower() for x in (raw or []) if str(x).strip()]
 
     def _llm_structure(self, client: ChatClient, window_texts):
-        user = "\n".join("[%d] %s" % (i, t) for i, t in enumerate(window_texts))
-        data = client.chat(STRUCT_SYSTEM, user, STRUCT_SCHEMA)
+        rows = chat_window(client, STRUCT_SYSTEM, window_texts, STRUCT_SCHEMA, "nodes")
         return {
             it["id"]: (
                 it["type"],
@@ -151,7 +168,7 @@ class StructureTagger:
                 self._clean_tags(it.get("tags")),
                 it.get("fragment_name", ""),
             )
-            for it in data["nodes"]
+            for it in rows
         }
 
     def tag(self, parts, client: ChatClient, on_progress=None) -> list[dict]:
@@ -163,26 +180,19 @@ class StructureTagger:
             texts = [parts[k]["text"] for k in range(s, e)]
             try:
                 return s, self._llm_structure(client, texts)
-            except (OllamaError, Exception) as exc:  # noqa: BLE001
-                log.warning("stage2_window_skipped", start=s, end=e, error=str(exc))
-                return None
+            except Exception as exc:  # noqa: BLE001
+                log.warning("stage2_window_failed", start=s, end=e, error=str(exc))
+                raise
 
         results = map_concurrent(
             process, windows, max_workers=self.settings.llm_concurrency
         )
         for done, decision in enumerate(results, 1):
-            if decision is not None:
-                decisions.append(decision)
+            decisions.append(decision)
             if on_progress:
                 on_progress(done, len(windows))
-        # Same rule as stage 1: a lost window degrades gracefully, a lost *run* means the LLM
-        # is gone and the document would be indexed untyped and unnamed. Fail it instead.
-        if windows and not decisions:
-            raise LlmError(
-                f"LLM недоступен: ни одно из {len(windows)} окон типизации не обработано "
-                "— документ не может быть размечен"
-            )
         tags = reconcile(decisions)
+        in_article = False
         for p in parts:
             t = tags.get(p["id"])
             if t is None:
@@ -203,7 +213,23 @@ class StructureTagger:
                     p["tags"],
                     p["fragment_name"],
                 ) = t
-            p["text"] = self.strip_leading_numbering(p["text"], p["numbering"])
+            anchor = SourceStructure.anchor(p["text"])
+            if anchor.get("type") in {"article", "chapter", "section"}:
+                in_article = anchor["type"] == "article"
+            if in_article and anchor.get("numbering") and not anchor.get("type"):
+                anchor["type"] = (
+                    "list_item" if anchor.get("source_delimiter") == ")" else "clause"
+                )
+            if anchor:
+                p.update(anchor)
+                if anchor.get("type"):
+                    p["raw_type"] = anchor["type"]
+            elif p["numbering"] and not re.match(
+                r"^\s*" + re.escape(p["numbering"]) + r"(?:[.)]?\s+)", p["text"]
+            ):
+                p["numbering"] = ""
+            if anchor.get("type") not in {"article", "chapter", "section"}:
+                p["text"] = self.strip_leading_numbering(p["text"], p["numbering"])
             p["type"] = self.categorize(
                 p["raw_type"]
             )  # NB: do not touch p['category'] (from unstructured)
