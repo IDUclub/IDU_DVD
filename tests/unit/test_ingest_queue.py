@@ -39,6 +39,15 @@ def _entry(job_id: str, operation: str = "upload", **extra) -> dict:
 
 
 class TestQueueOrder:
+    def test_reparse_is_deduplicated_while_pending_and_inflight(self, ingest_queue):
+        entry = _entry("a", "reparse", name="N", editions=[])
+        assert ingest_queue.enqueue_reparse(entry)
+        assert not ingest_queue.enqueue_reparse({**entry, "job_id": "b"})
+        claimed = ingest_queue.claim()
+        assert not ingest_queue.enqueue_reparse({**entry, "job_id": "b"})
+        ingest_queue.commit(claimed)
+        assert ingest_queue.enqueue_reparse({**entry, "job_id": "b"})
+
     def test_jobs_come_out_in_the_order_they_arrived(self, ingest_queue):
         for job_id in ("a", "b", "c"):
             ingest_queue.enqueue(_entry(job_id))
@@ -260,6 +269,37 @@ def worker(tmp_path, ingest_queue, fake_document_storage):
 
 
 class TestWorkerHappyPath:
+    def test_reparse_editions_run_sequentially_and_can_retry(
+        self, worker, ingest_queue, fake_document_storage
+    ):
+        fake_document_storage.upload("hash-a.docx", b"a")
+        fake_document_storage.upload("hash-b.docx", b"b")
+        editions = [
+            {
+                **_entry(key),
+                "operation": "reparse",
+                "job_id": "batch",
+                "name": "N",
+                "version": key,
+            }
+            for key in ("a", "b")
+        ]
+        ingest_queue.enqueue(_entry("batch", "reparse", name="N", editions=editions))
+        ingestion = FakeIngestion(explode=RuntimeError("offline"))
+        runner = worker(ingestion)
+        runner._process(ingest_queue.claim())
+        assert ingest_queue.size() == 1
+        ingestion.explode = None
+        ingestion.calls.clear()
+        runner._process(ingest_queue.claim())
+        assert [k["version_override"] for _, _, k in ingestion.calls] == ["a", "b"]
+        assert all(
+            k["replace_version"] and not k["finish_job"] for _, _, k in ingestion.calls
+        )
+        assert ingestion.discarded == []
+        assert runner.jobs.get("batch")["status"] == "done"
+        assert not ingest_queue.inflight() and not ingest_queue.pending()
+
     def test_upload_is_indexed_and_committed(
         self, worker, ingest_queue, fake_document_storage
     ):

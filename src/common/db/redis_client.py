@@ -53,6 +53,15 @@ class JobStore:
         v = self.r.get(self._key(job_id))
         return json.loads(v) if v else None
 
+    def set_if_absent(self, job_id: str, data: dict) -> None:
+        """Publish queued progress without overwriting a worker that already started."""
+        self.r.set(
+            self._key(job_id),
+            json.dumps(data, ensure_ascii=False),
+            ex=self.ttl,
+            nx=True,
+        )
+
     def update(self, job_id: str, **fields) -> None:
         data = self.get(job_id) or {"job_id": job_id}
         data.update(fields)

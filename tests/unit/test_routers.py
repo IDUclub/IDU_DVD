@@ -85,6 +85,9 @@ class FakeJobs:
     def set(self, jid, data):
         self.store[jid] = data
 
+    def set_if_absent(self, jid, data):
+        self.store.setdefault(jid, data)
+
     def get(self, jid):
         return self.store.get(jid)
 
@@ -254,6 +257,65 @@ def client(tmp_path, fake_qdrant, fake_document_storage, ingest_queue):
 
 
 class TestUpload:
+    def test_reparse_all_queues_editions_and_reports_missing_sources(self, client):
+        from src.dvd_service.services.dvd_service import DocumentsService
+
+        c, fakes = client
+        fakes["documents"] = DocumentsService(fakes["qdrant"])
+        for version, key in [
+            ("v1", "a.docx"),
+            ("v2", "b.docx"),
+            ("v3", None),
+            ("v4", "missing.docx"),
+        ]:
+            fakes["qdrant"].points[version] = (
+                [0.0],
+                {
+                    "name": "N",
+                    "version": version,
+                    "doc_id": "d1",
+                    "source_object_key": key,
+                    "content_hash": version,
+                    "title": "Kept title",
+                    "metadata": {"custom": 1},
+                },
+            )
+        for key in ("a.docx", "b.docx"):
+            fakes["document_storage"].upload(key, b"source")
+        response = c.post("/documents/reparse")
+        assert response.status_code == 202
+        body = response.json()
+        assert body["queued_documents"] == 1 and body["queued_versions"] == 2
+        assert {s["version"] for s in body["skipped"]} == {"v3", "v4"}
+        [job] = fakes["queue"].pending()
+        assert [e["version"] for e in job["editions"]] == ["v1", "v2"]
+        assert job["editions"][0]["meta"] == {
+            "title": "Kept title",
+            "metadata": {"custom": 1},
+        }
+        assert c.post("/documents/reparse").json()["queued_documents"] == 0
+        assert len(fakes["qdrant"].points) == 4
+
+    def test_reparse_empty_corpus(self, client):
+        from src.dvd_service.services.dvd_service import DocumentsService
+
+        c, fakes = client
+        fakes["documents"] = DocumentsService(fakes["qdrant"])
+        response = c.post("/documents/reparse")
+        assert response.status_code == 202
+        assert response.json()["queued_documents"] == 0
+
+    def test_reparse_requires_admin(self, client):
+        from fastapi import HTTPException
+
+        c, _ = client
+
+        def deny():
+            raise HTTPException(403, "admin required")
+
+        c.app.dependency_overrides[require_admin] = deny
+        assert c.post("/documents/reparse").status_code == 403
+
     def test_queues_a_durable_job(self, client):
         c, fakes = client
         resp = c.post("/documents", files={"file": ("doc.docx", b"data")})

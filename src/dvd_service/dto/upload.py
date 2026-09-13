@@ -10,6 +10,19 @@ class UploadResponse(BaseModel):
     status: str
 
 
+class ReparseSkipped(BaseModel):
+    name: str
+    version: str
+    reason: str
+
+
+class ReparseAllResponse(BaseModel):
+    queued_documents: int
+    queued_versions: int
+    job_ids: list[str]
+    skipped: list[ReparseSkipped]
+
+
 class JobStatusDTO(BaseModel):
     job_id: str
     status: str  # queued | processing | done | error
@@ -39,6 +52,8 @@ class JobStatusDTO(BaseModel):
     error: str | None = None
     operation: str | None = None  # upload | update | reload
     created_at: str | None = None
+    version_index: int | None = None
+    version_total: int | None = None
 
 
 class ActiveJobsResponse(BaseModel):

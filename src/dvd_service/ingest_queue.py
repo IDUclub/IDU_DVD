@@ -30,6 +30,7 @@ import json
 from datetime import datetime, timezone
 
 import structlog
+from redis.exceptions import WatchError
 
 from src.common.config import Settings
 from src.common.db.redis_client import RedisClient
@@ -73,6 +74,37 @@ class IngestQueue:
         return entry
 
     # --- consuming ---
+
+    def enqueue_reparse(self, entry: dict) -> bool:
+        """Queue one name once, even when two admins submit the batch together.
+
+        Versions travel together so different workers cannot replace shared fragments
+        of the same document concurrently. Personal-index jobs do not block the corpus.
+        """
+        entry = {
+            **entry,
+            "attempts": 0,
+            "enqueued_at": datetime.now(timezone.utc).isoformat(),
+        }
+        with self.r.pipeline() as pipe:
+            while True:
+                try:
+                    pipe.watch(self.key, self.inflight_key)
+                    active = pipe.lrange(self.key, 0, -1) + pipe.lrange(
+                        self.inflight_key, 0, -1
+                    )
+                    for raw in active:
+                        job = json.loads(raw)
+                        if job.get("name") == entry["name"] and not (
+                            job.get("scope") or {}
+                        ).get("user_id"):
+                            return False
+                    pipe.multi()
+                    pipe.rpush(self.key, _dump(entry))
+                    pipe.execute()
+                    return True
+                except WatchError:
+                    continue
 
     def claim(self) -> dict | None:
         """Move the head job to the in-flight list and return it (atomic), or ``None`` if idle.
