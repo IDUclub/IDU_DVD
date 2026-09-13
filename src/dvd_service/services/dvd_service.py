@@ -478,6 +478,8 @@ class IngestionService:
         metadata: dict | None = None,
         effective_date: str | None = None,
         territory_id: int | None = None,
+        replace_version: bool = False,
+        finish_job: bool = True,
     ) -> dict:
         doc_id = doc_id or str(uuid.uuid4())
         client = create_llm()
@@ -520,7 +522,12 @@ class IngestionService:
                 version_override,
                 need_scope_hints=self.territory is not None and not preset,
             )
-            version, other_versions = self._resolve_version(name, version, content_hash)
+            if replace_version:
+                other_versions = sorted(set(self.registry.versions(name)) - {version})
+            else:
+                version, other_versions = self._resolve_version(
+                    name, version, content_hash
+                )
             scope = preset or self._resolve_scope(head)
             # The last point before anything is written to Qdrant: tell the caller what this
             # attempt decided to be, so an interrupted run can be undone by (name, version).
@@ -598,6 +605,15 @@ class IngestionService:
             points = self._build_points(
                 nodes, vectors, spans, doc_id, node_tags, node_refs, identity
             )
+            if replace_version:
+                # Keep the old index until parsing and embedding succeed. Originals must
+                # survive both replacement and a worker retry after an interrupted upsert.
+                try:
+                    self.delete_document(
+                        name, version, emit_event=False, keep_source=True
+                    )
+                except KeyError:
+                    pass
             count = self.qdrant.upsert(points)
 
             # For already-loaded versions, refresh their list of other versions (including the new one)
@@ -643,7 +659,11 @@ class IngestionService:
             # via the durable outbox — the publisher delivers it asynchronously).
             # ``emit_event`` is off when a caller (reload) announces the outcome itself.
             if self.outbox is not None and emit_event:
-                self.outbox.enqueue(DocumentProcessed(document_name=name))
+                self.outbox.enqueue(
+                    DocumentUpdated(document_name=name, version=version)
+                    if replace_version
+                    else DocumentProcessed(document_name=name)
+                )
 
             result = {
                 "doc_id": doc_id,
@@ -652,7 +672,7 @@ class IngestionService:
                 "other_versions": other_versions,
                 "nodes": count,
             }
-            if job_id:
+            if job_id and finish_job:
                 progress.finish()
                 self.jobs.update(job_id, status="done", **result)
             log.info("ingest_done", **result)
@@ -1285,7 +1305,12 @@ class IngestionService:
         return removed
 
     def delete_document(
-        self, name: str, version: str | None = None, *, emit_event: bool = True
+        self,
+        name: str,
+        version: str | None = None,
+        *,
+        emit_event: bool = True,
+        keep_source: bool = False,
     ) -> dict:
         """Remove a document (or one of its versions) from Qdrant and the Redis registry.
 
@@ -1312,8 +1337,9 @@ class IngestionService:
             for did in doc_ids:
                 self.registry.unregister_document(did)
             self.registry.unregister_name(name)
-            for key in source_keys:
-                self.storage.delete(key)
+            if not keep_source:
+                for key in source_keys:
+                    self.storage.delete(key)
             result = {
                 "name": name,
                 "versions_removed": versions_removed,
@@ -1369,7 +1395,7 @@ class IngestionService:
         document_removed = not remaining_versions and len(to_delete) == len(existing)
         if document_removed:
             self.registry.unregister_name(name)
-        if origin_key:
+        if origin_key and not keep_source:
             self.storage.delete(origin_key)
 
         result = {

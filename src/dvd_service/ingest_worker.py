@@ -40,7 +40,7 @@ log = structlog.get_logger(__name__)
 
 # Operations whose own semantics already wipe the target before writing ("replace everything
 # stored under this name"), so a retry needs no cleanup of its own.
-SELF_WIPING = {"reload", "reload-direct"}
+SELF_WIPING = {"reload", "reload-direct", "reparse"}
 DIRECT = {"upload-direct", "reload-direct"}
 
 
@@ -161,7 +161,26 @@ class IngestWorker:
         operation = entry.get("operation", "upload")
         ingestion = self._ingestion_for(entry)
         self._discard_attempt(entry, ingestion)
-        if operation in DIRECT:
+        if operation == "reparse":
+            editions = entry["editions"]
+            for index, edition in enumerate(editions, 1):
+                self.jobs.update(
+                    entry["job_id"],
+                    status="processing",
+                    error=None,
+                    version_index=index,
+                    version_total=len(editions),
+                    version=edition["version"],
+                )
+                self._run_pipeline({**entry, **edition}, ingestion)
+            self.jobs.update(
+                entry["job_id"],
+                status="done",
+                overall_progress=100,
+                task_progress=100,
+                error=None,
+            )
+        elif operation in DIRECT:
             self._run_direct(entry, ingestion)
         else:
             self._run_pipeline(entry, ingestion)
@@ -184,7 +203,18 @@ class IngestWorker:
                 ),
                 **meta,
             )
-            if operation == "upload":
+            if operation == "reparse":
+                ingestion.ingest(
+                    path,
+                    raw,
+                    entry["content_hash"],
+                    doc_id=entry.get("doc_id"),
+                    name_override=entry["name"],
+                    replace_version=True,
+                    finish_job=False,
+                    **common,
+                )
+            elif operation == "upload":
                 ingestion.ingest(
                     path,
                     raw,

@@ -132,6 +132,9 @@ function taskProgress(job) {
 
 function overallProgress(job) {
   if (job.status === "done") return 100;
+  if (job.operation === "reparse" && job.version_total) {
+    return percent(((Math.max(0, (job.version_index || 0) - 1)) + (job.version_index ? percent(job.overall_progress) / 100 : 0)) / job.version_total * 100);
+  }
   if (job.overall_progress != null) return percent(job.overall_progress);
   if (job.stage_total) return percent(10 + ((job.stage_index || 0) / job.stage_total) * 90);
   return job.status === "processing" ? 10 : 0;
@@ -146,7 +149,8 @@ function renderJob(job) {
   const head = node("div", "job-head");
   const overall = overallProgress(job); const task = taskProgress(job);
   const stage = stageLabels[job.stage] || job.stage || job.status;
-  const left = node("div"); left.append(node("strong", "", job.name || job.filename || job.job_id), node("small", "", `${job.operation || "upload"} · ${job.status}`));
+  const operation = job.operation === "reparse" ? `Повторный парсинг · версия ${job.version_index || 0} из ${job.version_total || 1}` : job.operation || "upload";
+  const left = node("div"); left.append(node("strong", "", job.name || job.filename || job.job_id), node("small", "", `${operation} · ${job.status}`));
   head.append(left, node("strong", "job-percent", `${overall}%`));
   const overallLabel = node("div", "progress-label"); overallLabel.append(node("span", "", "Общий прогресс"), node("span", "", `${overall}%`));
   const taskLabel = node("div", "progress-label task-label"); taskLabel.append(node("span", "", `${stage}${job.phase ? ` · ${job.phase}` : ""}`), node("span", "", `${task}%`));
@@ -224,8 +228,35 @@ async function runBackfill() {
 }
 
 async function loadJobs() {
-  try { const data = await request("/documents/jobs/recent?limit=20"); state.jobs = data.jobs || []; renderJobs(); }
+  try {
+    const [recent, active] = await Promise.all([request("/documents/jobs/recent?limit=20"), request("/documents/jobs/active")]);
+    const jobs = new Map((recent.jobs || []).map((job) => [job.job_id, job]));
+    (active.jobs || []).forEach((job) => jobs.set(job.job_id, job));
+    const completed = state.jobs.some((job) => ["queued", "processing"].includes(job.status) && jobs.get(job.job_id)?.status === "done");
+    state.jobs = [...jobs.values()]; renderJobs();
+    if (completed) await loadDocuments();
+  }
   catch (error) { console.error(error); }
+}
+
+async function reparseAllDocuments() {
+  if (!confirm("Заново распарсить все документы и версии библиотеки? Фрагменты, включая ручные правки, теги и векторы будут заменены. Названия, версии и исходники сохранятся. Документы без исходника будут пропущены.")) return;
+  const button = $("#reparse-all"); button.disabled = true;
+  const result = $("#reparse-result"); result.classList.remove("hidden"); result.replaceChildren(node("p", "muted", "Проверяем исходники и ставим документы в очередь…"));
+  try {
+    const data = await request("/documents/reparse", { method: "POST" });
+    result.replaceChildren(node("p", "", `Поставлено в очередь документов: ${data.queued_documents}, версий: ${data.queued_versions}. Пропущено версий: ${data.skipped.length}.`));
+    if (data.skipped.length) {
+      const details = node("details"); details.append(node("summary", "", "Причины пропусков"));
+      const list = node("ul"); data.skipped.forEach((item) => list.append(node("li", "", `${item.name} · ${item.version}: ${item.reason}`))); details.append(list); result.append(details);
+    }
+    if (data.queued_documents) {
+      const open = node("button", "button", "Открыть очередь обработки"); open.addEventListener("click", () => showView("jobs")); result.append(open);
+      await loadJobs();
+    }
+    toast(data.queued_documents ? "Повторный парсинг поставлен в очередь" : "Нет документов для повторного парсинга");
+  } catch (error) { result.replaceChildren(node("p", "", error.message)); toast(error.message, true); }
+  finally { button.disabled = false; }
 }
 
 function openUpload(operation = "upload", name = "", pickFiles = false) {
@@ -436,6 +467,7 @@ function init() {
   $("#doc-search").addEventListener("input", renderDocuments); $("#tag-filter").addEventListener("change", renderDocuments); $("#refresh-docs").addEventListener("click", loadDocuments);
   $("#level-filter").addEventListener("change", renderDocuments); $("#territory-filter").addEventListener("change", renderDocuments); $("#pending-filter").addEventListener("change", renderDocuments);
   $("#run-backfill").addEventListener("click", runBackfill);
+  $("#reparse-all").addEventListener("click", reparseAllDocuments);
   bindTerritoryLookup("#upload-territory", "#territory-options");
   $("#metadata-form").addEventListener("submit", saveMetadata); $("#fragment-form").addEventListener("submit", saveFragment); $("#delete-document").addEventListener("click", () => deleteVersion(true)); $("#delete-version").addEventListener("click", () => deleteVersion(false)); $("#replace-document").addEventListener("click", () => { const name = state.current.row.name; $("#document-dialog").close(); openUpload("reload", name); }); $("#settings-form").addEventListener("submit", saveSettings);
   showView(location.hash.slice(1) || "overview"); Promise.all([loadDocuments(), loadJobs(), loadSettings()]).catch((error) => toast(error.message, true)); window.setInterval(loadJobs, 2500);

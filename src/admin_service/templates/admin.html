@@ -46,6 +46,10 @@
 
     <section id="view-documents" class="view">
       <article class="panel">
+        <div class="panel-head"><div><h2>Повторный парсинг</h2><p class="muted">Все документы и версии библиотеки из сохранённых исходников, независимо от фильтров. Фрагменты, теги и векторы будут пересозданы.</p></div><button id="reparse-all" class="button" type="button">Перепарсить все документы</button></div>
+        <div id="reparse-result" aria-live="polite" class="hidden"></div>
+      </article>
+      <article class="panel">
         <div class="toolbar"><div class="search-box">⌕ <input id="doc-search" placeholder="Название, версия или тег"></div><select id="tag-filter"><option value="">Все теги</option></select><select id="level-filter"><option value="">Все уровни</option><option value="federal">Федеральный</option><option value="regional">Региональный</option><option value="municipal">Муниципальный</option></select><select id="territory-filter"><option value="">Все территории</option></select><label class="checkbox-label inline"><input id="pending-filter" type="checkbox"> Требуют доработки</label><button id="refresh-docs" class="button">Обновить</button></div>
         <div class="table-wrap"><table><thead><tr><th>Документ</th><th>Версия</th><th>Территория</th><th>Теги</th><th>Фрагменты</th><th>Загружен</th><th></th></tr></thead><tbody id="documents-body"></tbody></table></div>
         <div id="documents-empty" class="empty hidden">Документы не найдены</div>
