@@ -26,7 +26,9 @@ async function request(url, options = {}) {
   const data = type.includes("json") ? await response.json() : await response.text();
   if (!response.ok) {
     const detail = typeof data === "object" ? data.detail : data;
-    throw new Error(detail || `HTTP ${response.status}`);
+    const error = new Error(detail || `HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
   }
   return data;
 }
@@ -149,13 +151,15 @@ function renderJob(job) {
   const head = node("div", "job-head");
   const overall = overallProgress(job); const task = taskProgress(job);
   const stage = stageLabels[job.stage] || job.stage || job.status;
-  const operation = job.operation === "reparse" ? `Повторный парсинг · версия ${job.version_index || 0} из ${job.version_total || 1}` : job.operation || "upload";
+  const edition = job.version_index ? `версия ${job.version_index} из ${job.version_total || 1}` : `версий: ${job.version_total || 1}`;
+  const operation = job.operation === "reparse" ? `Повторный парсинг · ${edition}` : job.operation || "upload";
   const left = node("div"); left.append(node("strong", "", job.name || job.filename || job.job_id), node("small", "", `${operation} · ${job.status}`));
   head.append(left, node("strong", "job-percent", `${overall}%`));
   const overallLabel = node("div", "progress-label"); overallLabel.append(node("span", "", "Общий прогресс"), node("span", "", `${overall}%`));
   const taskLabel = node("div", "progress-label task-label"); taskLabel.append(node("span", "", `${stage}${job.phase ? ` · ${job.phase}` : ""}`), node("span", "", `${task}%`));
   item.classList.add(`job-${job.status}`);
   item.append(head, overallLabel, progressBar(overall, "native-progress overall-progress"), taskLabel, progressBar(task, "native-progress task-progress"));
+  if (job.status === "queued" && job.queue_position) item.append(node("small", "muted", `Место в очереди: ${job.queue_position}`));
   if (job.error) item.append(node("div", "job-error-message", job.error));
   return item;
 }
@@ -227,16 +231,50 @@ async function runBackfill() {
   } catch (error) { toast(error.message, true); }
 }
 
+let jobsRequestId = 0;
+let jobsAppliedRequestId = 0;
+
+function compareJobs(a, b) {
+  const rank = (job) => job.status === "processing" ? 0 : job.status === "queued" ? 1 : 2;
+  const group = rank(a) - rank(b);
+  if (group) return group;
+  if (a.status === "queued") {
+    const position = (a.queue_position ?? Infinity) - (b.queue_position ?? Infinity);
+    if (position) return position;
+  }
+  const created = String(a.created_at || "").localeCompare(String(b.created_at || ""));
+  return rank(a) < 2 ? created : -created;
+}
+
 async function loadJobs() {
+  const requestId = ++jobsRequestId;
   try {
     const [recent, active] = await Promise.all([request("/documents/jobs/recent?limit=20"), request("/documents/jobs/active")]);
+    if (requestId < jobsAppliedRequestId) return;
     const jobs = new Map((recent.jobs || []).map((job) => [job.job_id, job]));
     (active.jobs || []).forEach((job) => jobs.set(job.job_id, job));
+    // Older jobs leave both feeds when a large batch completes. Resolve their final
+    // status explicitly and retain results observed during this page session.
+    await Promise.all(state.jobs.filter((job) => !jobs.has(job.job_id)).map(async (job) => {
+      if (["queued", "processing"].includes(job.status)) {
+        try { jobs.set(job.job_id, await request(`/documents/${encodeURIComponent(job.job_id)}`)); }
+        catch (error) {
+          if (error.status !== 404) throw error;
+        }
+      } else jobs.set(job.job_id, job);
+    }));
+    if (requestId < jobsAppliedRequestId) return;
+    jobsAppliedRequestId = requestId;
     const completed = state.jobs.some((job) => ["queued", "processing"].includes(job.status) && jobs.get(job.job_id)?.status === "done");
-    state.jobs = [...jobs.values()]; renderJobs();
+    state.jobs = [...jobs.values()].sort(compareJobs); renderJobs();
+    $("#jobs-error").classList.add("hidden");
     if (completed) await loadDocuments();
   }
-  catch (error) { console.error(error); }
+  catch (error) {
+    if (requestId < jobsAppliedRequestId) return;
+    const message = $("#jobs-error"); message.textContent = `Не удалось обновить очередь: ${error.message}. Показаны последние полученные данные.`; message.classList.remove("hidden");
+    console.error(error);
+  }
 }
 
 async function reparseAllDocuments() {

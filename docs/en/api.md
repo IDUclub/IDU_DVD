@@ -484,6 +484,14 @@ index is replaced after parsing and embedding succeed. The Qdrant replacement is
 write failures are recovered by retrying from the retained original. Monitor progress in the
 processing queue; pending work survives service restarts.
 
+The panel refreshes jobs every 2.5 seconds: running documents appear first, followed by
+waiting documents in queue order with their positions. All active documents are shown,
+including batches larger than the 20-entry recent history. `/documents/jobs/active`
+supplements expired progress records from the durable queue and includes `queue_position`
+for waiting jobs. Each reparse card shows the edition count and combined progress across
+editions. Completed results observed on the open page remain visible, and completion refreshes
+the library. If polling fails, the queue displays an error alongside the last received data.
+
 `POST /documents/{name}/reindex` needs no file body: the original is in MinIO and its key is stored on every
 fragment of the document, so the job is queued from that key and the worker downloads it just
 as it would a fresh upload. Use it after a model or parser change, or to repair a batch that
