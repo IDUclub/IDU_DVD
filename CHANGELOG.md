@@ -1,3 +1,17 @@
+## v0.17.0 (2026-09-14)
+
+### Feat
+
+- add bulk document reparsing to admin panel (#78)
+- add structural and fragment name retrieval (#75)
+- support multiple document uploads in admin UI (#74)
+
+### Fix
+
+- recover document catalog and scope source reparsing (#79)
+- preserve source clause hierarchy and reject incomplete markup (#77)
+- preserve neighbouring context in structural retrieval (#76)
+
 ## v0.16.0 (2026-09-08)
 
 ### Feat
