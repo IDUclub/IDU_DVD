@@ -14,6 +14,7 @@ import structlog
 from src.api_clients import ChatClient
 from src.common.config import Settings
 from src.dvd_service.modules.docx_reader import DocxReader
+from src.dvd_service.modules.range_partitioning import RangePartitioner
 from src.dvd_service.modules.source_structure import SourceStructure
 from src.dvd_service.modules.windowing import (
     chat_window,
@@ -31,11 +32,14 @@ SKIP_CATEGORIES = {"Header", "Footer", "PageBreak"}
 LIST_MARKER = re.compile(
     r"^\s*(\d+(?:\.\d+)*[.)]?|\w[.)]|[IVXLCDM]+[.)]|[-*•·–—‣◦])\s+\S", re.U
 )
+# Count the introduction, all item text/markers and the spaces used by _merge_blocks.
+STRUCTURAL_GROUP_MAX_CHARS = 512
 TERMINALS = (".", "!", "?", ";", ":", "…", "。", "！", "？", "»", '"', ")")
 OPEN_START = ("[", "(", "«", '"')
 # A new line can start a list item; an inline number may be a reference or date.
 MARKER_INLINE = re.compile(
-    r"\n[ \t]*(?=(?:\d+(?:\.\d+)*[.)]?|[а-яёa-z]\)|[•·‣◦])\s)", re.I | re.U
+    r"\n[ \t]*(?=(?:\d+(?:\.\d+)*[.)]?|[а-яёa-z][.)]|[IVXLCDM]+[.)]|[-*•·–—‣◦])\s)",
+    re.I | re.U,
 )
 RU_ABBR = {
     "г",
@@ -139,6 +143,15 @@ class DocumentParser:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.range_partitioner = RangePartitioner(settings, STRUCTURAL_GROUP_MAX_CHARS)
+
+    @property
+    def version(self) -> str:
+        return PARSER_VERSION + (
+            "-semantic1-ranges"
+            if self.settings.logical_partition_mode == "ranges"
+            else ""
+        )
 
     def __repr__(self) -> str:
         s = self.settings
@@ -278,7 +291,7 @@ class DocumentParser:
         for seg in segments:
             out.extend(
                 self._split_sentences(seg)
-                if len(seg) > self.settings.sent_min_len
+                if len(seg) > self.settings.sent_min_len and not starts_new_marker(seg)
                 else [seg]
             )
         return out
@@ -303,6 +316,168 @@ class DocumentParser:
         return blocks
 
     # --- boundary stitching (Stage 1) ---
+    @staticmethod
+    def _structural_ranges(blocks) -> dict[int, int]:
+        """Contiguous source subtrees: numbered provisions and introduced lists.
+
+        Decimal prefixes define subclauses (1 -> 1.1 -> 1.1.1). Inside an explicit
+        article, decimal parts are siblings, matching HierarchyBuilder; 1) and а)
+        remain nested items. Headings, notes, tables and unmarked prose end a run.
+        """
+        stack = []
+        ends = {}
+        in_article = False
+        for i, block in enumerate(blocks):
+            text = block["text"]
+            anchor = SourceStructure.anchor(text)
+            typ = anchor.get("type")
+            if typ in {"article", "chapter", "section"}:
+                in_article = typ == "article"
+            marker = LIST_MARKER.match(text.strip())
+            eligible = block["category"] != "Table" and not typ
+            number = anchor.get("numbering", "").rstrip(")")
+            decimal = bool(number) and all(p.isdigit() for p in number.split("."))
+            if decimal:
+                kind = (
+                    "numeric_item"
+                    if anchor.get("source_delimiter") == ")"
+                    else "decimal"
+                )
+            elif marker and re.fullmatch(r"[^\W\d_][.)]", marker[1]):
+                kind = "letter_item"
+            else:
+                kind = "marker" if marker else "intro"
+            introduced = eligible and text.rstrip().endswith(":")
+            candidate = eligible and (marker is not None or introduced)
+            parent = None
+            if candidate and marker:
+                for node in reversed(stack):
+                    if (
+                        (
+                            kind == "decimal"
+                            and not in_article
+                            and node["kind"] == "decimal"
+                            and number.startswith(node["number"] + ".")
+                        )
+                        or (kind == "numeric_item" and node["kind"] == "decimal")
+                        or (
+                            kind == "letter_item"
+                            and node["kind"] in {"decimal", "numeric_item"}
+                        )
+                        or (
+                            node["introduced"]
+                            and (node["kind"] == "intro" or kind == "marker")
+                        )
+                    ):
+                        parent = node["index"]
+                        break
+            while stack and stack[-1]["index"] != parent:
+                node = stack.pop()
+                ends[node["index"]] = i
+            if candidate:
+                stack.append(
+                    {
+                        "index": i,
+                        "kind": kind,
+                        "number": number,
+                        "introduced": introduced,
+                    }
+                )
+        for node in stack:
+            ends[node["index"]] = len(blocks)
+        return {start: end for start, end in ends.items() if end > start + 1}
+
+    @classmethod
+    def _structural_boundaries(cls, blocks) -> dict[int, str]:
+        """Choose the largest fitting subtree, descending only when it exceeds 512.
+
+        Mark every chosen fragment so the semantic merge cannot undo this decision.
+        The size includes source markers and the spaces inserted by _merge_blocks.
+        """
+        lengths = [0]
+        for block in blocks:
+            block.pop("_group_atomic", None)
+            lengths.append(lengths[-1] + len(block["text"]) + 1)
+        ranges = cls._structural_ranges(blocks)
+        boundaries = {}
+        start = protected_end = 0
+        while start < len(blocks):
+            end = ranges.get(start, start + 1)
+            if end > start + 1:
+                protected_end = max(protected_end, end)
+            if start >= protected_end:
+                start += 1
+                continue
+            size = lengths[end] - lengths[start] - 1
+            if "char_start" in blocks[start]:
+                size = blocks[end - 1]["char_end"] - blocks[start]["char_start"]
+            stop = end if size <= STRUCTURAL_GROUP_MAX_CHARS else start + 1
+            for i in range(start, stop):
+                blocks[i]["_group_atomic"] = True
+                boundaries[i] = "new" if i == start else "continuation"
+            boundaries[stop] = "new"
+            start = stop
+        boundaries.pop(len(blocks), None)
+        return boundaries
+
+    def source_units(self, raw):
+        """Candidate boundaries with exact offsets in the extracted source text."""
+        source_text, spans = self.source_index(raw)
+        units = []
+        for src, block in enumerate(raw):
+            text = block["text"]
+            pieces = (
+                [text]
+                if block["category"] == "Table"
+                or starts_new_marker(text)
+                or SourceStructure.starts_part(text)
+                else self._split_block(text)
+            )
+            cursor = 0
+            for piece in pieces:
+                if not piece:
+                    continue
+                pos = text.find(piece, cursor)
+                if pos < 0:
+                    raise ValueError("Исходный сегмент не найден без изменения текста")
+                units.append(
+                    {
+                        "id": len(units),
+                        "src_ids": [src],
+                        "category": block["category"],
+                        "html": block.get("html"),
+                        "char_start": spans[src]["start"] + pos,
+                    }
+                )
+                cursor = pos + len(piece)
+        if units:
+            units[0]["char_start"] = 0
+        for i, unit in enumerate(units):
+            unit["char_end"] = (
+                units[i + 1]["char_start"] if i + 1 < len(units) else len(source_text)
+            )
+            unit["text"] = source_text[unit["char_start"] : unit["char_end"]]
+        return source_text, units
+
+    def prepare_range_units(self, source_text, units):
+        """Preserve numbered leaves until their types and parentage are known."""
+        prepared = []
+        previous_locked = False
+        for unit in units:
+            anchor = SourceStructure.anchor(unit["text"])
+            locked = unit["category"] == "Table" or bool(anchor)
+            prepared.append(
+                {
+                    **unit,
+                    "must_start": not prepared
+                    or locked
+                    or previous_locked
+                    or starts_new_marker(unit["text"]),
+                }
+            )
+            previous_locked = locked
+        return prepared
+
     def _llm_boundaries(self, client: ChatClient, window_texts):
         rows = chat_window(
             client, BOUNDARY_SYSTEM, window_texts, BOUNDARY_SCHEMA, "blocks"
@@ -311,6 +486,9 @@ class DocumentParser:
 
     def _assemble_boundaries(self, blocks, client, on_progress=None):
         n = len(blocks)
+        if not n:
+            return []
+        structural_boundaries = self._structural_boundaries(blocks)
         heur = ["new"] + [
             self._heuristic_boundary(
                 blocks[i - 1]["text"],
@@ -344,7 +522,11 @@ class DocumentParser:
             llm_dec = reconcile(decisions)
         final = ["new"]
         for i in range(1, n):
-            final.append(heur[i] if heur[i] != "uncertain" else llm_dec.get(i, "new"))
+            final.append(
+                structural_boundaries.get(
+                    i, heur[i] if heur[i] != "uncertain" else llm_dec.get(i, "new")
+                )
+            )
         return final
 
     @staticmethod
@@ -367,6 +549,8 @@ class DocumentParser:
                     "category": b["category"],
                     "html": b.get("html"),
                 }
+                if b.get("_group_atomic"):
+                    cur["_group_atomic"] = True
         if cur is not None:
             parts.append(cur)
         return parts
@@ -411,6 +595,8 @@ class DocumentParser:
                 and cur is not None
                 and not is_table
                 and not prev_table
+                and not p.get("_group_atomic")
+                and not cur.get("_group_atomic")
                 and not is_numbered_head(p["text"])
                 and not SourceStructure.starts_part(p["text"])
                 and not SourceStructure.NOTE.match(cur["text"])
@@ -430,6 +616,8 @@ class DocumentParser:
                     "category": p.get("category", ""),
                     "html": p.get("html"),
                 }
+                if p.get("_group_atomic"):
+                    cur["_group_atomic"] = True
         if cur is not None:
             merged.append(cur)
         for i, p in enumerate(merged):
@@ -450,6 +638,15 @@ class DocumentParser:
     def to_logical_parts(
         self, raw: list[dict], client: ChatClient | None, on_progress=None
     ) -> list[dict]:
+        if self.settings.logical_partition_mode == "ranges":
+            source_text, units = self.source_units(raw)
+            units = self.prepare_range_units(source_text, units)
+            ranges = (
+                self.range_partitioner.partition(units, client, on_progress)
+                if client is not None
+                else [(i, i) for i in range(len(units))]
+            )
+            return self.range_partitioner.materialize(source_text, units, ranges)
         blocks = self._split_into_segments(raw)
         log.info("stage1_split", blocks=len(raw), segments=len(blocks))
         parts = self._merge_blocks(

@@ -107,6 +107,11 @@ class NodePayload(BaseModel):
     )  # indices of the source raw blocks the node was built from (delta-update diffing)
     char_start: int | None = None  # offset into the normalized source text
     char_end: int | None = None
+    is_container: bool = False
+    search_text: str | None = None  # embedding text with structural parent context
+    source_text: str | None = (
+        None  # exact extracted-source slice, before markup normalization
+    )
     page_start: int | None = None  # when the format exposes pages (PDF/scan)
     page_end: int | None = None
     bbox: list[float] | None = None  # [x0, y0, x1, y1] when available

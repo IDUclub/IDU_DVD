@@ -252,6 +252,7 @@ the ingestion path apart; deletion of a directly-ingested document still emits t
 | `DVD_PARTITION_STRATEGY` | `hi_res` | unstructured strategy (for formats other than `.docx`) |
 | `DVD_LANGUAGES` | `["rus","eng"]` | languages for parsing |
 | `DVD_WINDOW_CHARS` | `6000` | character budget per window |
+| `DVD_LOGICAL_PARTITION_MODE` | `boundaries` | `boundaries`: existing boundary/merge stages; `ranges`: validated ID-range partitioning, exact `source_text`, no overlap or second merge pass at Stage 1 |
 | `DVD_WINDOW_MAX_ITEMS` | `22` | item limit per structure-markup window |
 | `DVD_OVERLAP_BLOCKS` | `3` | window overlap |
 | `DVD_SEMANTIC_MERGE_MAX_PASSES` | `1` | number of semantic-merge passes (raise for more merge quality at the cost of extra LLM passes) |

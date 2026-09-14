@@ -102,6 +102,38 @@ class SimpleNS:
         self.__dict__.update(kw)
 
 
+def test_range_mode_preserves_exact_source_through_storage_and_library(wired):
+    settings = wired.ingestion.settings
+    settings.logical_partition_mode = "ranges"
+    settings.sent_min_len = 1
+    raw = [
+        {
+            "text": "1. Проверить объект.",
+            "category": "NarrativeText",
+            "source_paragraph": True,
+        },
+        {
+            "text": "Проверить улицу.  Сохранить акт.",
+            "category": "NarrativeText",
+            "source_paragraph": True,
+        },
+    ]
+    source, _ = DocumentParser.source_index(raw)
+    result = wired.ingestion.ingest("doc.docx", raw, DocumentParser.content_hash(raw))
+    document = wired.library.get_document(result["doc_id"])
+    fragments = [f for f in document.fragments if f.source_text is not None]
+    assert len(fragments) == 1
+    assert fragments[0].type == "clause" and not fragments[0].is_container
+    assert "".join(f.source_text for f in fragments) == source
+    for f in fragments:
+        assert f.source_text == source[f.char_start : f.char_end]
+    assert fragments[0].text != fragments[0].source_text
+    assert all(
+        pl["parser_version"].endswith("-ranges")
+        for _, pl in wired.qdrant.points.values()
+    )
+
+
 @pytest.fixture
 def wired_with_territory(wired):
     """The same pipeline, with a territory resolver over a faked Urban API attached."""
@@ -2083,3 +2115,57 @@ class TestDocumentScopes:
             "a.docx", sample_raw, DocumentParser.content_hash(sample_raw)
         )
         assert wired.tags.get_scopes().pending_documents == 1
+
+
+def test_semantic_containers_are_in_library_but_search_returns_contextual_content(
+    wired,
+):
+    wired.ingestion.settings.logical_partition_mode = "ranges"
+    raw = [
+        {"text": "1. Условия применения " + "я" * 512, "category": "NarrativeText"},
+        {"text": "1.1. Проверка.", "category": "NarrativeText"},
+        {"text": "1.2. Расчёт.", "category": "NarrativeText"},
+    ]
+    result = wired.ingestion.ingest("doc.docx", raw, DocumentParser.content_hash(raw))
+    fragments = wired.library.get_document(result["doc_id"]).fragments
+    clause = next(f for f in fragments if f.type == "clause")
+    group = next(f for f in fragments if f.type == "subclause_group")
+    assert clause.is_container and group.parent_id == clause.id
+    assert group.search_text.startswith(clause.text.rstrip())
+    assert group.search_text.endswith(group.text)
+    assert group.search_text in [
+        text for batch in wired.ollama.embed_calls for text in batch
+    ]
+    hits = wired.search.search(SearchRequest(query="проверка", limit=20)).hits
+    assert [h.id for h in hits] == [group.id]
+
+
+def test_semantic_update_rebuilds_grouping_and_context_for_new_revision(wired):
+    wired.ingestion.settings.logical_partition_mode = "ranges"
+    raw = [
+        {"text": t, "category": "NarrativeText"}
+        for t in ["1. Правила:", "1.1. Проверка.", "1.2. Расчёт."]
+    ]
+    first = wired.ingestion.ingest("doc.docx", raw, DocumentParser.content_hash(raw))
+    updated = [{**raw[0], "text": "1. Новые правила " + "я" * 512}, *raw[1:]]
+    second = wired.ingestion.update(
+        first["name"],
+        "doc.docx",
+        updated,
+        DocumentParser.content_hash(updated),
+        version_override="ред. 2",
+    )
+    assert second["reused_nodes"] == 0
+    payloads = [pl for _, pl in wired.qdrant.points.values()]
+    old = [p for p in payloads if p["versions"] == [first["version"]]]
+    new = [p for p in payloads if p["versions"] == ["ред. 2"]]
+    assert len(old) == 2 and len(new) == 3
+    assert next(p for p in new if p["type"] == "subclause_group")[
+        "search_text"
+    ].startswith("Новые правила")
+    new_ids = {
+        pid
+        for pid, (_, pl) in wired.qdrant.points.items()
+        if pl["versions"] == ["ред. 2"]
+    }
+    assert all(p["parent_id"] is None or p["parent_id"] in new_ids for p in new)

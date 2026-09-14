@@ -6,6 +6,7 @@ Nodes receive prev_id/next_id (reading order, for context), kind (text/table), a
 from __future__ import annotations
 
 import uuid
+from copy import deepcopy
 
 import structlog
 
@@ -45,7 +46,7 @@ class HierarchyBuilder:
         ]
         return parents[-1] if parents else root
 
-    def build(self, parts, rank_map, title="document"):
+    def build(self, parts, rank_map, title="document", *, semantic=False):
         nodes = [
             {
                 "_id": 0,
@@ -81,6 +82,9 @@ class HierarchyBuilder:
                     "is_table": p.get("category") == "Table",
                     "html": p.get("html"),
                     "src_ids": p.get("src_ids", []),
+                    "source_text": p.get("source_text"),
+                    "char_start": p.get("char_start"),
+                    "char_end": p.get("char_end"),
                     "tags": p.get("tags", []),
                     "parent": None,
                 }
@@ -107,7 +111,18 @@ class HierarchyBuilder:
             elif n["type"] == "article":
                 parent = self._heading_parent(stack, n, nodes[0])
                 stack = stack[: stack.index(parent) + 1]
-            elif article is not None:
+            elif article is not None and not (
+                semantic
+                and n["type"]
+                in {
+                    "title_page",
+                    "toc",
+                    "preface",
+                    "introduction",
+                    "appendix",
+                    "bibliography",
+                }
+            ):
                 if n["numbering"]:
                     # Inserted legal parts (3.1, 3.3) are siblings of part 3.
                     # Parenthesized list items remain below the current part.
@@ -140,6 +155,67 @@ class HierarchyBuilder:
                         (a for a in reversed(stack) if a["numbering"]), article
                     )
                     stack = stack[: stack.index(parent) + 1]
+            elif semantic:
+                heading = source_headings[-1] if source_headings else nodes[0]
+                if n["type"] in {
+                    "title_page",
+                    "toc",
+                    "preface",
+                    "introduction",
+                    "appendix",
+                    "bibliography",
+                }:
+                    parent = nodes[0]
+                    source_headings = []
+                elif n["numbering"]:
+                    number = n["numbering"].rstrip(".)")
+                    item = n["source_delimiter"] == ")" or n["numbering"].endswith(")")
+                    numeric = number.replace(".", "").isdigit()
+                    candidates = [
+                        a
+                        for a in stack
+                        if a["numbering"]
+                        and a["type"] in {"clause", "subclause", "list_item"}
+                        and (
+                            (
+                                not item
+                                and a.get("source_delimiter") != ")"
+                                and number.startswith(a["numbering"].rstrip(".") + ".")
+                            )
+                            or (item and numeric and a.get("source_delimiter") != ")")
+                            or (
+                                item
+                                and not numeric
+                                and a["numbering"]
+                                .rstrip(".)")
+                                .replace(".", "")
+                                .isdigit()
+                            )
+                        )
+                    ]
+                    parent = candidates[-1] if candidates else heading
+                elif n["type"] in {"paragraph", "note", "list_item", "table"}:
+                    parent = next(
+                        (
+                            a
+                            for a in reversed(stack)
+                            if (
+                                a["type"] in {"clause", "subclause", "list_item"}
+                                and a["numbering"]
+                            )
+                            or (
+                                n["type"] == "list_item"
+                                and a["text"].rstrip().endswith(":")
+                            )
+                        ),
+                        heading,
+                    )
+                else:
+                    parent = heading
+                stack = [parent]
+                while stack[-1]["parent"] is not None:
+                    stack.append(node_by_id[stack[-1]["parent"]])
+                stack.reverse()
             else:
                 d = (
                     max(1, n["rank"])
@@ -182,6 +258,9 @@ class HierarchyBuilder:
                 "_rank": node["rank"],
                 "_block": node["block"],
                 "_src_ids": node.get("src_ids", []),
+                "source_text": node.get("source_text"),
+                "char_start": node.get("char_start"),
+                "char_end": node.get("char_end"),
                 "_tags": node.get("tags", []),
             }
             kids = [built.pop(c["_id"]) for c in children.get(node_id, [])]
@@ -253,6 +332,122 @@ class HierarchyBuilder:
         tree["children"] = new_top
         return tree
 
+    @staticmethod
+    def _source_run(nodes):
+        """Return an exact contiguous source span, or None for unsafe joins."""
+        if not nodes or any(
+            n.get("is_table") or n.get("category") == "Table" for n in nodes
+        ):
+            return None
+        if any(
+            n.get("source_text") is None
+            or type(n.get("char_start")) is not int
+            or type(n.get("char_end")) is not int
+            for n in nodes
+        ):
+            return None
+        if any(a["char_end"] != b["char_start"] for a, b in zip(nodes, nodes[1:])):
+            return None
+        source = "".join(n["source_text"] for n in nodes)
+        if len(source) != nodes[-1]["char_end"] - nodes[0]["char_start"]:
+            return None
+        return source
+
+    def coalesce_title_pages(self, parts):
+        """Collect adjacent cover lines, including across LLM input windows."""
+        result = []
+        for part in deepcopy(parts):
+            if result and part.get("type") == result[-1].get("type") == "title_page":
+                previous = result[-1]
+                source = self._source_run([previous, part])
+                if source is not None and previous.get("block") == part.get("block"):
+                    previous.update(
+                        text=source, source_text=source, char_end=part["char_end"]
+                    )
+                    previous["src_ids"] = sorted(
+                        set(previous["src_ids"] + part["src_ids"])
+                    )
+                    previous["tags"] = sorted(
+                        set(previous.get("tags", []) + part.get("tags", []))
+                    )
+                    continue
+            if part.get("type") == "title_page":
+                part.update(relation="top", numbering="")
+            part["id"] = len(result)
+            result.append(part)
+        return result
+
+    @staticmethod
+    def _preorder(tree):
+        result, stack = [], [tree]
+        while stack:
+            node = stack.pop()
+            result.append(node)
+            stack.extend(reversed(node.get("children", [])))
+        return result
+
+    @staticmethod
+    def _combine(target, members, source):
+        target.update(
+            source_text=source,
+            char_start=members[0]["char_start"],
+            char_end=members[-1]["char_end"],
+            _src_ids=sorted({i for n in members for i in n.get("_src_ids", [])}),
+            _tags=sorted({t for n in members for t in n.get("_tags", [])}),
+            children=[],
+            is_container=False,
+        )
+
+    def assemble_semantic(self, tree, max_chars=512):
+        """Choose the largest fitting provision from the top down, after typing."""
+        provisions = {"clause", "subclause", "list_item"}
+        joinable = provisions | {"paragraph", "note", "definition"}
+        stack = [tree]
+        while stack:
+            node = stack.pop()
+            children = node.get("children", [])
+            node["is_container"] = False
+            introduced_list = (
+                node["type"] == "paragraph"
+                and node["text"].rstrip().endswith(":")
+                and any(c["type"] == "list_item" for c in children)
+            )
+            if children and (node["type"] in provisions or introduced_list):
+                members = self._preorder(node)
+                same_block = len({n.get("_block", "main") for n in members}) == 1
+                allowed = same_block and all(n["type"] in joinable for n in members)
+                source = self._source_run(members) if allowed else None
+                if source is not None and len(source) <= max_chars:
+                    # Preserve the parent's display text and every child's source numbering.
+                    text = node["text"] + "".join(n["source_text"] for n in members[1:])
+                    self._combine(node, members, source)
+                    node["text"] = text
+                    continue
+                node["is_container"] = True
+                descendants = members[1:]
+                source = self._source_run(descendants) if allowed else None
+                if (
+                    source is not None
+                    and len(source) <= max_chars
+                    and len(children) > 1
+                ):
+                    group = {
+                        "type": "subclause_group",
+                        "text": source,
+                        "numbering": "",
+                        "is_table": False,
+                        "html": None,
+                        "_rank": None,
+                        "_block": node.get("_block", "main"),
+                    }
+                    self._combine(group, descendants, source)
+                    node["children"] = [group]
+                    continue
+            elif children:
+                node["is_container"] = True
+            stack.extend(reversed(node.get("children", [])))
+        return tree
+
     def flatten(self, tree) -> list[dict]:
         """Flatten into a flat list (reading order) with parent/child/prev/next/kind/html."""
         nodes: list[dict] = []
@@ -276,6 +471,10 @@ class HierarchyBuilder:
                 "block": node.get("_block", "main"),
                 "depth": depth,
                 "src_ids": node.get("_src_ids", []),
+                "source_text": node.get("source_text"),
+                "is_container": node.get("is_container", False),
+                "char_start": node.get("char_start"),
+                "char_end": node.get("char_end"),
                 "tags": node.get("_tags", []),
                 "parent_id": parent_rec["id"] if parent_rec else None,
                 "parent_text": parent_text,
@@ -284,6 +483,20 @@ class HierarchyBuilder:
                 "prev_id": None,
                 "next_id": None,
             }
+            if "is_container" in node:
+                # Full parent context is separate from the bounded, source-grounded text.
+                context = (
+                    parent_rec.get("search_text", "")
+                    if parent_rec
+                    and parent_rec.get("is_container")
+                    and parent_rec["type"] != "document"
+                    else ""
+                )
+                rec["search_text"] = (
+                    (context.rstrip() + "\n" + rec["text"]).strip()
+                    if context
+                    else rec["text"]
+                )
             nodes.append(rec)
             if parent_rec is not None:
                 parent_rec["child_ids"].append(nid)

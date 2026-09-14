@@ -11,6 +11,7 @@ import pytest
 
 from src.api_clients import LlmError
 from src.dvd_service.modules.doc_parsers import (
+    STRUCTURAL_GROUP_MAX_CHARS,
     DocumentParser,
     is_numbered_head,
     starts_new_marker,
@@ -108,6 +109,214 @@ class TestLogicalSplitHeuristicOnly:
         assert parts, "expected at least one logical part"
         assert all({"id", "text", "source_ids"} <= p.keys() for p in parts)
         assert [p["id"] for p in parts] == list(range(len(parts)))  # ids are reindexed
+
+
+class TestStructuralGrouping:
+    @staticmethod
+    def raw(texts):
+        return [
+            {"text": text, "category": "NarrativeText", "source_paragraph": True}
+            for text in texts
+        ]
+
+    @pytest.mark.parametrize("size", [511, 512, 513])
+    @pytest.mark.parametrize("markers", [("-", "-"), ("1.", "2."), ("а)", "б)")])
+    def test_whole_list_threshold_and_source_ids(self, settings, size, markers):
+        texts = ["Необходимо выполнить:", f"{markers[0]} проверку;", f"{markers[1]} "]
+        texts[-1] += "я" * (size - len(" ".join(texts)))
+        assert len(" ".join(texts)) == size
+        parser = DocumentParser(settings)
+        blocks = parser._split_into_segments(self.raw(texts))
+        boundaries = parser._assemble_boundaries(blocks, client=None)
+        short = size <= STRUCTURAL_GROUP_MAX_CHARS
+        assert boundaries == (
+            ["new", "continuation", "continuation"] if short else ["new"] * 3
+        )
+        parts = parser.to_logical_parts(self.raw(texts), client=None)
+        assert [p["text"] for p in parts] == ([" ".join(texts)] if short else texts)
+        assert [p["src_ids"] for p in parts] == (
+            [[0, 1, 2]] if short else [[0], [1], [2]]
+        )
+
+    @pytest.mark.parametrize("long_list", [False, True])
+    def test_llm_cannot_override_list_or_join_surrounding_text(
+        self, settings, monkeypatch, long_list
+    ):
+        settings.semantic_merge_max_passes = 3
+        parser = DocumentParser(settings)
+        monkeypatch.setattr(
+            parser,
+            "_llm_boundaries",
+            lambda client, texts: {i: "continuation" for i in range(len(texts))},
+        )
+        monkeypatch.setattr(
+            parser,
+            "_llm_semantic_merge",
+            lambda client, texts: {i: "continuation" for i in range(len(texts))},
+        )
+        items = [
+            "Требуется:",
+            "- проверка;",
+            "- " + ("я" * 512 if long_list else "расчёт."),
+        ]
+        texts = ["предисловие", *items, "пояснение", "и его продолжение"]
+        parts = parser.to_logical_parts(self.raw(texts), client=object())
+        expected_list = items if long_list else [" ".join(items)]
+        assert [p["text"] for p in parts] == [
+            "предисловие",
+            *expected_list,
+            "пояснение и его продолжение",
+        ]
+        # Repeated semantic passes must retain the forced boundaries.
+        again = parser.semantic_merge(parts, client=object())
+        assert [p["text"] for p in again] == [p["text"] for p in parts]
+
+    def test_new_decisions_from_llm_do_not_split_short_list(
+        self, settings, fake_ollama
+    ):
+        texts = ["Требуется:", "- проверка;", "- расчёт."]
+        parts = DocumentParser(settings).to_logical_parts(self.raw(texts), fake_ollama)
+        assert [p["text"] for p in parts] == [" ".join(texts)]
+
+    @pytest.mark.parametrize("intro", ["Общие положения.", "Статья 1. Требования:"])
+    def test_independent_numbered_provisions_remain_separate(self, settings, intro):
+        texts = [intro, "1. Проверить объект.", "2. Выполнить расчёт."]
+        parts = DocumentParser(settings).to_logical_parts(self.raw(texts), client=None)
+        assert [p["text"] for p in parts] == texts
+
+    @pytest.mark.parametrize(
+        "boundary",
+        [
+            "Статья 2. Следующая статья",
+            "(в ред. Федерального закона от 01.01.2026)",
+            "14 сентября 2026 года",
+            "обычное пояснение",
+        ],
+    )
+    def test_list_stops_before_non_item(self, settings, boundary):
+        texts = ["Требуется:", "- проверка;", "- расчёт.", boundary, "1. Другой пункт."]
+        parts = DocumentParser(settings).to_logical_parts(self.raw(texts), client=None)
+        assert [p["text"] for p in parts] == [" ".join(texts[:3]), *texts[3:]]
+
+    def test_tables_end_lists_and_cannot_introduce_them(self, settings):
+        raw = self.raw(
+            ["Требуется:", "- проверка;", "1. Таблица:", "- отдельный пункт."]
+        )
+        raw[2].update(
+            category="Table", html="<table><tr><td>Таблица:</td></tr></table>"
+        )
+        parts = DocumentParser(settings).to_logical_parts(raw, client=None)
+        assert [p["text"] for p in parts] == [
+            "Требуется: - проверка;",
+            "1. Таблица:",
+            "- отдельный пункт.",
+        ]
+        assert parts[1]["html"] == raw[2]["html"]
+
+    @pytest.mark.parametrize("marker", ["-", "•", "1.", "а)", "IV."])
+    def test_multiline_list_keeps_complete_items(self, settings, marker):
+        settings.split_sentences = True
+        settings.sent_min_len = 10
+        texts = [
+            "Требуется:",
+            f"{marker} Проверить объект. Сохранить акт.",
+            f"{marker} Выполнить расчёт.",
+        ]
+        raw = [{"text": "\n".join(texts), "category": "NarrativeText"}]
+        parts = DocumentParser(settings).to_logical_parts(raw, client=None)
+        assert [p["text"] for p in parts] == [" ".join(texts)]
+
+    @pytest.mark.parametrize("size", [511, 512, 513])
+    def test_numbered_parent_is_measured_with_all_children(self, settings, size):
+        texts = ["1. Общие требования.", "1.1. Проверка.", "1.2. "]
+        texts[-1] += "я" * (size - len(" ".join(texts)))
+        following = "2. Другой пункт."
+        parts = DocumentParser(settings).to_logical_parts(
+            self.raw([*texts, following]), None
+        )
+        expected = [" ".join(texts)] if size <= 512 else texts
+        assert [p["text"] for p in parts] == [*expected, following]
+
+    def test_oversized_parent_descends_into_each_subtree(self, settings, fake_ollama):
+        texts = [
+            "1. " + "я" * 512,
+            "1.1. Первая группа.",
+            "1.1.1. Проверка.",
+            "1.1.2. Расчёт.",
+            "1.2. Вторая группа.",
+            "1.2.1. Оформление акта.",
+            "2. Следующий пункт.",
+        ]
+        parts = DocumentParser(settings).to_logical_parts(self.raw(texts), fake_ollama)
+        assert [p["text"] for p in parts] == [
+            texts[0],
+            " ".join(texts[1:4]),
+            " ".join(texts[4:6]),
+            texts[6],
+        ]
+        assert [p["src_ids"] for p in parts] == [[0], [1, 2, 3], [4, 5], [6]]
+
+    def test_oversized_subclause_descends_another_level(self, settings):
+        texts = [
+            "1. Требования.",
+            "1.1. " + "я" * 512,
+            "1.1.1. Проверка.",
+            "1.1.1.1. Объект проверки.",
+            "1.1.2. " + "ю" * 512,
+            "1.2. Другой подпункт.",
+        ]
+        parts = DocumentParser(settings).to_logical_parts(self.raw(texts), None)
+        assert [p["text"] for p in parts] == [
+            texts[0],
+            texts[1],
+            " ".join(texts[2:4]),
+            texts[4],
+            texts[5],
+        ]
+
+    def test_numbered_point_and_introduced_list_share_one_budget(self, settings):
+        texts = [
+            "1. Требования.",
+            "1.1. Выполнить:",
+            "- проверку;",
+            "- расчёт.",
+            "1.2. Оформить акт.",
+            "2. Другой пункт.",
+        ]
+        parts = DocumentParser(settings).to_logical_parts(self.raw(texts), None)
+        assert [p["text"] for p in parts] == [" ".join(texts[:5]), texts[5]]
+
+    def test_only_matching_number_prefixes_are_descendants(self, settings):
+        texts = ["1. Пункт.", "10.1. Другой пункт.", "10.1.1. Его подпункт."]
+        parts = DocumentParser(settings).to_logical_parts(self.raw(texts), None)
+        assert [p["text"] for p in parts] == [texts[0], " ".join(texts[1:])]
+
+    def test_article_parts_stay_siblings_but_nested_items_can_merge(self, settings):
+        texts = [
+            "Статья 52. Требования.",
+            "3. Часть статьи.",
+            "3.3. Другая часть.",
+            "1) Условие.",
+            "а) Проверка.",
+            "б) Расчёт.",
+            "2) Следующее условие.",
+        ]
+        parts = DocumentParser(settings).to_logical_parts(self.raw(texts), None)
+        assert [p["text"] for p in parts] == [*texts[:2], " ".join(texts[2:])]
+
+    def test_numbered_groups_cannot_cross_table_or_note(self, settings):
+        for category, text in [
+            ("Table", "Таблица"),
+            ("NarrativeText", "(в ред. Федерального закона)"),
+        ]:
+            raw = self.raw(["1. Пункт.", "1.1. Подпункт.", text, "1.2. Ещё подпункт."])
+            raw[2]["category"] = category
+            parts = DocumentParser(settings).to_logical_parts(raw, None)
+            assert [p["text"] for p in parts] == [
+                "1. Пункт. 1.1. Подпункт.",
+                text,
+                "1.2. Ещё подпункт.",
+            ]
 
 
 class TestLlmOutage:
