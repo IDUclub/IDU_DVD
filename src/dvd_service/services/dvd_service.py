@@ -1882,15 +1882,10 @@ class LibraryService:
     ) -> DocumentList:
         """Every document, or only those matching the administrative-scope filters.
 
-        Unfiltered listing keeps reading the Redis registry (one round trip). A scope filter
-        goes to Qdrant instead: the registry summary of a document ingested before this
-        feature carries no scope at all, so filtering it in Python would silently drop exactly
-        the documents the backfill job exists for.
+        Enumerate the shared search index for both filtered and unfiltered requests.
+        Redis registry loss must not hide documents that search/get_document can read.
+        The separate available-documents endpoint still requires completed registry records.
         """
-        if not (document_level or territory_ids or tagging_status):
-            docs = [self._summary_from_record(r) for r in self.registry.all_documents()]
-            return DocumentList(count=len(docs), documents=docs)
-
         conditions = scope_conditions(
             document_level,
             territory_ids,

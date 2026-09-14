@@ -36,7 +36,7 @@ from src.dvd_service.dto import (
     QueueStateResponse,
     UploadResponse,
 )
-from src.dvd_service.dto.upload import ReparseAllResponse, ReparseSkipped
+from src.dvd_service.dto.upload import ReparseAllResponse, ReparseSkipped, ReparseTarget
 from src.dvd_service.ingest_queue import IngestQueue
 from src.dvd_service.modules.doc_parsers import DocumentParser
 from src.dvd_service.routers._upload_common import document_meta as _document_meta
@@ -79,15 +79,34 @@ def reparse_all_documents(
     storage: DocumentStorage = Depends(Dependencies.get_document_storage),
     jobs: JobStore = Depends(Dependencies.get_jobs),
     queue: IngestQueue = Depends(Dependencies.get_ingest_queue),
+    name: str | None = Query(
+        None,
+        min_length=1,
+        description="Exact document name; omitted means all documents.",
+    ),
+    version: str | None = Query(
+        None,
+        min_length=1,
+        description="Exact edition; omitted means all editions of the selected document.",
+    ),
+    dry_run: bool = Query(
+        False,
+        description="Validate original availability and report targets without enqueueing or writing jobs.",
+    ),
 ):
     """Reparse every stored corpus edition from its original, retaining identity.
 
-    UI filters do not restrict this operation. Missing originals and documents already
+    Explicit name/version selectors restrict the operation; UI filters do not. Missing originals and documents already
     queued/processing are reported individually; other documents still proceed.
     """
     grouped: dict[str, list[str]] = {}
     for document in documents.list_documents().documents:
+        if name is not None and document.name != name:
+            continue
+        if version is not None and document.version != version:
+            continue
         grouped.setdefault(document.name, []).append(document.version)
+    planned = []
     skipped = []
     job_ids = []
     queued_versions = 0
@@ -154,6 +173,12 @@ def reparse_all_documents(
             )
         if not editions:
             continue
+        planned.extend(
+            ReparseTarget(name=name, version=e["version"], doc_id=e["doc_id"])
+            for e in editions
+        )
+        if dry_run:
+            continue
         job_id = str(uuid.uuid4())
         if not queue.enqueue_reparse(
             {
@@ -187,6 +212,8 @@ def reparse_all_documents(
         queued_versions=queued_versions,
         job_ids=job_ids,
         skipped=skipped,
+        dry_run=dry_run,
+        planned=planned,
     )
 
 
