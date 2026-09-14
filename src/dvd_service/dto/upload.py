@@ -62,6 +62,7 @@ class JobStatusDTO(BaseModel):
     created_at: str | None = None
     version_index: int | None = None
     version_total: int | None = None
+    queue_position: int | None = None  # 1-based position among pending jobs
 
 
 class ActiveJobsResponse(BaseModel):
