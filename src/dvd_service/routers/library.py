@@ -23,9 +23,27 @@ from src.dvd_service.dto import (
     FragmentUpdateRequest,
     NodeDetail,
 )
+from src.dvd_service.dto.fragment_search import NameBackfillRequest
 from src.dvd_service.services.dvd_service import DocumentEditorService, LibraryService
 
 router = APIRouter(prefix="/library", tags=["library"])
+
+
+@router.post("/fragment-names/backfill", dependencies=[Depends(require_admin)])
+async def backfill_fragment_names(
+    req: NameBackfillRequest,
+):
+    """Preview/apply one resumable metadata-only page. Default dry_run=true; vectors stay intact."""
+    from src.dependencies import Dependencies
+    from src.dvd_service.services.fragment_search import FragmentSearchService
+
+    try:
+        return await run_in_threadpool(
+            FragmentSearchService(Dependencies.get_search()).backfill, req
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
 
 # Reading the library is open to any live token; hand-editing the shared corpus is not.
 AUTHENTICATED = [Depends(require_authenticated)]

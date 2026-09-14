@@ -96,3 +96,19 @@ class TestTagPass:
             # fragment tags are produced in the same structure pass
             assert isinstance(p["tags"], list) and p["tags"]
         assert fake_ollama.chat_calls, "LLM should have been called for structure"
+
+
+def test_missing_last_fragment_is_not_silently_replaced_by_defaults(tagger):
+    from src.api_clients import LlmError
+    from tests.conftest import FakeOllama, pipeline_chat_handler
+
+    def incomplete(system, user, schema):
+        result = pipeline_chat_handler(system, user, schema)
+        result["nodes"] = result["nodes"][:-1]
+        return result
+
+    with pytest.raises(LlmError):
+        tagger.tag(
+            [{"id": 0, "text": "Первый"}, {"id": 1, "text": "Второй"}],
+            FakeOllama(incomplete),
+        )

@@ -423,6 +423,37 @@ class TestIngest:
             wired.ingestion.ingest("doc.docx", sample_raw, h)
         assert wired.outbox.size() == 0
 
+    @pytest.mark.parametrize("stage", ["blocks", "parts", "nodes", "items"])
+    def test_incomplete_window_never_publishes_document(
+        self, wired, sample_raw, monkeypatch, stage
+    ):
+        from src.api_clients import LlmError
+        from tests.conftest import pipeline_chat_handler
+
+        monkeypatch.setattr(
+            "src.dvd_service.modules.windowing.time.sleep", lambda _: None
+        )
+        attempts = []
+
+        def incomplete(system, user, schema):
+            data = pipeline_chat_handler(system, user, schema)
+            if stage in data:
+                attempts.append(user)
+                data[stage] = data[stage][:-1]
+            return data
+
+        monkeypatch.setattr(wired.ollama, "chat", incomplete)
+        with pytest.raises(LlmError, match="Неполное окно"):
+            wired.ingestion.ingest(
+                "doc.docx", sample_raw, "incomplete", job_id="bad-window"
+            )
+        assert len(attempts) == 3
+        assert wired.qdrant.points == {}
+        assert wired.registry.names() == []
+        assert wired.outbox.size() == 0
+        assert wired.jobs.get("bad-window")["status"] == "error"
+        assert "Неполное окно" in wired.jobs.get("bad-window")["error"]
+
     def test_version_override_wins(self, wired, sample_raw):
         h = DocumentParser.content_hash(sample_raw)
         res = wired.ingestion.ingest(
@@ -933,6 +964,71 @@ class TestBuildSourceUrl:
 
 
 class TestReloadDocument:
+    def test_reparse_preserves_other_editions_and_originals(self, wired, sample_raw):
+        ingestion = wired.ingestion
+        first = ingestion.ingest(
+            "a.docx",
+            sample_raw,
+            "h1",
+            name_override="N",
+            version_override="v1",
+            source_object_key="a.docx",
+        )
+        ingestion.update(
+            "N",
+            "b.docx",
+            sample_raw
+            + [{"text": "New paragraph", "category": "NarrativeText", "html": None}],
+            "h2",
+            version_override="v2",
+            source_object_key="b.docx",
+        )
+        wired.storage.upload("a.docx", b"a")
+        wired.storage.upload("b.docx", b"b")
+        before_v2 = {
+            p["id"] for p in wired.qdrant.points_by_name("N") if "v2" in p["versions"]
+        }
+        for _ in range(
+            2
+        ):  # retrying must replace, never duplicate or rename an edition
+            result = ingestion.ingest(
+                "a.docx",
+                sample_raw,
+                "h1",
+                name_override="N",
+                version_override="v1",
+                doc_id=first["doc_id"],
+                source_object_key="a.docx",
+                replace_version=True,
+            )
+            assert result["version"] == "v1"
+            assert wired.registry.versions("N") == ["v1", "v2"]
+            current = wired.qdrant.points_by_name("N")
+            assert {p["id"] for p in current if "v2" in p["versions"]} == before_v2
+            assert len([p for p in current if "v1" in p["versions"]]) == result["nodes"]
+            assert wired.storage.exists("a.docx") and wired.storage.exists("b.docx")
+
+    def test_failed_reparse_keeps_existing_index(self, wired, sample_raw, monkeypatch):
+        ingestion = wired.ingestion
+        result = ingestion.ingest("a.docx", sample_raw, "h1", version_override="v1")
+        before = dict(wired.qdrant.points)
+
+        def fail(*args, **kwargs):
+            raise RuntimeError("Embedding unavailable")
+
+        monkeypatch.setattr(ingestion, "_embed_all", fail)
+        with pytest.raises(RuntimeError, match="Embedding unavailable"):
+            ingestion.ingest(
+                "a.docx",
+                sample_raw,
+                "h1",
+                name_override=result["name"],
+                version_override="v1",
+                replace_version=True,
+            )
+        assert wired.qdrant.points == before
+        assert wired.registry.versions(result["name"]) == ["v1"]
+
     def test_reload_replaces_all_versions(self, wired, sample_raw):
         h1 = DocumentParser.content_hash(sample_raw)
         res1 = wired.ingestion.ingest("doc.docx", sample_raw, h1)

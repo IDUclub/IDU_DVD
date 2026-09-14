@@ -132,6 +132,9 @@ function taskProgress(job) {
 
 function overallProgress(job) {
   if (job.status === "done") return 100;
+  if (job.operation === "reparse" && job.version_total) {
+    return percent(((Math.max(0, (job.version_index || 0) - 1)) + (job.version_index ? percent(job.overall_progress) / 100 : 0)) / job.version_total * 100);
+  }
   if (job.overall_progress != null) return percent(job.overall_progress);
   if (job.stage_total) return percent(10 + ((job.stage_index || 0) / job.stage_total) * 90);
   return job.status === "processing" ? 10 : 0;
@@ -146,7 +149,8 @@ function renderJob(job) {
   const head = node("div", "job-head");
   const overall = overallProgress(job); const task = taskProgress(job);
   const stage = stageLabels[job.stage] || job.stage || job.status;
-  const left = node("div"); left.append(node("strong", "", job.name || job.filename || job.job_id), node("small", "", `${job.operation || "upload"} · ${job.status}`));
+  const operation = job.operation === "reparse" ? `Повторный парсинг · версия ${job.version_index || 0} из ${job.version_total || 1}` : job.operation || "upload";
+  const left = node("div"); left.append(node("strong", "", job.name || job.filename || job.job_id), node("small", "", `${operation} · ${job.status}`));
   head.append(left, node("strong", "job-percent", `${overall}%`));
   const overallLabel = node("div", "progress-label"); overallLabel.append(node("span", "", "Общий прогресс"), node("span", "", `${overall}%`));
   const taskLabel = node("div", "progress-label task-label"); taskLabel.append(node("span", "", `${stage}${job.phase ? ` · ${job.phase}` : ""}`), node("span", "", `${task}%`));
@@ -224,15 +228,65 @@ async function runBackfill() {
 }
 
 async function loadJobs() {
-  try { const data = await request("/documents/jobs/recent?limit=20"); state.jobs = data.jobs || []; renderJobs(); }
+  try {
+    const [recent, active] = await Promise.all([request("/documents/jobs/recent?limit=20"), request("/documents/jobs/active")]);
+    const jobs = new Map((recent.jobs || []).map((job) => [job.job_id, job]));
+    (active.jobs || []).forEach((job) => jobs.set(job.job_id, job));
+    const completed = state.jobs.some((job) => ["queued", "processing"].includes(job.status) && jobs.get(job.job_id)?.status === "done");
+    state.jobs = [...jobs.values()]; renderJobs();
+    if (completed) await loadDocuments();
+  }
   catch (error) { console.error(error); }
 }
 
-function openUpload(operation = "upload", name = "") {
+async function reparseAllDocuments() {
+  if (!confirm("Заново распарсить все документы и версии библиотеки? Фрагменты, включая ручные правки, теги и векторы будут заменены. Названия, версии и исходники сохранятся. Документы без исходника будут пропущены.")) return;
+  const button = $("#reparse-all"); button.disabled = true;
+  const result = $("#reparse-result"); result.classList.remove("hidden"); result.replaceChildren(node("p", "muted", "Проверяем исходники и ставим документы в очередь…"));
+  try {
+    const data = await request("/documents/reparse", { method: "POST" });
+    result.replaceChildren(node("p", "", `Поставлено в очередь документов: ${data.queued_documents}, версий: ${data.queued_versions}. Пропущено версий: ${data.skipped.length}.`));
+    if (data.skipped.length) {
+      const details = node("details"); details.append(node("summary", "", "Причины пропусков"));
+      const list = node("ul"); data.skipped.forEach((item) => list.append(node("li", "", `${item.name} · ${item.version}: ${item.reason}`))); details.append(list); result.append(details);
+    }
+    if (data.queued_documents) {
+      const open = node("button", "button", "Открыть очередь обработки"); open.addEventListener("click", () => showView("jobs")); result.append(open);
+      await loadJobs();
+    }
+    toast(data.queued_documents ? "Повторный парсинг поставлен в очередь" : "Нет документов для повторного парсинга");
+  } catch (error) { result.replaceChildren(node("p", "", error.message)); toast(error.message, true); }
+  finally { button.disabled = false; }
+}
+
+function openUpload(operation = "upload", name = "", pickFiles = false) {
   $("#upload-form").reset(); $("#upload-operation").value = operation; $("#upload-name").value = name;
   $("#upload-live-progress").classList.add("hidden"); $("#upload-submit").disabled = false;
   $("#upload-title").textContent = { upload: "Новый документ", update: "Новая версия", reload: "Полная замена" }[operation];
+  syncUploadControls();
   $("#upload-dialog").showModal();
+  if (pickFiles) $("#upload-file").click();
+}
+
+function syncUploadControls(clearBatch = false) {
+  const operation = $("#upload-operation").value;
+  const fileInput = $("#upload-file");
+  const allowsBatch = operation === "upload";
+  fileInput.multiple = allowsBatch;
+  if (!allowsBatch && clearBatch && fileInput.files.length > 1) fileInput.value = "";
+
+  const count = fileInput.files.length;
+  const isBatch = allowsBatch && count > 1;
+  $("#upload-file-label").textContent = allowsBatch ? "Файлы" : "Файл";
+  $("#upload-file-hint").textContent = allowsBatch
+    ? (count ? `Выбрано файлов: ${count}` : "Можно выбрать несколько документов.")
+    : "Для обновления или замены выберите один документ.";
+  if (isBatch) $("#upload-name").value = "";
+  $("#upload-name").disabled = isBatch;
+  $("#upload-name-hint").textContent = isBatch
+    ? "Для пакетной загрузки название определяется отдельно для каждого документа."
+    : (allowsBatch ? "Необязательно для нового документа." : "Название документа, который нужно обновить.");
+  $("#upload-submit").textContent = isBatch ? `Поставить в очередь: ${count}` : "Запустить обработку";
 }
 
 function setUploadProgress(overall, task, label) {
@@ -258,22 +312,42 @@ function uploadRequest(url, method, form, onProgress) {
 
 async function submitUpload(event) {
   event.preventDefault();
-  const operation = $("#upload-operation").value; const name = $("#upload-name").value.trim(); const file = $("#upload-file").files[0];
-  if (!file || (operation !== "upload" && !name)) { toast("Для обновления нужны файл и название документа", true); return; }
-  const form = new FormData(); form.append("file", file);
-  const fields = { name, version: $("#upload-version").value.trim(), title: $("#upload-doc-title").value.trim(), doc_type: $("#upload-doc-type").value.trim(), corpus: $("#upload-corpus").value.trim(), lang: $("#upload-lang").value.trim() };
-  Object.entries(fields).forEach(([key, value]) => { if (value && !(key === "name" && operation !== "upload")) form.append(key, value); });
+  const operation = $("#upload-operation").value; const name = $("#upload-name").value.trim(); const files = [...$("#upload-file").files];
+  if (!files.length || (operation !== "upload" && !name)) { toast("Для обновления нужны файл и название документа", true); return; }
+  if (operation !== "upload" && files.length !== 1) { toast("Для обновления можно выбрать только один файл", true); return; }
+  const fields = { name: operation === "upload" && files.length === 1 ? name : "", version: $("#upload-version").value.trim(), title: $("#upload-doc-title").value.trim(), doc_type: $("#upload-doc-type").value.trim(), corpus: $("#upload-corpus").value.trim(), lang: $("#upload-lang").value.trim() };
   const territoryId = selectedTerritoryId("#upload-territory");
   if ($("#upload-territory").value.trim() && territoryId === null) { toast("Выберите территорию из подсказки", true); return; }
-  if (territoryId !== null) form.append("territory_id", String(territoryId));
   const pathName = encodeURIComponent(name); const url = operation === "upload" ? "/documents" : `/documents/${pathName}`; const method = { upload: "POST", update: "PATCH", reload: "PUT" }[operation];
   $("#upload-submit").disabled = true; setUploadProgress(0, 0, "Передача файла");
-  try {
-    await uploadRequest(url, method, form, (value) => setUploadProgress(value * 0.1, value, value < 100 ? "Передача файла" : "Файл передан · подготовка на сервере"));
-    $("#upload-dialog").close(); toast("Документ поставлен в очередь"); await loadJobs(); showView("jobs");
+  const failures = [];
+  let queued = 0;
+  for (const [index, file] of files.entries()) {
+    const form = new FormData(); form.append("file", file);
+    Object.entries(fields).forEach(([key, value]) => { if (value) form.append(key, value); });
+    if (territoryId !== null) form.append("territory_id", String(territoryId));
+    const fileLabel = files.length > 1 ? `Файл ${index + 1} из ${files.length}: ${file.name}` : file.name;
+    try {
+      await uploadRequest(url, method, form, (value) => {
+        const overall = (index + value / 100) / files.length * 100;
+        setUploadProgress(overall, value, `${fileLabel} · ${value < 100 ? "передача" : "передан"}`);
+      });
+      queued += 1;
+    } catch (error) {
+      failures.push({ name: file.name, message: error.message });
+    }
   }
-  catch (error) { setUploadProgress($("#upload-overall-bar").value, $("#upload-task-bar").value, `Ошибка: ${error.message}`); toast(error.message, true); }
-  finally { $("#upload-submit").disabled = false; }
+  $("#upload-submit").disabled = false;
+  if (queued) await loadJobs();
+  if (!failures.length) {
+    $("#upload-dialog").close(); toast(files.length > 1 ? `${queued} документов поставлено в очередь` : "Документ поставлен в очередь"); showView("jobs");
+    return;
+  }
+  const failedNames = failures.map((item) => item.name).join(", ");
+  const failureSummary = failures.map((item) => `${item.name}: ${item.message}`).join("; ");
+  setUploadProgress(100, 0, `Не удалось загрузить: ${failedNames}`);
+  toast(`Поставлено в очередь: ${queued} из ${files.length}. ${failureSummary}`, true);
+  if (queued) { $("#upload-file").value = ""; syncUploadControls(); }
 }
 
 function territoryField(detail) {
@@ -389,10 +463,11 @@ function init() {
   $$(".nav-link").forEach((link) => link.addEventListener("click", () => showView(link.dataset.view))); $$(".goto").forEach((link) => link.addEventListener("click", () => showView(link.dataset.target)));
   $$(".close-dialog").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
   $$(".tab").forEach((tab) => tab.addEventListener("click", () => { $$(".tab").forEach((item) => item.classList.toggle("active", item === tab)); $$(".tab-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `tab-${tab.dataset.tab}`)); }));
-  $("#open-upload").addEventListener("click", () => openUpload()); $("#upload-operation").addEventListener("change", (event) => { $("#upload-title").textContent = event.target.options[event.target.selectedIndex].text; }); $("#upload-form").addEventListener("submit", submitUpload);
+  $("#open-upload").addEventListener("click", () => openUpload("upload", "", true)); $("#upload-operation").addEventListener("change", (event) => { $("#upload-title").textContent = event.target.options[event.target.selectedIndex].text; syncUploadControls(true); }); $("#upload-file").addEventListener("change", () => syncUploadControls()); $("#upload-form").addEventListener("submit", submitUpload);
   $("#doc-search").addEventListener("input", renderDocuments); $("#tag-filter").addEventListener("change", renderDocuments); $("#refresh-docs").addEventListener("click", loadDocuments);
   $("#level-filter").addEventListener("change", renderDocuments); $("#territory-filter").addEventListener("change", renderDocuments); $("#pending-filter").addEventListener("change", renderDocuments);
   $("#run-backfill").addEventListener("click", runBackfill);
+  $("#reparse-all").addEventListener("click", reparseAllDocuments);
   bindTerritoryLookup("#upload-territory", "#territory-options");
   $("#metadata-form").addEventListener("submit", saveMetadata); $("#fragment-form").addEventListener("submit", saveFragment); $("#delete-document").addEventListener("click", () => deleteVersion(true)); $("#delete-version").addEventListener("click", () => deleteVersion(false)); $("#replace-document").addEventListener("click", () => { const name = state.current.row.name; $("#document-dialog").close(); openUpload("reload", name); }); $("#settings-form").addEventListener("submit", saveSettings);
   showView(location.hash.slice(1) || "overview"); Promise.all([loadDocuments(), loadJobs(), loadSettings()]).catch((error) => toast(error.message, true)); window.setInterval(loadJobs, 2500);

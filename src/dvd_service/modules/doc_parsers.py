@@ -11,13 +11,20 @@ import re
 
 import structlog
 
-from src.api_clients import ChatClient, LlmError, OllamaError
+from src.api_clients import ChatClient
 from src.common.config import Settings
-from src.dvd_service.modules.windowing import make_windows, map_concurrent, reconcile
+from src.dvd_service.modules.docx_reader import DocxReader
+from src.dvd_service.modules.source_structure import SourceStructure
+from src.dvd_service.modules.windowing import (
+    chat_window,
+    make_windows,
+    map_concurrent,
+    reconcile,
+)
 
 log = structlog.get_logger(__name__)
 
-PARSER_VERSION = "dvd-parser-2"  # 2: adds source grounding (offsets/page/bbox/span_id)
+PARSER_VERSION = "dvd-parser-3"  # Word numbering and source paragraph boundaries
 
 SKIP_CATEGORIES = {"Header", "Footer", "PageBreak"}
 
@@ -26,9 +33,9 @@ LIST_MARKER = re.compile(
 )
 TERMINALS = (".", "!", "?", ";", ":", "…", "。", "！", "？", "»", '"', ")")
 OPEN_START = ("[", "(", "«", '"')
-# Do NOT split on dashes: in legal texts "–" is usually punctuation, not a list marker.
+# A new line can start a list item; an inline number may be a reference or date.
 MARKER_INLINE = re.compile(
-    r"(?<=\S)\s+(?=(?:\d+(?:\.\d+)+[.)]?|\d+\)|[а-яёa-z]\)|[•·‣◦])\s)", re.I | re.U
+    r"\n[ \t]*(?=(?:\d+(?:\.\d+)*[.)]?|[а-яёa-z]\)|[•·‣◦])\s)", re.I | re.U
 )
 RU_ABBR = {
     "г",
@@ -143,20 +150,15 @@ class DocumentParser:
 
     # --- extraction and hashing (for dedup before the heavy LLM pass) ---
     def extract_raw(self, path: str) -> list[dict]:
-        # For .docx use partition_docx directly: it pulls no heavy backends (torch/OCR), which
-        # segfault on some environments (Windows), and it is faster. Otherwise fall back to auto.
         if os.path.splitext(str(path))[1].lower() == ".docx":
-            from unstructured.partition.docx import partition_docx
+            return DocxReader().read(path)
+        from unstructured.partition.auto import partition
 
-            els = partition_docx(filename=str(path))
-        else:
-            from unstructured.partition.auto import partition
-
-            els = partition(
-                filename=str(path),
-                languages=self.settings.languages,
-                strategy=self.settings.partition_strategy,
-            )
+        els = partition(
+            filename=str(path),
+            languages=self.settings.languages,
+            strategy=self.settings.partition_strategy,
+        )
         raw = []
         for el in els:
             text = (el.text or "").strip()
@@ -239,6 +241,8 @@ class DocumentParser:
     def _heuristic_boundary(self, prev, cur, prev_cat=None, cur_cat=None) -> str:
         if cur_cat == "Table" or prev_cat == "Table":
             return "new"
+        if SourceStructure.starts_part(cur) or SourceStructure.NOTE.match(prev):
+            return "new"
         if starts_new_marker(cur):
             return "new"
         p, c = prev.strip(), cur.strip()
@@ -268,7 +272,7 @@ class DocumentParser:
 
     def _split_block(self, text: str) -> list[str]:
         segments = [s.strip() for s in MARKER_INLINE.split(text) if s.strip()]
-        if not self.settings.split_sentences:
+        if not self.settings.split_sentences or SourceStructure.starts_part(text):
             return segments
         out: list[str] = []
         for seg in segments:
@@ -282,7 +286,7 @@ class DocumentParser:
     def _split_into_segments(self, raw):
         blocks = []
         for ri, b in enumerate(raw):
-            if b["category"] == "Table":
+            if b["category"] == "Table" or b.get("source_paragraph"):
                 segs = [b["text"]]
             else:
                 segs = self._split_block(b["text"])
@@ -300,9 +304,10 @@ class DocumentParser:
 
     # --- boundary stitching (Stage 1) ---
     def _llm_boundaries(self, client: ChatClient, window_texts):
-        user = "\n".join("[%d] %s" % (i, t) for i, t in enumerate(window_texts))
-        data = client.chat(BOUNDARY_SYSTEM, user, BOUNDARY_SCHEMA)
-        return {item["id"]: item["boundary"] for item in data["blocks"]}
+        rows = chat_window(
+            client, BOUNDARY_SYSTEM, window_texts, BOUNDARY_SCHEMA, "blocks"
+        )
+        return {item["id"]: item["boundary"] for item in rows}
 
     def _assemble_boundaries(self, blocks, client, on_progress=None):
         n = len(blocks)
@@ -325,29 +330,17 @@ class DocumentParser:
                 texts = [blocks[k]["text"] for k in range(s, e)]
                 try:
                     return s, self._llm_boundaries(client, texts)
-                except (OllamaError, Exception) as exc:  # noqa: BLE001
-                    log.warning("stage1_window_skipped", start=s, end=e, error=str(exc))
-                    return None
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("stage1_window_failed", start=s, end=e, error=str(exc))
+                    raise
 
             results = map_concurrent(
                 process, windows, max_workers=self.settings.llm_concurrency
             )
             for done, decision in enumerate(results, 1):
-                if decision is not None:
-                    decisions.append(decision)
+                decisions.append(decision)
                 if on_progress:
                     on_progress(done, len(windows), "boundaries")
-            # Losing a window is survivable — the heuristic covers that stretch. Losing *every*
-            # window is not: it means the LLM is unreachable or refusing, and carrying on would
-            # index the document with no structure and no identity, under name="unknown". Every
-            # later document then attaches to that phantom as another version of it. Failing
-            # here instead hands the job back to the queue, which retries it and eventually
-            # dead-letters it — noisy, but the corpus stays clean.
-            if windows and not decisions:
-                raise LlmError(
-                    f"LLM недоступен: ни одно из {len(windows)} окон разметки не обработано "
-                    "— документ не может быть структурирован"
-                )
             llm_dec = reconcile(decisions)
         final = ["new"]
         for i in range(1, n):
@@ -380,11 +373,12 @@ class DocumentParser:
 
     # --- semantic merge (Stage 1.5) ---
     def _llm_semantic_merge(self, client, window_texts):
-        user = "\n".join("[%d] %s" % (i, t) for i, t in enumerate(window_texts))
-        data = client.chat(SEMANTIC_MERGE_SYSTEM, user, SEMANTIC_MERGE_SCHEMA)
+        rows = chat_window(
+            client, SEMANTIC_MERGE_SYSTEM, window_texts, SEMANTIC_MERGE_SCHEMA, "parts"
+        )
         return {
             item["id"]: ("continuation" if item["merge_with_previous"] else "new")
-            for item in data["parts"]
+            for item in rows
         }
 
     def _semantic_merge_pass(self, parts, client, on_progress=None, npass=1):
@@ -396,16 +390,15 @@ class DocumentParser:
             texts = [parts[k]["text"] for k in range(s, e)]
             try:
                 return s, self._llm_semantic_merge(client, texts)
-            except (OllamaError, Exception) as exc:  # noqa: BLE001
-                log.warning("stage15_window_skipped", start=s, end=e, error=str(exc))
-                return None
+            except Exception as exc:  # noqa: BLE001
+                log.warning("stage15_window_failed", start=s, end=e, error=str(exc))
+                raise
 
         results = map_concurrent(
             process, windows, max_workers=self.settings.llm_concurrency
         )
         for done, decision in enumerate(results, 1):
-            if decision is not None:
-                decisions.append(decision)
+            decisions.append(decision)
             if on_progress:
                 on_progress(done, len(windows), f"semantic-merge pass {npass}")
         dec = reconcile(decisions)
@@ -419,6 +412,8 @@ class DocumentParser:
                 and not is_table
                 and not prev_table
                 and not is_numbered_head(p["text"])
+                and not SourceStructure.starts_part(p["text"])
+                and not SourceStructure.NOTE.match(cur["text"])
                 and dec.get(i, "new") == "continuation"
             )
             if join:

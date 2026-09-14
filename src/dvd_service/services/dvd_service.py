@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 import json
 import os
+import unicodedata
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -61,6 +62,7 @@ from src.dvd_service.dto import (
     TerritoryScope,
 )
 from src.dvd_service.modules.doc_parsers import PARSER_VERSION, DocumentParser
+from src.dvd_service.modules.fragment_structure import NAME_FIELDS, annotate_fragments
 from src.dvd_service.modules.hierarchy import HierarchyBuilder
 from src.dvd_service.modules.identity import (
     build_aliases,
@@ -407,8 +409,22 @@ class IngestionService:
         node_tags: dict[str, list],
         node_refs: dict[str, list],
         identity: dict,
+        ancestor_nodes: list[dict] | None = None,
     ) -> list[PointStruct]:
         """Assemble Qdrant points for nodes; ``identity`` holds the shared payload fields."""
+        annotated = annotate_fragments(
+            [
+                {
+                    **n,
+                    "doc_id": doc_id,
+                    "user_id": identity.get("user_id"),
+                    "project_id": identity.get("project_id"),
+                }
+                for n in (ancestor_nodes or []) + nodes
+            ]
+        )
+        by_id = {n["id"]: n for n in annotated}
+        nodes = [by_id[n["id"]] for n in nodes]
         return [
             PointStruct(
                 id=n["id"],
@@ -432,6 +448,7 @@ class IngestionService:
                     references=node_refs.get(n["id"], []),
                     src_block_ids=n.get("src_ids", []),
                     text=n["text"],
+                    **{k: n[k] for k in NAME_FIELDS},
                     **identity,
                     **self._grounding(n, spans, doc_id),
                 ).model_dump(),
@@ -461,6 +478,8 @@ class IngestionService:
         metadata: dict | None = None,
         effective_date: str | None = None,
         territory_id: int | None = None,
+        replace_version: bool = False,
+        finish_job: bool = True,
     ) -> dict:
         doc_id = doc_id or str(uuid.uuid4())
         client = create_llm()
@@ -503,7 +522,12 @@ class IngestionService:
                 version_override,
                 need_scope_hints=self.territory is not None and not preset,
             )
-            version, other_versions = self._resolve_version(name, version, content_hash)
+            if replace_version:
+                other_versions = sorted(set(self.registry.versions(name)) - {version})
+            else:
+                version, other_versions = self._resolve_version(
+                    name, version, content_hash
+                )
             scope = preset or self._resolve_scope(head)
             # The last point before anything is written to Qdrant: tell the caller what this
             # attempt decided to be, so an interrupted run can be undone by (name, version).
@@ -581,6 +605,15 @@ class IngestionService:
             points = self._build_points(
                 nodes, vectors, spans, doc_id, node_tags, node_refs, identity
             )
+            if replace_version:
+                # Keep the old index until parsing and embedding succeed. Originals must
+                # survive both replacement and a worker retry after an interrupted upsert.
+                try:
+                    self.delete_document(
+                        name, version, emit_event=False, keep_source=True
+                    )
+                except KeyError:
+                    pass
             count = self.qdrant.upsert(points)
 
             # For already-loaded versions, refresh their list of other versions (including the new one)
@@ -626,7 +659,11 @@ class IngestionService:
             # via the durable outbox — the publisher delivers it asynchronously).
             # ``emit_event`` is off when a caller (reload) announces the outcome itself.
             if self.outbox is not None and emit_event:
-                self.outbox.enqueue(DocumentProcessed(document_name=name))
+                self.outbox.enqueue(
+                    DocumentUpdated(document_name=name, version=version)
+                    if replace_version
+                    else DocumentProcessed(document_name=name)
+                )
 
             result = {
                 "doc_id": doc_id,
@@ -635,7 +672,7 @@ class IngestionService:
                 "other_versions": other_versions,
                 "nodes": count,
             }
-            if job_id:
+            if job_id and finish_job:
                 progress.finish()
                 self.jobs.update(job_id, status="done", **result)
             log.info("ingest_done", **result)
@@ -850,7 +887,14 @@ class IngestionService:
             }
             progress.stage("indexing")
             points = self._build_points(
-                new_nodes, vectors, spans, doc_id, node_tags, node_refs, identity
+                new_nodes,
+                vectors,
+                spans,
+                doc_id,
+                node_tags,
+                node_refs,
+                identity,
+                ancestor_nodes=[p for p in base_points if p["id"] in reused_ids],
             )
             count = self.qdrant.upsert(points)
 
@@ -1012,12 +1056,16 @@ class IngestionService:
                 "metadata": {**doc_metadata, **(frag.metadata or {})},
                 "table_html": frag.table_html,
                 "text": frag.text,
+                "fragment_name": frag.fragment_name,
             }
             points.append(
                 PointStruct(
                     id=node_id, vector=vec, payload=NodePayload(**payload).model_dump()
                 )
             )
+        annotated = annotate_fragments([{**p.payload, "id": str(p.id)} for p in points])
+        for point, node in zip(points, annotated):
+            point.payload.update({k: node[k] for k in NAME_FIELDS})
         return points
 
     def ingest_direct(
@@ -1257,7 +1305,12 @@ class IngestionService:
         return removed
 
     def delete_document(
-        self, name: str, version: str | None = None, *, emit_event: bool = True
+        self,
+        name: str,
+        version: str | None = None,
+        *,
+        emit_event: bool = True,
+        keep_source: bool = False,
     ) -> dict:
         """Remove a document (or one of its versions) from Qdrant and the Redis registry.
 
@@ -1284,8 +1337,9 @@ class IngestionService:
             for did in doc_ids:
                 self.registry.unregister_document(did)
             self.registry.unregister_name(name)
-            for key in source_keys:
-                self.storage.delete(key)
+            if not keep_source:
+                for key in source_keys:
+                    self.storage.delete(key)
             result = {
                 "name": name,
                 "versions_removed": versions_removed,
@@ -1341,7 +1395,7 @@ class IngestionService:
         document_removed = not remaining_versions and len(to_delete) == len(existing)
         if document_removed:
             self.registry.unregister_name(name)
-        if origin_key:
+        if origin_key and not keep_source:
             self.storage.delete(origin_key)
 
         result = {
@@ -1398,6 +1452,31 @@ class SearchService:
         )
 
     def _build_filter(self, req: SearchRequest, kind: str | None) -> Filter | None:
+        if req.version:
+            # Resolve presentation-only differences against authorized stored editions.
+            # Keep the original values in Qdrant; this also works for legacy payloads.
+            base = self._build_filter(req.model_copy(update={"version": None}), kind)
+            key = lambda v: " ".join(unicodedata.normalize("NFKC", v).split())
+            versions = {req.version}
+            for node in self.qdrant.iter_points(base, ["version", "versions"]):
+                for value in [node.get("version"), *(node.get("versions") or [])]:
+                    if value and key(value) == key(req.version):
+                        versions.add(value)
+            return base.model_copy(
+                update={
+                    "must": [
+                        *(base.must or []),
+                        Filter(
+                            should=[
+                                FieldCondition(
+                                    key=field, match=MatchAny(any=sorted(versions))
+                                )
+                                for field in ("version", "versions")
+                            ]
+                        ),
+                    ]
+                }
+            )
         must = []
         if kind:
             must.append(FieldCondition(key="kind", match=MatchValue(value=kind)))
@@ -1520,6 +1599,9 @@ class SearchService:
             hits.append(
                 SearchHit(
                     id=str(p.id),
+                    fragment_name=pl.get("fragment_name"),
+                    fragment_name_path=pl.get("fragment_name_path", []) or [],
+                    structure_path=pl.get("structure_path", []) or [],
                     score=p.score,
                     doc_id=pl.get("doc_id", ""),
                     name=pl.get("name", ""),
@@ -1800,15 +1882,10 @@ class LibraryService:
     ) -> DocumentList:
         """Every document, or only those matching the administrative-scope filters.
 
-        Unfiltered listing keeps reading the Redis registry (one round trip). A scope filter
-        goes to Qdrant instead: the registry summary of a document ingested before this
-        feature carries no scope at all, so filtering it in Python would silently drop exactly
-        the documents the backfill job exists for.
+        Enumerate the shared search index for both filtered and unfiltered requests.
+        Redis registry loss must not hide documents that search/get_document can read.
+        The separate available-documents endpoint still requires completed registry records.
         """
-        if not (document_level or territory_ids or tagging_status):
-            docs = [self._summary_from_record(r) for r in self.registry.all_documents()]
-            return DocumentList(count=len(docs), documents=docs)
-
         conditions = scope_conditions(
             document_level,
             territory_ids,
@@ -1980,7 +2057,14 @@ class LibraryService:
 
     def find_documents(self, key: str) -> DocumentList:
         """Resolve documents by an exact lookup key / external id value."""
-        doc_ids = self.qdrant.doc_ids_by_lookup_key(key)
+        from src.dvd_service.modules.identity import normalize_key
+
+        doc_ids = list(
+            dict.fromkeys(
+                self.qdrant.doc_ids_by_lookup_key(key)
+                + self.qdrant.doc_ids_by_lookup_key(normalize_key(key))
+            )
+        )
         docs: list[DocumentSummary] = []
         for did in doc_ids:
             rec = self.registry.get_document(did)
@@ -2203,6 +2287,13 @@ class DocumentEditorService:
                     }
                 )
                 self.registry.register_document(doc_id, record)
+        if "text" in changes:
+            nodes = self.qdrant.list_by_doc(doc_id)
+            for node in annotate_fragments(nodes):
+                fields = {k: node[k] for k in NAME_FIELDS}
+                self.qdrant.set_points_payload([node["id"]], fields)
+                if node["id"] == fragment_id:
+                    edited.update(fields)
         return {**edited, "id": fragment_id}
 
 

@@ -28,6 +28,10 @@ same service behind gMART's `/auth/token`), and the panel opens only for a holde
 role. The session cookie stores the issued access token itself, so the panel's own API calls
 are ordinary bearer requests and the session ends when the token expires.
 
+The upload dialog accepts multiple files for new documents and sends one `POST /documents`
+request per file, showing aggregate transfer progress. Shared metadata and territory fields apply
+to every selected file. Delta updates and full reloads remain single-file operations.
+
 ### Who the request acts as
 
 Endpoints that can reach a private user index resolve the acting user themselves, and never
@@ -467,8 +471,20 @@ so a document that reliably kills the process cannot take the service down on ev
 | `GET` | `/documents/jobs/dead` | jobs that exhausted their attempts (with `last_error`) |
 | `POST` | `/documents/jobs/{job_id}/retry` | put a dead-lettered job back on the queue |
 | `POST` | `/documents/{name}/reindex` | re-run the pipeline over the stored original, no upload |
+| `POST` | `/documents/reparse` | reparse all shared-library documents and editions |
 
-Reindexing needs no file body: the original is in MinIO and its key is stored on every
+`POST /documents/reparse` requires admin access and no request body. In the panel, use
+**Documents → Reparse all documents**. Table filters do not restrict the batch. The `202`
+response contains `queued_documents`, `queued_versions`, `job_ids`, and `skipped` (name,
+version, reason). Each job processes one document's editions sequentially. Documents already
+queued or processing, and editions without their own available source (including direct JSON
+uploads), are skipped. Names, versions, document IDs, originals, and supported metadata are
+retained; fragments, manual fragment edits, tags, and vectors are rebuilt. The old edition's
+index is replaced after parsing and embedding succeed. The Qdrant replacement is not atomic;
+write failures are recovered by retrying from the retained original. Monitor progress in the
+processing queue; pending work survives service restarts.
+
+`POST /documents/{name}/reindex` needs no file body: the original is in MinIO and its key is stored on every
 fragment of the document, so the job is queued from that key and the worker downloads it just
 as it would a fresh upload. Use it after a model or parser change, or to repair a batch that
 was indexed badly.

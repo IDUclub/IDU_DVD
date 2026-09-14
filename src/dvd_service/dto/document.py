@@ -81,6 +81,9 @@ class DocumentSummary(AdministrativeScope):
 
 
 class DocumentFragment(BaseModel):
+    fragment_name: str | None = None
+    fragment_name_path: list[str] = Field(default_factory=list)
+    structure_path: list[str] = Field(default_factory=list)
     id: str
     order: int = 0
     kind: str = "text"

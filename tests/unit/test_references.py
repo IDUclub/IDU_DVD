@@ -92,14 +92,17 @@ class TestExtractor:
         )
         assert ReferenceExtractor(settings).extract(nodes, ollama) == {}
 
-    def test_extract_survives_window_error(self, settings):
+    def test_extract_fails_on_window_error(self, settings):
         nodes = [{"id": "n0", "text": "x"}]
 
         def boom(system, user, schema):
             raise RuntimeError("llm down")
 
         ollama = _StubLLM(handler=boom)
-        assert ReferenceExtractor(settings).extract(nodes, ollama) == {}
+        from src.api_clients import LlmError
+
+        with pytest.raises(LlmError):
+            ReferenceExtractor(settings).extract(nodes, ollama)
 
 
 # --------------------------------------------------------------------------------------

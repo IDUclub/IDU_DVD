@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import structlog
 
-from src.api_clients import ChatClient, OllamaError
+from src.api_clients import ChatClient
 from src.common.config import Settings
 from src.common.db.qdrant_client import QdrantRepository
 from src.common.db.redis_client import DocumentRegistry
@@ -31,7 +31,7 @@ from src.dvd_service.modules.reference_patterns import (
     normalize_designation,
     normalize_numbering,
 )
-from src.dvd_service.modules.windowing import make_windows, map_concurrent
+from src.dvd_service.modules.windowing import chat_window, make_windows, map_concurrent
 
 log = structlog.get_logger(__name__)
 
@@ -89,10 +89,9 @@ class ReferenceExtractor:
         )
 
     def _llm_refs(self, client: ChatClient, window_texts) -> dict[int, list[dict]]:
-        user = "\n".join("[%d] %s" % (i, t[:800]) for i, t in enumerate(window_texts))
-        data = client.chat(REF_SYSTEM, user, REF_SCHEMA)
+        rows = chat_window(client, REF_SYSTEM, window_texts, REF_SCHEMA, "items")
         out: dict[int, list[dict]] = {}
-        for it in data.get("items", []):
+        for it in rows:
             refs = []
             for r in it.get("references", []):
                 raw = str(r.get("raw", "")).strip()
@@ -122,19 +121,15 @@ class ReferenceExtractor:
             window = nodes[s:e]
             try:
                 local = self._llm_refs(client, [n["text"] for n in window])
-            except (OllamaError, Exception) as exc:  # noqa: BLE001
-                log.warning("reference_window_skipped", start=s, end=e, error=str(exc))
-                return None
+            except Exception as exc:  # noqa: BLE001
+                log.warning("reference_window_failed", start=s, end=e, error=str(exc))
+                raise
             return window, local
 
         results = map_concurrent(
             process, windows, max_workers=self.settings.llm_concurrency
         )
         for done, window_result in enumerate(results, 1):
-            if window_result is None:
-                if on_progress:
-                    on_progress(done, len(windows))
-                continue
             window, local = window_result
             for pos, n in enumerate(window):
                 refs = local.get(pos, [])

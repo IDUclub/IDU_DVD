@@ -2,12 +2,33 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class UploadResponse(BaseModel):
     job_id: str
     status: str
+
+
+class ReparseSkipped(BaseModel):
+    name: str
+    version: str
+    reason: str
+
+
+class ReparseTarget(BaseModel):
+    name: str
+    version: str
+    doc_id: str
+
+
+class ReparseAllResponse(BaseModel):
+    queued_documents: int
+    queued_versions: int
+    job_ids: list[str]
+    skipped: list[ReparseSkipped]
+    dry_run: bool = False
+    planned: list[ReparseTarget] = Field(default_factory=list)
 
 
 class JobStatusDTO(BaseModel):
@@ -39,6 +60,8 @@ class JobStatusDTO(BaseModel):
     error: str | None = None
     operation: str | None = None  # upload | update | reload
     created_at: str | None = None
+    version_index: int | None = None
+    version_total: int | None = None
 
 
 class ActiveJobsResponse(BaseModel):

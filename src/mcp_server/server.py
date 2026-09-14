@@ -27,11 +27,75 @@ from src.dvd_service.dto import (
     UserIndexInfo,
     UserIndexListResponse,
 )
+from src.dvd_service.dto.fragment_search import (
+    FragmentSearchRequest,
+    FragmentSearchResponse,
+)
 from src.dvd_service.modules.reference_patterns import normalize_designation
 from src.dvd_service.services.dvd_service import DocumentsService
+from src.dvd_service.services.fragment_search import FragmentSearchService
 from src.dvd_service.services.user_index_service import build_user_ingestion_from_deps
 
 mcp = FastMCP("dvd-idu", auth=service_token_verifier)
+
+
+def _fragment_search(request: FragmentSearchRequest, user_id: str | None):
+    if request.user_id and request.user_id != user_id:
+        raise ToolError("cannot search another user's index")
+    if request.project_id or request.scenario_id:
+        if not user_id:
+            raise ToolError("user index search requires an authenticated user")
+        request = request.model_copy(update={"user_id": user_id})
+    try:
+        return FragmentSearchService(Dependencies.get_search()).search(request)
+    except (ValueError, UrbanApiError) as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@mcp.tool()
+def search_structure(
+    request: FragmentSearchRequest,
+    user_id: str = Depends(get_mcp_user_id),
+) -> FragmentSearchResponse:
+    """Найти структурный элемент по адресу, независимо от типа документа/элемента.
+
+    Примеры request: {"pattern":"3.3","document_names":["СП 2.13130.2020"]},
+    {"pattern":"3.*"}, {"pattern":"3.3–3.5"}, {"pattern":"А / 2"}.
+    3.3 — точное совпадение; 3.* — все уровни ниже 3. Диапазон включает обе границы.
+    '/' ограничивает путь предков. name_query дополнительно ограничивает наименование
+    (AND); name_scope='path' ищет его и у предков. Не выводи types из слова «пункт»:
+    определение с номером 3.3 тоже должно находиться. Редакцию указывай в version.
+    include_children=true возвращает полное поддерево в порядке документа, частями.
+    При next_cursor повтори ИДЕНТИЧНЫЙ request с этим cursor до complete=true.
+    ambiguous/candidates требуют разрешить документ, редакцию или путь по вопросу/
+    истории, иначе уточнить у пользователя. Не заменяй отсутствие совпадения
+    семантически похожим текстом и не снимай явно заданные ограничения.
+    """
+    if not request.pattern:
+        raise ToolError("search_structure requires request.pattern")
+    return _fragment_search(request, user_id)
+
+
+@mcp.tool()
+def search_fragment_names(
+    request: FragmentSearchRequest,
+    user_id: str = Depends(get_mcp_user_id),
+) -> FragmentSearchResponse:
+    """Найти фрагменты по собственному наименованию или наименованиям их предков.
+
+    request={"name_query":"огнезащитное покрытие","name_mode":"expanded",
+    "name_scope":"self","document_names":["СП 2.13130.2020"]}.
+    strict: точное/частичное название или маска '*покрытие*', регистр/пробелы не важны.
+    expanded: дополнительно словоформы, опечатки и смысл названия; прямые совпадения выше.
+    self: собственное название; path: также названия предков, например «в разделе ...».
+    pattern при наличии обязателен для каждого совпадения. Название документа —
+    document_names, НЕ name_query. Пустое наименование не выдумывается.
+    Потомки включены; дочитай next_cursor до complete=true, сохраняй идентичные фильтры.
+    Неоднозначный единичный запрос требует уточнения; для обзора допустимы все кандидаты.
+    """
+    if not request.name_query:
+        raise ToolError("search_fragment_names requires request.name_query")
+    return _fragment_search(request, user_id)
 
 
 def _project_id_for_scenario(scenario_id: str, user_id: str) -> str:
@@ -62,9 +126,11 @@ def _search(
     parent_id: str | None = None,
     document_level: str | None = None,
     territory_ids: list[int] | None = None,
+    doc_id: str | None = None,
 ) -> SearchResponse:
     req = SearchRequest(
         query=query,
+        doc_id=doc_id,
         name=name,
         version=version,
         block=block,
@@ -88,6 +154,7 @@ def _search(
 @mcp.tool()
 def search_texts(
     query: str,
+    doc_id: str | None = None,
     name: str | None = None,
     document_names: list[str] | None = None,
     version: str | None = None,
@@ -138,12 +205,14 @@ def search_texts(
         parent_id=parent_id,
         document_level=document_level,
         territory_ids=territory_ids,
+        doc_id=doc_id,
     )
 
 
 @mcp.tool()
 def search_tables(
     query: str,
+    doc_id: str | None = None,
     name: str | None = None,
     document_names: list[str] | None = None,
     version: str | None = None,
@@ -189,12 +258,14 @@ def search_tables(
         parent_id=parent_id,
         document_level=document_level,
         territory_ids=territory_ids,
+        doc_id=doc_id,
     )
 
 
 @mcp.tool()
 def search_all(
     query: str,
+    doc_id: str | None = None,
     name: str | None = None,
     document_names: list[str] | None = None,
     version: str | None = None,
@@ -242,6 +313,7 @@ def search_all(
         parent_id=parent_id,
         document_level=document_level,
         territory_ids=territory_ids,
+        doc_id=doc_id,
     )
 
 

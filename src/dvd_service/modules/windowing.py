@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from typing import TypeVar
 
+import httpx
+import structlog
+
+from src.api_clients.base import ChatClient, LlmError
 from src.common.config import settings
 
 _T = TypeVar("_T")
@@ -23,7 +29,11 @@ def map_concurrent(
             yield worker(item)
         return
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="dvd-llm") as pool:
-        yield from pool.map(worker, values)
+        try:
+            yield from pool.map(worker, values)
+        except BaseException:
+            pool.shutdown(wait=True, cancel_futures=True)
+            raise
 
 
 def make_windows(items, max_chars=None, overlap=None, max_items=10**9):
@@ -60,3 +70,52 @@ def reconcile(windows_decisions):
             if prev is None or pos > prev[1]:
                 best[gi] = (val, pos)
     return {gi: v for gi, (v, _) in best.items()}
+
+
+def chat_window(
+    client: ChatClient, system: str, texts: list[str], schema: dict, key: str
+) -> list[dict]:
+    """Require one decision per input, retrying only the failed window up to three times."""
+    if not texts:
+        return []
+    size = len(texts)
+    bounded = deepcopy(schema)
+    array = bounded["properties"][key]
+    array.update(minItems=size, maxItems=size)
+    array["items"]["properties"]["id"].update(minimum=0, maximum=size - 1)
+    system += f"\nВерни ровно {size} элементов: каждый id от 0 до {size - 1} ровно один раз, включая последний."
+    user = "\n".join(f"[{i}] {text}" for i, text in enumerate(texts))
+    for attempt in range(1, 4):
+        try:
+            data = client.chat(system, user, bounded)
+            rows = data.get(key) if isinstance(data, dict) else None
+            if (
+                not isinstance(rows, list)
+                or len(rows) != size
+                or any(
+                    not isinstance(row, dict) or type(row.get("id")) is not int
+                    for row in rows
+                )
+                or {row["id"] for row in rows} != set(range(size))
+            ):
+                raise LlmError(
+                    f"Неполное окно {key}: ожидались уникальные id 0..{size - 1}"
+                )
+            return rows
+        except Exception as exc:
+            retryable = isinstance(
+                exc, (LlmError, httpx.TransportError, ConnectionError, TimeoutError)
+            )
+            if isinstance(exc, httpx.HTTPStatusError):
+                retryable = (
+                    exc.response.status_code == 429 or exc.response.status_code >= 500
+                )
+            if not retryable or attempt == 3:
+                raise LlmError(
+                    f"LLM недоступен или вернул неполное окно {key} после {attempt} попыток: {exc}"
+                ) from exc
+            structlog.get_logger(__name__).warning(
+                "llm_window_retry", stage=key, attempt=attempt, error=str(exc)
+            )
+            time.sleep(attempt)
+    raise AssertionError("unreachable")

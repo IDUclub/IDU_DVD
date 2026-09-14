@@ -14,9 +14,12 @@ parse, and the blocks are re-extracted by the worker from the original stored in
 
 ## Stage 0. Text extraction
 
-`DocumentParser.extract_raw(path)` parses `.docx` through `partition_docx` and returns a list of
-blocks `{text, category, html}`. Service elements (headers/footers, page breaks) are dropped. For
-tables, the HTML representation (`text_as_html`) is preserved.
+`DocumentParser.extract_raw(path)` reads `.docx` through `DocxReader` (python-docx/OOXML).
+Automatic Word labels are materialized before hashing or LLM processing, including inherited
+paragraph styles, nested counters, start overrides and restarts. Paragraphs and tables retain
+reading order; merged cells are represented in table HTML. Headers and footers are excluded.
+Unsupported numbering definitions raise an explicit error rather than inventing a label.
+Other formats retain the unstructured extraction path.
 
 `DocumentParser.content_hash(raw)` computes SHA-256 over the concatenated text of all blocks. This
 hash is used for deduplication.
@@ -28,9 +31,9 @@ For `.docx`, the heavy unstructured backends (torch, OCR) are not engaged.
 The goal is to reconstruct coherent meaningful fragments even if the original formatting broke or
 glued the text together.
 
-1. Splitting: each block is split into atomic segments by inner list markers and numbering, and long
-   blocks are additionally split on sentence boundaries. A dash is not treated as a marker (in
-   regulatory texts it is usually punctuation), and tables are not split.
+1. Splitting: Word paragraphs and tables retain their source boundaries. Other blocks may be split
+   at line-start list markers and sentence boundaries. Inline references and dates never start
+   new clauses. Explicit numbered provisions remain intact.
 2. Boundary stitching: for each pair of adjacent segments it is decided whether this is a new part or
    a continuation of the previous one. Obvious cases are handled by a language-independent heuristic
    (punctuation, case, markers), ambiguous ones are passed to the LLM. Continuations are stitched.
@@ -40,7 +43,8 @@ glued the text together.
 The LLM merges parts that form a single semantic whole (continuation of a thought, an explanation,
 an enumeration inside a clause, scattered service fragments of the title page and imprint). A part
 that begins with its own structural number (e.g. `1.1`, `4.2`, `а)`, `1)`) is not merged into the
-previous one — adjacent numbered clauses do not stick together.
+previous one — adjacent numbered clauses do not stick together. Explicit article/chapter headings
+and editorial notes are also protected boundaries.
 
 The merge is iterative: passes repeat until convergence (`DVD_SEMANTIC_MERGE_MAX_PASSES`, default 1),
 because some merges become apparent only after a previous merge. Raise the cap to trade extra LLM
@@ -61,6 +65,9 @@ passes for more aggressive merging.
   boilerplate parts. Folding tags into this pass removes what used to be a separate tagging LLM pass
   over every node; the tags are carried through Stage 4 onto the flat nodes.
 
+Explicit source headings/numbers override conflicting LLM markup. Editorial notes carry no own
+number; an LLM number absent from the start of the source is discarded.
+
 After markup the own number is removed from the beginning of the text (kept separately in
 `numbering`) to avoid duplication. The slice is protected against false matches.
 
@@ -78,7 +85,9 @@ years (a component of four or more digits) are not taken as a section number.
 ## Stage 4. Building the hierarchy
 
 `HierarchyBuilder.build(parts, ranks, title)` assembles the tree. The depth of numbered parts is
-taken from the numbering rank, that of the rest — from the relative `relation`. Nodes are arranged
+taken from the numbering rank, that of the rest — from the relative `relation`. Inside explicit
+articles, inserted parts such as `3.3` are siblings of part `3`; parenthesized list items remain
+below the current provision. Chapters, sections and articles anchor the outer hierarchy. Nodes are arranged
 with an ancestor stack; a child sits exactly one level deeper than its parent.
 
 Post-processing:
@@ -237,3 +246,15 @@ items are reconciled (`reconcile`) with priority to the window where an item has
 - Structure markup quality depends on the model. The document's backbone (sections, clauses,
   numbering, version, tables) is extracted robustly; service fragments and reference lists may be
   marked up more coarsely.
+
+## Reprocessing existing documents
+
+`dvd-parser-3` changes extracted text hashes and structure. Deploying the code does not repair
+already indexed nodes. Reprocess affected source files using the document reload workflow after
+reviewing the target document/editions and retaining the originals. A metadata/name backfill or
+a delta update is insufficient to guarantee replacement of damaged trees.
+
+Regression: `pytest tests/unit/test_numbering_regression.py` exercises DOCX → logical parts →
+structure → hierarchy → real in-memory Qdrant search, with an adverse LLM double. It verifies that
+`52 / 3.3` returns the actual provision and its editorial note, excluding the reference inside 3.2.
+The separate live validation should be repeated after deployment and reprocessing.

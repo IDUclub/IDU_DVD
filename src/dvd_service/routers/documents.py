@@ -36,6 +36,7 @@ from src.dvd_service.dto import (
     QueueStateResponse,
     UploadResponse,
 )
+from src.dvd_service.dto.upload import ReparseAllResponse, ReparseSkipped, ReparseTarget
 from src.dvd_service.ingest_queue import IngestQueue
 from src.dvd_service.modules.doc_parsers import DocumentParser
 from src.dvd_service.routers._upload_common import document_meta as _document_meta
@@ -64,6 +65,156 @@ router = APIRouter(tags=["documents"])
 # admin panel.
 AUTHENTICATED = [Depends(require_authenticated)]
 ADMIN_ONLY = [Depends(require_admin)]
+
+
+@router.post(
+    "/documents/reparse",
+    response_model=ReparseAllResponse,
+    status_code=202,
+    dependencies=ADMIN_ONLY,
+)
+def reparse_all_documents(
+    documents: DocumentsService = Depends(Dependencies.get_documents),
+    qdrant: QdrantRepository = Depends(Dependencies.get_qdrant),
+    storage: DocumentStorage = Depends(Dependencies.get_document_storage),
+    jobs: JobStore = Depends(Dependencies.get_jobs),
+    queue: IngestQueue = Depends(Dependencies.get_ingest_queue),
+    name: str | None = Query(
+        None,
+        min_length=1,
+        description="Exact document name; omitted means all documents.",
+    ),
+    version: str | None = Query(
+        None,
+        min_length=1,
+        description="Exact edition; omitted means all editions of the selected document.",
+    ),
+    dry_run: bool = Query(
+        False,
+        description="Validate original availability and report targets without enqueueing or writing jobs.",
+    ),
+):
+    """Reparse every stored corpus edition from its original, retaining identity.
+
+    Explicit name/version selectors restrict the operation; UI filters do not. Missing originals and documents already
+    queued/processing are reported individually; other documents still proceed.
+    """
+    grouped: dict[str, list[str]] = {}
+    for document in documents.list_documents().documents:
+        if name is not None and document.name != name:
+            continue
+        if version is not None and document.version != version:
+            continue
+        grouped.setdefault(document.name, []).append(document.version)
+    planned = []
+    skipped = []
+    job_ids = []
+    queued_versions = 0
+    for name, versions in grouped.items():
+        points = qdrant.points_by_name(name)
+        editions = []
+        for version in versions:
+            # Shared fragments may carry another edition's original. Never silently
+            # substitute that file for a version whose own source is unavailable.
+            origins = [
+                p
+                for p in points
+                if p.get("version") == version and p.get("source_object_key")
+            ]
+            target = origins[0] if origins else {}
+            key = target.get("source_object_key")
+            reason = None
+            if not key:
+                reason = "Нет сохранённого исходника этой версии"
+            else:
+                try:
+                    if not storage.exists(key):
+                        reason = "Исходник отсутствует в хранилище"
+                except (
+                    Exception
+                ):  # an unavailable source must not abort the whole batch
+                    log.exception(
+                        "reparse_source_check_failed", name=name, version=version
+                    )
+                    reason = "Не удалось проверить исходник в хранилище"
+            if reason:
+                skipped.append(
+                    ReparseSkipped(name=name, version=version, reason=reason)
+                )
+                continue
+            meta = {
+                field: target[field]
+                for field in (
+                    "doc_type",
+                    "corpus",
+                    "lang",
+                    "title",
+                    "source_uri",
+                    "external_ids",
+                    "metadata",
+                    "effective_date",
+                )
+                if target.get(field) is not None
+            }
+            if (
+                target.get("territory_source") == "manual"
+                and target.get("territory_id") is not None
+            ):
+                meta["territory_id"] = target["territory_id"]
+            editions.append(
+                {
+                    "version": version,
+                    "doc_id": target.get("doc_id") or str(uuid.uuid4()),
+                    "source_object_key": key,
+                    "content_hash": target.get("content_hash") or "",
+                    "filename": target.get("source") or f"{name}{Path(key).suffix}",
+                    "meta": meta,
+                }
+            )
+        if not editions:
+            continue
+        planned.extend(
+            ReparseTarget(name=name, version=e["version"], doc_id=e["doc_id"])
+            for e in editions
+        )
+        if dry_run:
+            continue
+        job_id = str(uuid.uuid4())
+        if not queue.enqueue_reparse(
+            {
+                "job_id": job_id,
+                "operation": "reparse",
+                "name": name,
+                "editions": editions,
+            }
+        ):
+            skipped.extend(
+                ReparseSkipped(
+                    name=name,
+                    version=e["version"],
+                    reason="Документ уже в очереди или обрабатывается",
+                )
+                for e in editions
+            )
+            continue
+        jobs.set_if_absent(
+            job_id,
+            {
+                **_queued_job(job_id, None, "reparse", name),
+                "version_total": len(editions),
+                "version_index": 0,
+            },
+        )
+        job_ids.append(job_id)
+        queued_versions += len(editions)
+    return ReparseAllResponse(
+        queued_documents=len(job_ids),
+        queued_versions=queued_versions,
+        job_ids=job_ids,
+        skipped=skipped,
+        dry_run=dry_run,
+        planned=planned,
+    )
 
 
 @router.post(

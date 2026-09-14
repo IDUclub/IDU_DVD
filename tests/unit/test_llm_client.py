@@ -257,3 +257,30 @@ class TestErrorHierarchy:
     def test_ollama_error_is_an_llm_error(self):
         """Callers can catch the provider-agnostic base and cover both backends."""
         assert issubclass(OllamaError, LlmError)
+
+
+@pytest.mark.parametrize(
+    "model,override,per_call,expected",
+    [
+        ("gpt-oss-20b", None, None, "low"),
+        ("gpt-oss-20b", "high", None, "high"),
+        ("another-model", None, None, None),
+        ("another-model", None, "gpt-oss-20b", "low"),
+        ("gpt-oss-20b", None, "another-model", None),
+    ],
+)
+def test_reasoning_effort(model, override, per_call, expected, monkeypatch):
+    from src.api_clients.llm_client import settings
+
+    monkeypatch.setattr(settings, "llm_reasoning_effort", None)
+    seen = {}
+
+    def handler(request):
+        seen.update(json.loads(request.content))
+        return _ok_handler(request)
+
+    with _client_with(handler, model=model, reasoning_effort=override) as client:
+        client.chat("sys", "user", SCHEMA, model=per_call)
+    assert seen.get("reasoning_effort") == expected
+    if expected is None:
+        assert "reasoning_effort" not in seen

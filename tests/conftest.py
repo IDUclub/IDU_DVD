@@ -156,6 +156,11 @@ class FakeQdrantRepo:
                 break
         return out
 
+    def iter_points(self, query_filter=None, with_payload=True):
+        for point_id, (_, payload) in self.points.items():
+            if query_filter is None or self._matches(payload, query_filter):
+                yield {**payload, "id": point_id}
+
     def retrieve(self, ids):
         return {str(i): self.points[str(i)][1] for i in ids if str(i) in self.points}
 
