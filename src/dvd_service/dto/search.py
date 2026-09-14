@@ -67,6 +67,7 @@ class SearchRequest(BaseModel):
 
 
 class SearchHit(AdministrativeScope):
+    search_text: str | None = None  # content with structural parent context
     id: str
     fragment_name: str | None = None
     fragment_name_path: list[str] = Field(default_factory=list)

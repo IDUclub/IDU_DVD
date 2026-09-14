@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -174,6 +174,7 @@ class Settings(BaseSettings):
     # --- Parser pipeline (ported from notebooks/parser.ipynb) ---
     partition_strategy: str = "hi_res"  # 'fast' — for text formats without OCR
     languages: list[str] = ["rus", "eng"]
+    logical_partition_mode: Literal["boundaries", "ranges"] = "boundaries"
     window_chars: int = 6000
     window_max_items: int = 22  # max parts per Stage-2 window (structured output)
     overlap_blocks: int = 3

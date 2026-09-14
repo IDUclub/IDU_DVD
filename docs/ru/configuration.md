@@ -257,6 +257,7 @@ DVD_MINIO_ENDPOINT=http://minio:9000/store  # ошибка: путь в адре
 | `DVD_PARTITION_STRATEGY` | `hi_res` | стратегия unstructured (для форматов помимо `.docx`) |
 | `DVD_LANGUAGES` | `["rus","eng"]` | языки для разбора |
 | `DVD_WINDOW_CHARS` | `6000` | бюджет символов на окно |
+| `DVD_LOGICAL_PARTITION_MODE` | `boundaries` | `boundaries`: прежние границы/мердж; `ranges`: проверяемые диапазоны ID, точный `source_text`, без перекрытия и повторного мерджа на этапе 1 |
 | `DVD_WINDOW_MAX_ITEMS` | `22` | лимит частей в окне разметки структуры |
 | `DVD_OVERLAP_BLOCKS` | `3` | перекрытие окон |
 | `DVD_SEMANTIC_MERGE_MAX_PASSES` | `1` | число проходов смыслового мерджа (поднимите для лучшей склейки ценой лишних прогонов LLM) |

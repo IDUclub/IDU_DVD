@@ -72,6 +72,9 @@ STRUCT_SYSTEM = (
     'numbering - СОБСТВЕННЫЙ номер части дословно из начала текста ("1", "4.2", "а)"). '
     'Если своего номера нет - "". НЕ принимай за номер коды/обозначения ДРУГИХ документов '
     "(ГОСТ 9238, СП 108.13330.2012), номера и даты законов, номера таблиц/рисунков.\n"
+    "Все строки титульного листа (организация, название, обозначение, утверждение, город, "
+    "год) помечай title_page с relation=top. Оглавление, предисловие и основной текст "
+    "не относятся к титульному листу.\n"
     "relation - глубина ОТНОСИТЕЛЬНО ПРЕДЫДУЩЕЙ части: top/deeper/same/shallower.\n"
     'block - "amendment", если часть относится к изменению/поправке; иначе "main".\n'
     "tags - от 2 до 6 ТЕГОВ (ключевые темы, объекты, термины для поиска): короткие (1-3 слова), "
@@ -84,6 +87,8 @@ SYNONYMS = {
     "cover": "title_page",
     "title": "title_page",
     "titlepage": "title_page",
+    "титульный_лист": "title_page",
+    "титул": "title_page",
     "contents": "toc",
     "table_of_contents": "toc",
     "содержание": "toc",
@@ -171,6 +176,43 @@ class StructureTagger:
             for it in rows
         }
 
+    def apply_source_anchor(self, p, in_article=False):
+        anchor = SourceStructure.anchor(p["text"])
+        semantic = self.settings.logical_partition_mode == "ranges"
+        if (
+            semantic
+            and self.categorize(p["raw_type"]) == "title_page"
+            and anchor.get("type") == "paragraph"
+        ):
+            anchor = {}
+        if anchor.get("type") in {"article", "chapter", "section"}:
+            in_article = anchor["type"] == "article"
+        if (
+            (in_article or semantic)
+            and anchor.get("numbering")
+            and not anchor.get("type")
+        ):
+            anchor["type"] = (
+                "list_item"
+                if anchor.get("source_delimiter") == ")"
+                else (
+                    "subclause"
+                    if not in_article and "." in anchor["numbering"]
+                    else "clause"
+                )
+            )
+        if semantic and not anchor and re.match(r"^\s*[-•–—]\s+", p["text"]):
+            anchor = {"type": "list_item", "numbering": ""}
+        if anchor:
+            p.update(anchor)
+            if anchor.get("type"):
+                p["raw_type"] = anchor["type"]
+        elif p["numbering"] and not re.match(
+            r"^\s*" + re.escape(p["numbering"]) + r"(?:[.)]?\s+)", p["text"]
+        ):
+            p["numbering"] = ""
+        return anchor, in_article
+
     def tag(self, parts, client: ChatClient, on_progress=None) -> list[dict]:
         decisions = []
         windows = list(make_windows(parts, max_items=self.settings.window_max_items))
@@ -213,21 +255,7 @@ class StructureTagger:
                     p["tags"],
                     p["fragment_name"],
                 ) = t
-            anchor = SourceStructure.anchor(p["text"])
-            if anchor.get("type") in {"article", "chapter", "section"}:
-                in_article = anchor["type"] == "article"
-            if in_article and anchor.get("numbering") and not anchor.get("type"):
-                anchor["type"] = (
-                    "list_item" if anchor.get("source_delimiter") == ")" else "clause"
-                )
-            if anchor:
-                p.update(anchor)
-                if anchor.get("type"):
-                    p["raw_type"] = anchor["type"]
-            elif p["numbering"] and not re.match(
-                r"^\s*" + re.escape(p["numbering"]) + r"(?:[.)]?\s+)", p["text"]
-            ):
-                p["numbering"] = ""
+            anchor, in_article = self.apply_source_anchor(p, in_article)
             if anchor.get("type") not in {"article", "chapter", "section"}:
                 p["text"] = self.strip_leading_numbering(p["text"], p["numbering"])
             p["type"] = self.categorize(

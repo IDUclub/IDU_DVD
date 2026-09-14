@@ -224,6 +224,7 @@ __marimo__/
 
 # Data
 docs_data/
+test-data/
 
 # Scripts
 *.ipynb

@@ -46,6 +46,15 @@ def pipeline_chat_handler(system: str, user: str, schema: dict) -> dict:
     Stage-1.5 semantic merge, Stage-2 structure, tagging, and version detection.
     """
     props = schema.get("properties", {})
+    if "fragments" in props:
+        import json
+
+        return {
+            "fragments": [
+                {"start_id": u["id"], "end_id": u["id"]}
+                for u in json.loads(user)["units"]
+            ]
+        }
     ids = parse_window_ids(user)
     if "blocks" in props:  # Stage 1: boundaries
         return {"blocks": [{"id": i, "boundary": "new"} for i in ids]}
@@ -217,6 +226,8 @@ class FakeQdrantRepo:
         if hasattr(cond, "must"):  # a nested Filter: AND(must) & OR(should)
             must = cond.must or []
             should = cond.should or []
+            if any(FakeQdrantRepo._matches(pl, c) for c in cond.must_not or []):
+                return False
             if not all(FakeQdrantRepo._matches(pl, c) for c in must):
                 return False
             if should and not any(FakeQdrantRepo._matches(pl, c) for c in should):

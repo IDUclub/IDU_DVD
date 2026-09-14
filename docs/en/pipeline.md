@@ -26,6 +26,54 @@ hash is used for deduplication.
 
 For `.docx`, the heavy unstructured backends (torch, OCR) are not engaged.
 
+## Alternative Stage 1: validated ID ranges
+
+`DVD_LOGICAL_PARTITION_MODE=ranges` selects the experimental source-preserving path. The default
+`boundaries` keeps Stages 1 and 1.5 described below. The local `document_parsing_pipeline.ipynb`
+selects `ranges` explicitly so the two approaches can be compared before changing the service.
+
+1. `DocumentParser.source_units` creates paragraph/sentence units with stable IDs and exact
+   character offsets into `source_index(raw)`. Explicit numbered provisions, headings, notes and
+   tables are kept intact. Sentence splitting uses `split_sentences` and `sent_min_len`.
+2. `prepare_range_units` protects provision, subpoint, heading and table boundaries.
+   Numbered leaves remain separate until their types and parentage are known.
+3. `RangePartitioner.windows` packs units without overlap, using `window_chars` and
+   `window_max_items`. An indivisible unit larger than the input budget is sent alone in full.
+4. The LLM returns only inclusive `{start_id, end_id}` ranges. Python requires ordered, complete,
+   non-overlapping coverage and valid integer IDs. Valid partitions are cut deterministically at
+   protected boundaries and the 512-character merge limit. Boundary violations require no retry;
+   invalid IDs/coverage and transient request failures retry up to three attempts, then fail closed.
+5. Python slices the source. No LLM-generated text is accepted. The old semantic merge is skipped;
+   `overlap_blocks` and `semantic_merge_max_passes` do not affect this stage. Later structure and
+   reference stages retain their existing window settings.
+6. After type markup, adjacent `title_page` lines become one cover leaf, exempt from the 512 limit.
+   Cover detection depends on the LLM; contents, prefaces and body parts are not included.
+7. Hierarchy uses explicit headings and number prefixes (`1.1` belongs to `1`). Explicit legal
+   articles retain their numbering semantics: `3` and `3.3` are sibling provisions; `1)` and `а)`
+   form nested lists. Final assembly proceeds from parents down:
+   - A provision and its entire subtree at **512 characters or less** become one content leaf.
+   - A larger provision retains its own text as a structural container (`is_container=true`).
+   - If all its subpoints together fit, they become one child `subclause_group`.
+   - Otherwise each subpoint is examined separately using the same rule.
+   - Colon-introduced lists follow the same rule. Tables, distinct amendment blocks and gaps in
+     source spans prevent joins.
+
+Size uses `source_text`, including numbers, spaces and line breaks. An indivisible oversized source
+leaf remains intact: 512 limits merging, not arbitrary text cutting. `source_text` preserves the
+exact extracted slice through hierarchy, Qdrant and `/library`; `char_start`/`char_end` address that
+slice. Display `text` can omit its own number, but retains absorbed subpoint numbering.
+
+Containers remain in the tree and library; semantic search returns content nodes. Embeddings use
+`search_text`, combining content with full structural ancestor context. This separate context is
+not counted against the 512-character content limit or its source span. Search hits and library
+fragments expose `search_text` as well.
+
+Fidelity is relative to extracted normalized source text, not DOCX bytes or page layout. The parser
+version suffix is `-semantic1-ranges`. Range-mode updates rebuild a complete revision and embeddings:
+source-block reuse could retain obsolete grouping or parent context. Legacy `boundaries` updates
+keep their reuse strategy. Retrieval quality and cover classification still require evaluation with
+a real model; deterministic fake-LLM tests verify source fidelity and assembly rules only.
+
 ## Stage 1. Logical parts
 
 The goal is to reconstruct coherent meaningful fragments even if the original formatting broke or
@@ -37,6 +85,24 @@ glued the text together.
 2. Boundary stitching: for each pair of adjacent segments it is decided whether this is a new part or
    a continuation of the previous one. Obvious cases are handled by a language-independent heuristic
    (punctuation, case, markers), ambiguous ones are passed to the LLM. Continuations are stitched.
+
+Before applying pairwise decisions, the parser measures complete structural groups against a
+**512-character limit** (`STRUCTURAL_GROUP_MAX_CHARS`):
+
+- An introduction ending in `:` and its consecutive marked list items form a group.
+- A numbered provision and its descendants form a group even without a colon: `1` → `1.1` →
+  `1.1.1`. Sibling provisions are not combined. Inside explicit articles, decimal parts such as
+  `3` and `3.3` remain siblings; parenthesized numeric and letter items remain nested.
+- The check runs from parent to children. If the entire subtree fits (≤512), it becomes one
+  fragment. Otherwise the parent's own text stays separate and each child subtree is checked
+  independently, descending as far as necessary. For a flat oversized list, every item starts
+  a new fragment; no short prefix of that list is merged.
+
+The count includes the introduction/parent text, all descendants, their markers and the spaces
+inserted when joining them. It counts characters, not bytes or tokens. A leaf that already exceeds
+512 characters stays intact: this is a grouping threshold, not a hard limit on fragment length.
+Groups use explicit source markers; tables, headings, editorial notes and unmarked prose end a
+contiguous run. These decisions override the boundary LLM and are preserved through semantic merge.
 
 ## Stage 1.5. Semantic merge
 

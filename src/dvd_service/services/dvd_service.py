@@ -61,7 +61,7 @@ from src.dvd_service.dto import (
     TagsResponse,
     TerritoryScope,
 )
-from src.dvd_service.modules.doc_parsers import PARSER_VERSION, DocumentParser
+from src.dvd_service.modules.doc_parsers import DocumentParser
 from src.dvd_service.modules.fragment_structure import NAME_FIELDS, annotate_fragments
 from src.dvd_service.modules.hierarchy import HierarchyBuilder
 from src.dvd_service.modules.identity import (
@@ -389,6 +389,16 @@ class IngestionService:
             }
         char_start = min(spans[i]["start"] for i in ids)
         char_end = max(spans[i]["end"] for i in ids)
+        if node.get("source_text") is not None:
+            start, end = node.get("char_start"), node.get("char_end")
+            if (
+                type(start) is not int
+                or type(end) is not int
+                or not char_start <= start < end <= min(char_end + 1, spans[-1]["end"])
+                or end - start != len(node["source_text"])
+            ):
+                raise ValueError("Некорректный точный диапазон исходного фрагмента")
+            char_start, char_end = start, end
         pages = [spans[i]["page"] for i in ids if spans[i]["page"] is not None]
         bbox = next((spans[i]["bbox"] for i in ids if spans[i]["bbox"]), None)
         return {
@@ -448,6 +458,9 @@ class IngestionService:
                     references=node_refs.get(n["id"], []),
                     src_block_ids=n.get("src_ids", []),
                     text=n["text"],
+                    source_text=n.get("source_text"),
+                    is_container=n.get("is_container", False),
+                    search_text=n.get("search_text"),
                     **{k: n[k] for k in NAME_FIELDS},
                     **identity,
                     **self._grounding(n, spans, doc_id),
@@ -506,9 +519,20 @@ class IngestionService:
 
             progress.stage("hierarchy")
             ranks = self.structure.numbering_ranks(parts)  # Stage 3.5
-            tree = self.hierarchy.build(parts, ranks, title=Path(file_path).stem)
-            self.hierarchy.cap_unnumbered_nesting(tree)
+            semantic = self.settings.logical_partition_mode == "ranges"
+            assembly_parts = (
+                self.hierarchy.coalesce_title_pages(parts) if semantic else parts
+            )
+            tree = self.hierarchy.build(
+                assembly_parts, ranks, title=Path(file_path).stem, semantic=semantic
+            )
+            if not semantic:
+                self.hierarchy.cap_unnumbered_nesting(tree)
             self.hierarchy.group_amendment(tree)
+            if semantic:
+                self.hierarchy.assemble_semantic(
+                    tree, self.parser.range_partitioner.max_chars
+                )
             nodes = self.hierarchy.flatten(tree)  # prev/next, kind, html
             progress.complete_stage()
 
@@ -555,7 +579,8 @@ class IngestionService:
 
             progress.stage("embeddings")
             vectors = self._embed_all(
-                [n["text"] for n in nodes], on_progress=progress.advance
+                [n.get("search_text", n["text"]) for n in nodes],
+                on_progress=progress.advance,
             )
             progress.complete_stage()
 
@@ -578,7 +603,7 @@ class IngestionService:
             for order, n in enumerate(nodes):
                 n["_order"] = order
             identity = {
-                "parser_version": PARSER_VERSION,
+                "parser_version": self.parser.version,
                 "embedding_meta": embedding_meta,
                 "name": name,
                 "title": title,
@@ -752,9 +777,20 @@ class IngestionService:
             progress.complete_stage()
             progress.stage("hierarchy")
             ranks = self.structure.numbering_ranks(parts)  # Stage 3.5
-            tree = self.hierarchy.build(parts, ranks, title=Path(file_path).stem)
-            self.hierarchy.cap_unnumbered_nesting(tree)
+            semantic = self.settings.logical_partition_mode == "ranges"
+            assembly_parts = (
+                self.hierarchy.coalesce_title_pages(parts) if semantic else parts
+            )
+            tree = self.hierarchy.build(
+                assembly_parts, ranks, title=Path(file_path).stem, semantic=semantic
+            )
+            if not semantic:
+                self.hierarchy.cap_unnumbered_nesting(tree)
             self.hierarchy.group_amendment(tree)
+            if semantic:
+                self.hierarchy.assemble_semantic(
+                    tree, self.parser.range_partitioner.max_chars
+                )
             nodes = self.hierarchy.flatten(tree)
             progress.complete_stage()
 
@@ -785,7 +821,11 @@ class IngestionService:
             # containers) and legacy versions without fingerprints match by text.
             old_hashes = self.registry.get_blocks(name, base_version)
             new_hashes = DocumentParser.block_hashes(raw)
-            if old_hashes:
+            if semantic:
+                # Source-block reuse cannot represent changed subtree grouping or
+                # inherited embedding context. Keep each range-mode revision coherent.
+                id_map, new_nodes, reused_ids = {}, nodes, set()
+            elif old_hashes:
                 reused_ids, insert_ids, id_map = self._match_by_blocks(
                     base_points, nodes, old_hashes, new_hashes
                 )
@@ -847,7 +887,8 @@ class IngestionService:
             progress.stage("embeddings")
             vectors = (
                 self._embed_all(
-                    [n["text"] for n in new_nodes], on_progress=progress.advance
+                    [n.get("search_text", n["text"]) for n in new_nodes],
+                    on_progress=progress.advance,
                 )
                 if new_nodes
                 else []
@@ -857,7 +898,7 @@ class IngestionService:
             external_ids = external_ids or {}
             uploaded_at = datetime.now(timezone.utc).isoformat()
             identity = {
-                "parser_version": PARSER_VERSION,
+                "parser_version": self.parser.version,
                 "embedding_meta": {
                     "model": self.settings.embedding_model_name,
                     "dim": self.settings.vector_size,
@@ -1586,7 +1627,11 @@ class SearchService:
         with create_embedder() as embedder:
             vector = embedder.embed_query(req.query)
         limit = req.limit or self.settings.search_limit
-        points = self.qdrant.search(vector, self._build_filter(req, kind), limit)
+        search_filter = self._build_filter(req, kind)
+        search_filter.must_not = list(search_filter.must_not or []) + [
+            FieldCondition(key="is_container", match=MatchValue(value=True))
+        ]
+        points = self.qdrant.search(vector, search_filter, limit)
 
         hits = []
         for p in points:
@@ -1599,6 +1644,7 @@ class SearchService:
             hits.append(
                 SearchHit(
                     id=str(p.id),
+                    search_text=pl.get("search_text"),
                     fragment_name=pl.get("fragment_name"),
                     fragment_name_path=pl.get("fragment_name_path", []) or [],
                     structure_path=pl.get("structure_path", []) or [],

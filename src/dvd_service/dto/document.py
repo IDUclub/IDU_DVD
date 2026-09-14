@@ -97,6 +97,9 @@ class DocumentFragment(BaseModel):
     child_ids: list[str] = Field(default_factory=list)
     char_start: int | None = None
     char_end: int | None = None
+    is_container: bool = False
+    search_text: str | None = None  # embedding text with structural parent context
+    source_text: str | None = None
     page_start: int | None = None
     page_end: int | None = None
     span_id: str | None = None
