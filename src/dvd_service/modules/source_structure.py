@@ -20,12 +20,13 @@ class SourceStructure:
         r"сентября|октября|ноября|декабря)\s+\d{4}\b",
         re.I,
     )
+    EDITORIAL = re.compile(r"^\s*введ[её]н[аоы]?\s+Федеральным\s+законом\s+от\b", re.I)
     NUMBER = re.compile(r"^\s*(\d{1,3}(?:\.\d{1,3})*)([.)]?)(?=\s)\s+\S")
     LETTER = re.compile(r"^\s*([а-яёa-z])[)]\s+\S", re.I)
 
     @classmethod
     def anchor(cls, text):
-        if cls.NOTE.match(text):
+        if cls.NOTE.match(text) or cls.EDITORIAL.match(text):
             return {"type": "note", "numbering": "", "block": "amendment"}
         if cls.WRITTEN_DATE.match(text):
             return {"type": "paragraph", "numbering": ""}
