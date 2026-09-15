@@ -411,3 +411,138 @@ def test_edition_whitespace_matches_without_crossing_editions_or_scope(fragments
         ).hits
         == []
     )
+
+
+def mock_query_vector(monkeypatch):
+    from unittest.mock import MagicMock
+
+    embedder = MagicMock()
+    embedder.__enter__.return_value = embedder
+    embedder.embed_query.return_value = [0.0, 1.0]
+    factory = MagicMock(return_value=embedder)
+    monkeypatch.setattr(
+        "src.dvd_service.services.fragment_search.create_embedder", factory
+    )
+    return factory
+
+
+def test_ranked_search_resolves_short_document_before_top_k(fragments, monkeypatch):
+    svc, ids = fragments
+    factory = mock_query_vector(monkeypatch)
+    svc.qdrant.client.update_vectors(
+        svc.qdrant.collection,
+        points=[
+            models.PointVectors(id=ids[1], vector=[0.1, 0.9]),
+            models.PointVectors(id=ids[6], vector=[0.0, 1.0]),
+            models.PointVectors(id=ids[5], vector=[0.0, 1.0]),
+        ],
+    )
+    response = svc.search(
+        FragmentSearchRequest(
+            query="огнезащитное покрытие",
+            document_names=["СП 2"],
+            rank_by_relevance=True,
+            limit=1,
+        )
+    )
+    assert [h.id for h in response.hits] == [ids[1]]
+    assert response.complete and not response.ambiguous
+    assert response.hits[0].match_kind == "semantic"
+    factory.assert_called_once()
+
+
+def test_ranked_search_stays_inside_selected_subtree(fragments, monkeypatch):
+    svc, ids = fragments
+    mock_query_vector(monkeypatch)
+    svc.qdrant.client.update_vectors(
+        svc.qdrant.collection,
+        points=[
+            models.PointVectors(id=ids[2], vector=[0.1, 0.9]),
+            models.PointVectors(id=ids[3], vector=[0.0, 1.0]),
+        ],
+    )
+    svc.qdrant.set_points_payload([ids[2]], {"next_id": ids[3]})
+    response = svc.search(
+        FragmentSearchRequest(
+            query="требование",
+            doc_id="doc",
+            pattern="3.3",
+            rank_by_relevance=True,
+            context_height=1,
+            limit=1,
+        )
+    )
+    assert [h.id for h in response.hits] == [ids[2]]
+    assert "Другое определение" not in response.hits[0].context
+
+
+def test_missing_exact_scope_never_embeds_or_broadens(fragments, monkeypatch):
+    svc, _ = fragments
+    factory = mock_query_vector(monkeypatch)
+    for selector in (
+        {"pattern": "9.9", "doc_id": "doc"},
+        {"document_names": ["СП 999"]},
+    ):
+        result = svc.search(
+            FragmentSearchRequest(query="тема", rank_by_relevance=True, **selector)
+        )
+        assert result.hits == [] and result.complete
+    factory.assert_not_called()
+
+
+def test_document_ambiguity_is_unique_and_precedes_ranking(fragments, monkeypatch):
+    svc, ids = fragments
+    factory = mock_query_vector(monkeypatch)
+    svc.qdrant.set_points_payload([ids[6]], {"name": "СП 2.13130.2021"})
+    result = svc.search(
+        FragmentSearchRequest(
+            query="тема", document_names=["СП 2"], rank_by_relevance=True
+        )
+    )
+    assert result.ambiguous and not result.hits
+    assert len(result.candidates) == 2
+    assert {c["doc_id"] for c in result.candidates} == {"doc", "other"}
+    assert all(c["entity_kind"] == "document" for c in result.candidates)
+    factory.assert_not_called()
+
+
+def test_clarification_contains_named_ancestor_identity(fragments):
+    svc, ids = fragments
+    result = svc.search(FragmentSearchRequest(pattern="3.3", doc_id="doc"))
+    hierarchy = result.candidates[0]["hierarchy"]
+    assert hierarchy[0] == dict(
+        id=ids[0], type="section", numbering="3", name="Пожарная безопасность"
+    )
+    assert hierarchy[1]["name"] == "вспучивающееся огнезащитное покрытие"
+
+
+def test_ranked_private_scope_excludes_shared_and_other_owners(fragments, monkeypatch):
+    svc, ids = fragments
+    mock_query_vector(monkeypatch)
+    result = svc.search(
+        FragmentSearchRequest(
+            query="тема",
+            rank_by_relevance=True,
+            user_id="private",
+            project_id="p",
+            include_shared=False,
+        )
+    )
+    assert [h.id for h in result.hits] == [ids[5]]
+
+
+def test_repeated_number_in_descendant_is_one_choice_with_full_text(fragments):
+    svc, ids = fragments
+    svc.qdrant.set_points_payload([ids[2]], {"numbering": "3.3"})
+    result = svc.search(FragmentSearchRequest(pattern="3.3", doc_id="doc"))
+    assert not result.ambiguous
+    assert len(result.candidates) == 1
+    assert [h.id for h in result.hits] == ids[1:3]
+
+
+def test_same_number_on_different_structural_types_remains_ambiguous(fragments):
+    svc, ids = fragments
+    svc.qdrant.set_points_payload([ids[0]], {"numbering": "3.3"})
+    result = svc.search(FragmentSearchRequest(pattern="3.3", doc_id="doc"))
+    assert result.ambiguous
+    assert {c["type"] for c in result.candidates} == {"section", "definition"}

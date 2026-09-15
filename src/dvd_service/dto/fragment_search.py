@@ -16,13 +16,23 @@ class FragmentSearchRequest(SearchRequest):
     include_children: bool = True
     limit: int = Field(50, ge=1, le=200)
     cursor: str | None = None
+    rank_by_relevance: bool = False
+    kind: Literal["all", "text", "table"] = "all"
+    allow_multiple: bool = False
+    root_ids: list[str] | None = Field(None, min_length=1, max_length=200)
 
     @model_validator(mode="after")
     def require_selector(self):
         self.pattern = (self.pattern or "").strip() or None
         self.name_query = (self.name_query or "").strip() or None
-        if not self.pattern and not self.name_query:
+        if not self.pattern and not self.name_query and not self.rank_by_relevance:
             raise ValueError("pattern or name_query is required")
+        if self.rank_by_relevance and not self.query.strip():
+            raise ValueError("query is required for relevance ranking")
+        if self.rank_by_relevance and self.cursor:
+            raise ValueError(
+                "ranked retrieval returns one bounded result, without a cursor"
+            )
         if not self.include_shared and not (self.project_id or self.scenario_id):
             raise ValueError("include_shared=false requires a project or scenario")
         return self

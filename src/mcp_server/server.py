@@ -53,6 +53,24 @@ def _fragment_search(request: FragmentSearchRequest, user_id: str | None):
 
 
 @mcp.tool()
+def search_filtered(
+    request: FragmentSearchRequest,
+    user_id: str = Depends(get_mcp_user_id),
+) -> FragmentSearchResponse:
+    """Сначала разрешить фильтры, затем найти тексты внутри выбранной области.
+
+    rank_by_relevance=true и query включают векторное ранжирование только внутри
+    заданного документа/редакции/структурного поддерева. Без ранжирования возвращается
+    полный текст по точному pattern/name_query. Короткие обозначения и aliases
+    разрешаются в реальные документы. ambiguous требует выбрать уникальный документ
+    или элемент из candidates; root_ids сохраняют выбранные элементы при ранжировании.
+    allow_multiple=true только для явно множественного запроса. Пустой результат
+    никогда не снимает фильтры. Личность владельца определяется транспортом.
+    """
+    return _fragment_search(request, user_id)
+
+
+@mcp.tool()
 def search_structure(
     request: FragmentSearchRequest,
     user_id: str = Depends(get_mcp_user_id),
