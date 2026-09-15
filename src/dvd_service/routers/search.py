@@ -30,6 +30,7 @@ router = APIRouter(tags=["search"], dependencies=[Depends(require_authenticated)
 
 @router.post("/search/structure", response_model=FragmentSearchResponse)
 @router.post("/search/names", response_model=FragmentSearchResponse)
+@router.post("/search/filtered", response_model=FragmentSearchResponse)
 async def search_fragments(
     req: FragmentSearchRequest,
     search: SearchService = Depends(Dependencies.get_search),

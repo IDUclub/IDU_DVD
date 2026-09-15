@@ -6,7 +6,7 @@ import hashlib
 import json
 import math
 
-from qdrant_client.models import FieldCondition, Filter, MatchAny
+from qdrant_client.models import FieldCondition, Filter, HasIdCondition, MatchAny
 
 from src.api_clients.embeddings_client import create_embedder
 from src.common.db.qdrant_client import shared_only_condition, user_scope_conditions
@@ -241,63 +241,6 @@ class FragmentSearchService:
                     n["id"],
                 )
             )
-        parameters = req.model_dump(exclude={"cursor", "limit"})
-        snapshot = _snapshot(nodes, parameters)
-        # Match-set changes (e.g. a manual name update or model change) also invalidate search cursors.
-        snapshot = hashlib.sha256(
-            (
-                snapshot
-                + json.dumps(
-                    [
-                        (n["id"], n["fragment_name"], n["fragment_name_path"])
-                        for n in selected
-                    ],
-                    ensure_ascii=False,
-                )
-            ).encode()
-        ).hexdigest()[:24]
-        offset = _offset(req.cursor, snapshot)
-        if offset > len(selected):
-            raise ValueError("cursor offset exceeds the result set")
-        page = selected[offset : offset + req.limit]
-        next_offset = offset + len(page)
-        hits = []
-        for n in page:
-            ancestors = [i for i in n["ancestor_ids"] if i in root_ids]
-            score, kind = (
-                scores[n["id"]]
-                if n["id"] in root_ids
-                else (max(scores[i][0] for i in ancestors), "descendant")
-            )
-            payload = {k: v for k, v in n.items() if k in FragmentMatch.model_fields}
-            payload.update(
-                id=n["id"],
-                score=score,
-                doc_id=n.get("doc_id", ""),
-                name=n.get("name", ""),
-                version=req.version or n.get("version", ""),
-                kind=n.get("kind", "text"),
-                type=n.get("type", ""),
-                matched=n["id"] in root_ids,
-                match_kind=kind,
-                matched_ancestor_ids=ancestors,
-                context=(
-                    _scoped_context(
-                        n,
-                        by_id,
-                        max(
-                            0,
-                            min(
-                                req.context_height,
-                                self.search_service.settings.max_context_height,
-                            ),
-                        ),
-                    )
-                    if req.context_height
-                    else None
-                ),
-            )
-            hits.append(FragmentMatch(**payload))
         candidates = [
             {
                 k: n.get(k)
@@ -305,6 +248,8 @@ class FragmentSearchService:
                     "id",
                     "doc_id",
                     "name",
+                    "user_id",
+                    "project_id",
                     "version",
                     "versions",
                     "numbering",
@@ -316,6 +261,7 @@ class FragmentSearchService:
                 )
             }
             for n in roots[:200]
+            if req.pattern or req.name_query
         ]
         for candidate in candidates:
             root = by_id[candidate["id"]]
@@ -336,6 +282,16 @@ class FragmentSearchService:
                 if root.get("numbering")
                 else root.get("structure_path", [])
             )
+            candidate["version"] = req.version or root.get("version")
+            candidate["hierarchy"] = [
+                {
+                    "id": n["id"],
+                    "numbering": n.get("numbering"),
+                    "type": n.get("type"),
+                    "name": n.get("fragment_name"),
+                }
+                for n in address_nodes
+            ]
             candidate["excerpt"] = " ".join(root.get("text", "").split())[:200]
             # Include descendants: identical root text alone does not prove that
             # two provisions (with exceptions or tables) have the same content.
@@ -361,7 +317,171 @@ class FragmentSearchService:
                     ensure_ascii=False,
                 ).encode()
             ).hexdigest()
+        # A repeated matching number on a descendant is part of its selected
+        # ancestor's text, not another choice. Unrelated same-number roots remain distinct.
+        candidates = [
+            c
+            for c in candidates
+            if not any(
+                a in root_ids
+                and by_id[a].get("numbering") == c.get("numbering")
+                and by_id[a].get("type") == c.get("type")
+                for a in by_id[c["id"]]["ancestor_ids"]
+            )
+        ]
         concrete = req.pattern and not any(c in req.pattern for c in "*?[–—-")
+        ambiguous = bool(
+            (concrete or (req.name_query and not req.pattern)) and len(candidates) > 1
+        )
+        candidates_complete = len(roots) <= 200
+        ambiguous = ambiguous or bool(
+            (concrete or req.name_query) and not candidates_complete
+        )
+        if not req.pattern and not req.name_query:
+            documents = {}
+            for n in roots:
+                key = (
+                    n.get("doc_id"),
+                    n.get("user_id"),
+                    n.get("project_id"),
+                    req.version or n.get("version"),
+                )
+                documents.setdefault(
+                    key,
+                    dict(
+                        id=n["id"],
+                        doc_id=n.get("doc_id"),
+                        name=n.get("name"),
+                        user_id=n.get("user_id"),
+                        project_id=n.get("project_id"),
+                        version=req.version or n.get("version"),
+                        entity_kind="document",
+                        structure_path=[],
+                        selection_path=[],
+                        hierarchy=[],
+                    ),
+                )
+            candidates = list(documents.values())[:200]
+            candidates_complete = len(documents) <= 200
+            ambiguous = bool(
+                (req.name or req.document_names or req.doc_id or not req.include_shared)
+                and len(documents) > 1
+            )
+        if req.root_ids:
+            if not set(req.root_ids).issubset(root_ids):
+                raise ValueError("selected elements changed; repeat the clarification")
+            selected = [
+                n
+                for n in selected
+                if n["id"] in req.root_ids
+                or (
+                    req.include_children
+                    and set(req.root_ids).intersection(n["ancestor_ids"])
+                )
+            ]
+            ambiguous = False
+        if req.rank_by_relevance:
+            if ambiguous and not req.allow_multiple:
+                return FragmentSearchResponse(
+                    count=0,
+                    total=0,
+                    match_count=len(roots),
+                    hits=[],
+                    complete=True,
+                    ambiguous=True,
+                    candidates=candidates,
+                    candidates_complete=candidates_complete,
+                )
+            allowed = [
+                n["id"]
+                for n in selected
+                if not n.get("is_container")
+                and (req.kind == "all" or n.get("kind") == req.kind)
+            ]
+            # Resolve the entire authorized subtree BEFORE top-k. Batches bound the
+            # ID filter; merging each batch's top-k is equivalent to global top-k.
+            ranked = []
+            if allowed:
+                with create_embedder() as embedder:
+                    vector = embedder.embed_query(req.query)
+                for start in range(0, len(allowed), 1000):
+                    ranked.extend(
+                        self.qdrant.search(
+                            vector,
+                            Filter(
+                                must=[
+                                    query_filter,
+                                    HasIdCondition(
+                                        has_id=allowed[start : start + 1000]
+                                    ),
+                                ]
+                            ),
+                            req.limit,
+                        )
+                    )
+            ranked.sort(key=lambda p: (-p.score, str(p.id)))
+            context_nodes = {n["id"]: n for n in selected}
+            selected = [by_id[str(p.id)] for p in ranked[: req.limit]]
+            scores.update({str(p.id): (p.score, "semantic") for p in ranked})
+        else:
+            context_nodes = by_id
+        parameters = req.model_dump(exclude={"cursor", "limit"})
+        snapshot = _snapshot(nodes, parameters)
+        # Match-set changes (e.g. a manual name update or model change) also invalidate search cursors.
+        snapshot = hashlib.sha256(
+            (
+                snapshot
+                + json.dumps(
+                    [
+                        (n["id"], n["fragment_name"], n["fragment_name_path"])
+                        for n in selected
+                    ],
+                    ensure_ascii=False,
+                )
+            ).encode()
+        ).hexdigest()[:24]
+        offset = _offset(req.cursor, snapshot)
+        if offset > len(selected):
+            raise ValueError("cursor offset exceeds the result set")
+        page = selected[offset : offset + req.limit]
+        next_offset = offset + len(page)
+        hits = []
+        for n in page:
+            ancestors = [i for i in n["ancestor_ids"] if i in root_ids]
+            score, kind = (
+                scores[n["id"]]
+                if n["id"] in root_ids or req.rank_by_relevance
+                else (max(scores[i][0] for i in ancestors), "descendant")
+            )
+            payload = {k: v for k, v in n.items() if k in FragmentMatch.model_fields}
+            payload.update(
+                id=n["id"],
+                score=score,
+                doc_id=n.get("doc_id", ""),
+                name=n.get("name", ""),
+                version=req.version or n.get("version", ""),
+                kind=n.get("kind", "text"),
+                type=n.get("type", ""),
+                matched=n["id"] in root_ids,
+                match_kind=kind,
+                matched_ancestor_ids=ancestors,
+                context=(
+                    _scoped_context(
+                        n,
+                        context_nodes,
+                        max(
+                            0,
+                            min(
+                                req.context_height,
+                                self.search_service.settings.max_context_height,
+                            ),
+                        ),
+                    )
+                    if req.context_height
+                    else None
+                ),
+            )
+            hits.append(FragmentMatch(**payload))
         return FragmentSearchResponse(
             count=len(hits),
             total=len(selected),
@@ -371,11 +491,9 @@ class FragmentSearchService:
             next_cursor=(
                 f"{snapshot}:{next_offset}" if next_offset < len(selected) else None
             ),
-            ambiguous=bool(
-                (concrete or (req.name_query and not req.pattern)) and len(roots) > 1
-            ),
+            ambiguous=ambiguous,
             candidates=candidates,
-            candidates_complete=len(roots) <= 200,
+            candidates_complete=candidates_complete,
         )
 
     def backfill(self, req: NameBackfillRequest) -> dict:
