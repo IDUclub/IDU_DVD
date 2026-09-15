@@ -35,6 +35,28 @@ def document_key(value: str) -> str:
     return "".join(c for c in value if c.isalnum())
 
 
+_DESIGNATION = re.compile(
+    r"\b(ГОСТ(?:\s+Р)?|СП|СНиП|СанПиН|СН|ТСН|НПБ|ISO|EN)\s*(\d+(?:[.\-]\d+){0,5})(?!\d)",
+    re.I,
+)
+
+
+def document_matches(selector: str, value: str) -> bool:
+    """Compare explicit designation components, never arbitrary string prefixes.
+
+    СП 55 matches СП 55.13330.2016 + title, but cannot match СП 550 or a
+    different supplied edition. Multiple genuine matches remain ambiguous.
+    """
+    if document_key(selector) == document_key(value):
+        return True
+    wanted = _DESIGNATION.fullmatch(normalize(selector))
+    actual = _DESIGNATION.match(normalize(value))
+    if not wanted or not actual or normalize(wanted[1]) != normalize(actual[1]):
+        return False
+    a, b = re.split(r"[.\-]", wanted[2]), re.split(r"[.\-]", actual[2])
+    return b[: len(a)] == a
+
+
 def extract_name(node: dict) -> tuple[str | None, str]:
     text = (node.get("text") or "").strip()
     explicit = (node.get("fragment_name") or "").strip()
@@ -148,6 +170,27 @@ class StructurePattern:
 
     def _matches_part(self, part: str, node: dict) -> bool:
         numbering = normalize(str(node.get("numbering") or "")).strip(" .)")
+        qualified = re.fullmatch(
+            r"(статья|article|глава|chapter|раздел|section|приложение|appendix)\s+(.+)",
+            part,
+        )
+        if qualified:
+            expected = {
+                "статья": "article",
+                "глава": "chapter",
+                "раздел": "section",
+                "приложение": "appendix",
+            }.get(qualified[1], qualified[1])
+            if node.get("type") != expected:
+                return False
+            own = re.sub(
+                r"^(?:статья|article|глава|chapter|раздел|section|приложение|appendix)\s+",
+                "",
+                numbering,
+            )
+            return fnmatch.fnmatchcase(
+                own.replace("_", "."), qualified[2].replace("_", ".")
+            )
         interval = self._range(part)
         if interval:
             lo, hi = interval

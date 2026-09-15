@@ -65,3 +65,24 @@ def test_tables_preserve_merged_cells_and_escape_html(tmp_path):
     assert [b["category"] for b in raw] == ["NarrativeText", "Table", "NarrativeText"]
     assert raw[1]["text"].count("A < B") == 1
     assert 'rowspan="2"' in raw[1]["html"] and "A &lt; B" in raw[1]["html"]
+
+
+def test_word_list_can_reference_a_hidden_ancestor_counter(tmp_path):
+    doc = Document()
+    defs = doc.part.numbering_part.element
+    defs.append(parse_xml(f"""<w:abstractNum {nsdecls('w')} w:abstractNumId="901">
+      <w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="none"/><w:lvlText w:val=""/></w:lvl>
+      <w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1%2."/></w:lvl>
+    </w:abstractNum>"""))
+    defs.append(
+        parse_xml(
+            f'<w:num {nsdecls("w")} w:numId="901"><w:abstractNumId w:val="901"/></w:num>'
+        )
+    )
+    p = doc.add_paragraph("Требование")
+    np = p._p.get_or_add_pPr().get_or_add_numPr()
+    np.get_or_add_numId().val = 901
+    np.get_or_add_ilvl().val = 1
+    path = tmp_path / "hidden-counter.docx"
+    doc.save(path)
+    assert DocxReader().read(path)[0]["text"] == "1. Требование"

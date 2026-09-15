@@ -530,9 +530,7 @@ class IngestionService:
                 self.hierarchy.cap_unnumbered_nesting(tree)
             self.hierarchy.group_amendment(tree)
             if semantic:
-                self.hierarchy.assemble_semantic(
-                    tree, self.parser.range_partitioner.max_chars
-                )
+                self.hierarchy.assemble_semantic(tree)
             nodes = self.hierarchy.flatten(tree)  # prev/next, kind, html
             progress.complete_stage()
 
@@ -788,9 +786,7 @@ class IngestionService:
                 self.hierarchy.cap_unnumbered_nesting(tree)
             self.hierarchy.group_amendment(tree)
             if semantic:
-                self.hierarchy.assemble_semantic(
-                    tree, self.parser.range_partitioner.max_chars
-                )
+                self.hierarchy.assemble_semantic(tree)
             nodes = self.hierarchy.flatten(tree)
             progress.complete_stage()
 

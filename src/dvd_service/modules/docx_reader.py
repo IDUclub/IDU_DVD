@@ -22,6 +22,8 @@ class DocxReader:
 
     @staticmethod
     def _format(value, fmt):
+        if fmt == "none":
+            return ""
         if fmt in {"decimal", "decimalZero"}:
             return str(value).zfill(2 if fmt == "decimalZero" else 1)
         if fmt in {"upperLetter", "lowerLetter", "russianUpper", "russianLower"}:

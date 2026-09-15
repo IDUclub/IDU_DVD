@@ -117,6 +117,7 @@ class SearchHit(AdministrativeScope):
     metadata: dict = Field(default_factory=dict)
     references: list[DocumentRef] = Field(default_factory=list)
     text: str
+    source_text: str | None = None  # unmodified source span for verbatim quotation
     context: str | None = (
         None  # expanded text with neighbours (when context_height > 0)
     )

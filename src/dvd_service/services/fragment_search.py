@@ -20,7 +20,7 @@ from src.dvd_service.modules.fragment_structure import (
     NAME_FIELDS,
     StructurePattern,
     annotate_fragments,
-    document_key,
+    document_matches,
     name_score,
 )
 
@@ -116,20 +116,23 @@ class FragmentSearchService:
         )
         query_filter = self.search_service._build_filter(scope, None)
         if req.name or req.document_names:
-            single = document_key(req.name) if req.name else None
-            any_names = {document_key(n) for n in req.document_names or []}
+            single = req.name
+            any_names = req.document_names or []
 
             def in_documents(n):
                 keys = {
-                    document_key(str(v))
+                    str(v)
                     for v in [
                         n.get("name", ""),
                         *(n.get("aliases") or []),
                         *(n.get("external_ids") or {}).values(),
                     ]
                 }
-                return (not single or single in keys) and (
-                    not any_names or bool(keys & any_names)
+                return (
+                    not single or any(document_matches(single, k) for k in keys)
+                ) and (
+                    not any_names
+                    or any(document_matches(s, k) for s in any_names for k in keys)
                 )
 
             identities = self.qdrant.iter_points(

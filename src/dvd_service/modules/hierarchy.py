@@ -29,7 +29,7 @@ class HierarchyBuilder:
 
     @staticmethod
     def _heading_parent(stack, node, root):
-        levels = {"section": 1, "chapter": 2, "article": 3}
+        levels = {"section": 1, "chapter": 2, "article": 3, "appendix": 1}
         level = node.get("source_heading_level") or levels[node["type"]]
         parents = [
             ancestor
@@ -94,7 +94,20 @@ class HierarchyBuilder:
         node_by_id = {n["_id"]: n for n in nodes}
         for n in nodes[1:]:
             top = stack[-1]
-            article = next((a for a in reversed(stack) if a["type"] == "article"), None)
+            # An LLM misclassification must not close an explicit source article.
+            article = next(
+                (
+                    a
+                    for a in reversed(source_headings if semantic else stack)
+                    if a["type"] == "article"
+                ),
+                None,
+            )
+            if semantic and source_headings and source_headings[-1] not in stack:
+                stack = [source_headings[-1]]
+                while stack[-1]["parent"] is not None:
+                    stack.append(node_by_id[stack[-1]["parent"]])
+                stack.reverse()
             if n.get("source_heading_level"):
                 # Source headings have their own stack: an inferred preface or
                 # wrapped title may reset the LLM stack, but cannot end a chapter.
@@ -113,6 +126,7 @@ class HierarchyBuilder:
                 stack = stack[: stack.index(parent) + 1]
             elif article is not None and not (
                 semantic
+                and not source_headings
                 and n["type"]
                 in {
                     "title_page",
@@ -157,7 +171,7 @@ class HierarchyBuilder:
                     stack = stack[: stack.index(parent) + 1]
             elif semantic:
                 heading = source_headings[-1] if source_headings else nodes[0]
-                if n["type"] in {
+                if not source_headings and n["type"] in {
                     "title_page",
                     "toc",
                     "preface",
@@ -377,75 +391,18 @@ class HierarchyBuilder:
             result.append(part)
         return result
 
-    @staticmethod
-    def _preorder(tree):
-        result, stack = [], [tree]
-        while stack:
-            node = stack.pop()
-            result.append(node)
-            stack.extend(reversed(node.get("children", [])))
-        return result
+    def assemble_semantic(self, tree):
+        """Mark containers without collapsing source nodes or their addresses.
 
-    @staticmethod
-    def _combine(target, members, source):
-        target.update(
-            source_text=source,
-            char_start=members[0]["char_start"],
-            char_end=members[-1]["char_end"],
-            _src_ids=sorted({i for n in members for i in n.get("_src_ids", [])}),
-            _tags=sorted({t for n in members for t in n.get("_tags", [])}),
-            children=[],
-            is_container=False,
-        )
-
-    def assemble_semantic(self, tree, max_chars=512):
-        """Choose the largest fitting provision from the top down, after typing."""
-        provisions = {"clause", "subclause", "list_item"}
-        joinable = provisions | {"paragraph", "note", "definition"}
+        Size-based packing belongs to the retrieval context, not the source tree.
+        Even short children and unnumbered continuations keep their own spans.
+        """
         stack = [tree]
         while stack:
             node = stack.pop()
             children = node.get("children", [])
-            node["is_container"] = False
-            introduced_list = (
-                node["type"] == "paragraph"
-                and node["text"].rstrip().endswith(":")
-                and any(c["type"] == "list_item" for c in children)
-            )
-            if children and (node["type"] in provisions or introduced_list):
-                members = self._preorder(node)
-                same_block = len({n.get("_block", "main") for n in members}) == 1
-                allowed = same_block and all(n["type"] in joinable for n in members)
-                source = self._source_run(members) if allowed else None
-                if source is not None and len(source) <= max_chars:
-                    # Preserve the parent's display text and every child's source numbering.
-                    text = node["text"] + "".join(n["source_text"] for n in members[1:])
-                    self._combine(node, members, source)
-                    node["text"] = text
-                    continue
-                node["is_container"] = True
-                descendants = members[1:]
-                source = self._source_run(descendants) if allowed else None
-                if (
-                    source is not None
-                    and len(source) <= max_chars
-                    and len(children) > 1
-                ):
-                    group = {
-                        "type": "subclause_group",
-                        "text": source,
-                        "numbering": "",
-                        "is_table": False,
-                        "html": None,
-                        "_rank": None,
-                        "_block": node.get("_block", "main"),
-                    }
-                    self._combine(group, descendants, source)
-                    node["children"] = [group]
-                    continue
-            elif children:
-                node["is_container"] = True
-            stack.extend(reversed(node.get("children", [])))
+            node["is_container"] = bool(children)
+            stack.extend(reversed(children))
         return tree
 
     def flatten(self, tree) -> list[dict]:

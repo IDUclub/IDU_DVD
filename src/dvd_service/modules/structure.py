@@ -177,7 +177,7 @@ class StructureTagger:
         }
 
     def apply_source_anchor(self, p, in_article=False):
-        anchor = SourceStructure.anchor(p["text"])
+        anchor = dict(p.get("_source_anchor", SourceStructure.anchor(p["text"])))
         semantic = self.settings.logical_partition_mode == "ranges"
         if (
             semantic
@@ -185,8 +185,26 @@ class StructureTagger:
             and anchor.get("type") == "paragraph"
         ):
             anchor = {}
-        if anchor.get("type") in {"article", "chapter", "section"}:
+        if anchor.get("source_heading_level"):
             in_article = anchor["type"] == "article"
+        if (
+            semantic
+            and in_article
+            and not anchor.get("source_heading_level")
+            and not anchor.get("type")
+        ):
+            if self.categorize(p["raw_type"]) in {
+                "article",
+                "chapter",
+                "section",
+                "title_page",
+                "toc",
+                "preface",
+                "introduction",
+                "appendix",
+                "bibliography",
+            }:
+                p["raw_type"] = "paragraph"
         if (
             (in_article or semantic)
             and anchor.get("numbering")
@@ -207,6 +225,12 @@ class StructureTagger:
             p.update(anchor)
             if anchor.get("type"):
                 p["raw_type"] = anchor["type"]
+        elif semantic:
+            # A model may echo a whole sentence as its "number". Only literal
+            # source anchors can introduce addresses in ranges mode.
+            p["numbering"] = ""
+            if self.categorize(p["raw_type"]) in {"clause", "subclause"}:
+                p["raw_type"] = "paragraph"
         elif p["numbering"] and not re.match(
             r"^\s*" + re.escape(p["numbering"]) + r"(?:[.)]?\s+)", p["text"]
         ):
@@ -234,6 +258,7 @@ class StructureTagger:
             if on_progress:
                 on_progress(done, len(windows))
         tags = reconcile(decisions)
+        SourceStructure.annotate(parts)
         in_article = False
         for p in parts:
             t = tags.get(p["id"])
