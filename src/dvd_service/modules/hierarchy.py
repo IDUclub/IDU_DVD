@@ -6,6 +6,7 @@ Nodes receive prev_id/next_id (reading order, for context), kind (text/table), a
 from __future__ import annotations
 
 import uuid
+from copy import deepcopy
 
 import structlog
 
@@ -28,7 +29,7 @@ class HierarchyBuilder:
 
     @staticmethod
     def _heading_parent(stack, node, root):
-        levels = {"section": 1, "chapter": 2, "article": 3}
+        levels = {"section": 1, "chapter": 2, "article": 3, "appendix": 1}
         level = node.get("source_heading_level") or levels[node["type"]]
         parents = [
             ancestor
@@ -45,7 +46,7 @@ class HierarchyBuilder:
         ]
         return parents[-1] if parents else root
 
-    def build(self, parts, rank_map, title="document"):
+    def build(self, parts, rank_map, title="document", *, semantic=False):
         nodes = [
             {
                 "_id": 0,
@@ -81,6 +82,9 @@ class HierarchyBuilder:
                     "is_table": p.get("category") == "Table",
                     "html": p.get("html"),
                     "src_ids": p.get("src_ids", []),
+                    "source_text": p.get("source_text"),
+                    "char_start": p.get("char_start"),
+                    "char_end": p.get("char_end"),
                     "tags": p.get("tags", []),
                     "parent": None,
                 }
@@ -90,7 +94,20 @@ class HierarchyBuilder:
         node_by_id = {n["_id"]: n for n in nodes}
         for n in nodes[1:]:
             top = stack[-1]
-            article = next((a for a in reversed(stack) if a["type"] == "article"), None)
+            # An LLM misclassification must not close an explicit source article.
+            article = next(
+                (
+                    a
+                    for a in reversed(source_headings if semantic else stack)
+                    if a["type"] == "article"
+                ),
+                None,
+            )
+            if semantic and source_headings and source_headings[-1] not in stack:
+                stack = [source_headings[-1]]
+                while stack[-1]["parent"] is not None:
+                    stack.append(node_by_id[stack[-1]["parent"]])
+                stack.reverse()
             if n.get("source_heading_level"):
                 # Source headings have their own stack: an inferred preface or
                 # wrapped title may reset the LLM stack, but cannot end a chapter.
@@ -107,7 +124,19 @@ class HierarchyBuilder:
             elif n["type"] == "article":
                 parent = self._heading_parent(stack, n, nodes[0])
                 stack = stack[: stack.index(parent) + 1]
-            elif article is not None:
+            elif article is not None and not (
+                semantic
+                and not source_headings
+                and n["type"]
+                in {
+                    "title_page",
+                    "toc",
+                    "preface",
+                    "introduction",
+                    "appendix",
+                    "bibliography",
+                }
+            ):
                 if n["numbering"]:
                     # Inserted legal parts (3.1, 3.3) are siblings of part 3.
                     # Parenthesized list items remain below the current part.
@@ -140,6 +169,67 @@ class HierarchyBuilder:
                         (a for a in reversed(stack) if a["numbering"]), article
                     )
                     stack = stack[: stack.index(parent) + 1]
+            elif semantic:
+                heading = source_headings[-1] if source_headings else nodes[0]
+                if not source_headings and n["type"] in {
+                    "title_page",
+                    "toc",
+                    "preface",
+                    "introduction",
+                    "appendix",
+                    "bibliography",
+                }:
+                    parent = nodes[0]
+                    source_headings = []
+                elif n["numbering"]:
+                    number = n["numbering"].rstrip(".)")
+                    item = n["source_delimiter"] == ")" or n["numbering"].endswith(")")
+                    numeric = number.replace(".", "").isdigit()
+                    candidates = [
+                        a
+                        for a in stack
+                        if a["numbering"]
+                        and a["type"] in {"clause", "subclause", "list_item"}
+                        and (
+                            (
+                                not item
+                                and a.get("source_delimiter") != ")"
+                                and number.startswith(a["numbering"].rstrip(".") + ".")
+                            )
+                            or (item and numeric and a.get("source_delimiter") != ")")
+                            or (
+                                item
+                                and not numeric
+                                and a["numbering"]
+                                .rstrip(".)")
+                                .replace(".", "")
+                                .isdigit()
+                            )
+                        )
+                    ]
+                    parent = candidates[-1] if candidates else heading
+                elif n["type"] in {"paragraph", "note", "list_item", "table"}:
+                    parent = next(
+                        (
+                            a
+                            for a in reversed(stack)
+                            if (
+                                a["type"] in {"clause", "subclause", "list_item"}
+                                and a["numbering"]
+                            )
+                            or (
+                                n["type"] == "list_item"
+                                and a["text"].rstrip().endswith(":")
+                            )
+                        ),
+                        heading,
+                    )
+                else:
+                    parent = heading
+                stack = [parent]
+                while stack[-1]["parent"] is not None:
+                    stack.append(node_by_id[stack[-1]["parent"]])
+                stack.reverse()
             else:
                 d = (
                     max(1, n["rank"])
@@ -182,6 +272,9 @@ class HierarchyBuilder:
                 "_rank": node["rank"],
                 "_block": node["block"],
                 "_src_ids": node.get("src_ids", []),
+                "source_text": node.get("source_text"),
+                "char_start": node.get("char_start"),
+                "char_end": node.get("char_end"),
                 "_tags": node.get("tags", []),
             }
             kids = [built.pop(c["_id"]) for c in children.get(node_id, [])]
@@ -253,6 +346,65 @@ class HierarchyBuilder:
         tree["children"] = new_top
         return tree
 
+    @staticmethod
+    def _source_run(nodes):
+        """Return an exact contiguous source span, or None for unsafe joins."""
+        if not nodes or any(
+            n.get("is_table") or n.get("category") == "Table" for n in nodes
+        ):
+            return None
+        if any(
+            n.get("source_text") is None
+            or type(n.get("char_start")) is not int
+            or type(n.get("char_end")) is not int
+            for n in nodes
+        ):
+            return None
+        if any(a["char_end"] != b["char_start"] for a, b in zip(nodes, nodes[1:])):
+            return None
+        source = "".join(n["source_text"] for n in nodes)
+        if len(source) != nodes[-1]["char_end"] - nodes[0]["char_start"]:
+            return None
+        return source
+
+    def coalesce_title_pages(self, parts):
+        """Collect adjacent cover lines, including across LLM input windows."""
+        result = []
+        for part in deepcopy(parts):
+            if result and part.get("type") == result[-1].get("type") == "title_page":
+                previous = result[-1]
+                source = self._source_run([previous, part])
+                if source is not None and previous.get("block") == part.get("block"):
+                    previous.update(
+                        text=source, source_text=source, char_end=part["char_end"]
+                    )
+                    previous["src_ids"] = sorted(
+                        set(previous["src_ids"] + part["src_ids"])
+                    )
+                    previous["tags"] = sorted(
+                        set(previous.get("tags", []) + part.get("tags", []))
+                    )
+                    continue
+            if part.get("type") == "title_page":
+                part.update(relation="top", numbering="")
+            part["id"] = len(result)
+            result.append(part)
+        return result
+
+    def assemble_semantic(self, tree):
+        """Mark containers without collapsing source nodes or their addresses.
+
+        Size-based packing belongs to the retrieval context, not the source tree.
+        Even short children and unnumbered continuations keep their own spans.
+        """
+        stack = [tree]
+        while stack:
+            node = stack.pop()
+            children = node.get("children", [])
+            node["is_container"] = bool(children)
+            stack.extend(reversed(children))
+        return tree
+
     def flatten(self, tree) -> list[dict]:
         """Flatten into a flat list (reading order) with parent/child/prev/next/kind/html."""
         nodes: list[dict] = []
@@ -276,6 +428,10 @@ class HierarchyBuilder:
                 "block": node.get("_block", "main"),
                 "depth": depth,
                 "src_ids": node.get("_src_ids", []),
+                "source_text": node.get("source_text"),
+                "is_container": node.get("is_container", False),
+                "char_start": node.get("char_start"),
+                "char_end": node.get("char_end"),
                 "tags": node.get("_tags", []),
                 "parent_id": parent_rec["id"] if parent_rec else None,
                 "parent_text": parent_text,
@@ -284,6 +440,20 @@ class HierarchyBuilder:
                 "prev_id": None,
                 "next_id": None,
             }
+            if "is_container" in node:
+                # Full parent context is separate from the bounded, source-grounded text.
+                context = (
+                    parent_rec.get("search_text", "")
+                    if parent_rec
+                    and parent_rec.get("is_container")
+                    and parent_rec["type"] != "document"
+                    else ""
+                )
+                rec["search_text"] = (
+                    (context.rstrip() + "\n" + rec["text"]).strip()
+                    if context
+                    else rec["text"]
+                )
             nodes.append(rec)
             if parent_rec is not None:
                 parent_rec["child_ids"].append(nid)

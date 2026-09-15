@@ -465,9 +465,37 @@ async def list_available_documents(
     response_model=ActiveJobsResponse,
     dependencies=ADMIN_ONLY,
 )
-async def active_jobs(jobs: JobStore = Depends(Dependencies.get_jobs)):
-    """All queued and currently processing ingestion jobs."""
-    active = jobs.active()
+async def active_jobs(
+    jobs: JobStore = Depends(Dependencies.get_jobs),
+    queue: IngestQueue = Depends(Dependencies.get_ingest_queue),
+):
+    """Live progress supplemented by durable work whose progress record expired."""
+    pending, inflight = queue.pending(), queue.inflight()
+    by_id = {job["job_id"]: job for job in jobs.active()}
+    for position, entry in enumerate(pending + inflight, 1):
+        job_id = entry["job_id"]
+        job = jobs.get(job_id)
+        # A worker may have finished since the queue snapshot, before acknowledging it.
+        if job and job.get("status") not in {"queued", "processing"}:
+            by_id.pop(job_id, None)
+            continue
+        waiting = position <= len(pending)
+        fallback = {
+            **_queued_job(
+                job_id, entry.get("filename"), entry["operation"], entry.get("name")
+            ),
+            "created_at": entry.get("enqueued_at"),
+            "status": "queued" if waiting else "processing",
+            "stage": "queued" if waiting else "preparing",
+        }
+        if entry["operation"] == "reparse":
+            fallback.update(version_total=len(entry["editions"]), version_index=0)
+        by_id[job_id] = {
+            **fallback,
+            **(job or {}),
+            "queue_position": position if waiting else None,
+        }
+    active = list(by_id.values())
     return ActiveJobsResponse(
         count=len(active), jobs=[JobStatusDTO(**job) for job in active]
     )
@@ -497,7 +525,7 @@ async def recent_jobs(
 async def queue_state(queue: IngestQueue = Depends(Dependencies.get_ingest_queue)):
     """The durable ingestion queue: what is waiting, what a worker holds, what gave up.
 
-    Unlike ``/documents/jobs/active`` (live pipeline progress, expires with its Redis TTL),
+    Unlike ``/documents/jobs/active`` (progress supplemented with durable work),
     this is the persisted work list — it is exactly what the service would resume after a
     restart. ``jobs`` lists the pending entries in processing order, then the in-flight ones.
     """

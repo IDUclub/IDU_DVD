@@ -67,6 +67,7 @@ class SearchRequest(BaseModel):
 
 
 class SearchHit(AdministrativeScope):
+    search_text: str | None = None  # content with structural parent context
     id: str
     fragment_name: str | None = None
     fragment_name_path: list[str] = Field(default_factory=list)
@@ -116,6 +117,7 @@ class SearchHit(AdministrativeScope):
     metadata: dict = Field(default_factory=dict)
     references: list[DocumentRef] = Field(default_factory=list)
     text: str
+    source_text: str | None = None  # unmodified source span for verbatim quotation
     context: str | None = (
         None  # expanded text with neighbours (when context_height > 0)
     )

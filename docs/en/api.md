@@ -484,6 +484,14 @@ index is replaced after parsing and embedding succeed. The Qdrant replacement is
 write failures are recovered by retrying from the retained original. Monitor progress in the
 processing queue; pending work survives service restarts.
 
+The panel refreshes jobs every 2.5 seconds: running documents appear first, followed by
+waiting documents in queue order with their positions. All active documents are shown,
+including batches larger than the 20-entry recent history. `/documents/jobs/active`
+supplements expired progress records from the durable queue and includes `queue_position`
+for waiting jobs. Each reparse card shows the edition count and combined progress across
+editions. Completed results observed on the open page remain visible, and completion refreshes
+the library. If polling fails, the queue displays an error alongside the last received data.
+
 `POST /documents/{name}/reindex` needs no file body: the original is in MinIO and its key is stored on every
 fragment of the document, so the job is queued from that key and the worker downloads it just
 as it would a fresh upload. Use it after a model or parser change, or to repair a batch that
@@ -858,3 +866,27 @@ No parameters. Returns `TagsResponse`:
   "tags": ["зонирование", "противопожарные расстояния"]
 }
 ```
+
+### Filter-first retrieval (`POST /search/filtered`, MCP `search_filtered`)
+
+Uses `FragmentSearchRequest`. Resolve the document/edition and optional structural or
+name selector before choosing texts. Short designations (e.g. `СП 55`), aliases and external
+IDs resolve against authorized stored documents; no match never removes the filter.
+
+- `rank_by_relevance=false` (default): exact `pattern`/`name_query` retrieval, including
+  descendants and existing snapshot pagination. No query embedding is requested.
+- `rank_by_relevance=true`, `query="..."`: rank stored vectors only inside the resolved
+  document or selected subtree. Returns at most `limit` texts with `complete=true`; no cursor.
+  Context expansion stays inside that scope. This also supports a document filter without a
+  structural address, and topic searches across the authorized corpus.
+- `ambiguous=true`: resolve candidates before requesting ranking. Document candidates have
+  `entity_kind="document"` and unique document/edition identities. Structural candidates carry
+  `hierarchy` entries (`id`, `type`, `numbering`, source-grounded `name`) for nested display.
+- `root_ids`: selected structural root IDs; includes their descendants when requested. Stale
+  or out-of-scope IDs fail instead of broadening retrieval. `allow_multiple=true` permits
+  ranking several scopes only when the caller intentionally requests an overview/comparison.
+- Owner identity is pinned by the authenticated transport. `include_shared=false` restricts
+  retrieval to the user's project; a project/scenario is required. Multiple private documents
+  require a choice unless `allow_multiple=true`.
+
+Deploy the DVD endpoint before updating gMART to use `search_filtered`.
