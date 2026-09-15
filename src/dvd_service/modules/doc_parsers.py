@@ -25,7 +25,7 @@ from src.dvd_service.modules.windowing import (
 
 log = structlog.get_logger(__name__)
 
-PARSER_VERSION = "dvd-parser-3"  # Word numbering and source paragraph boundaries
+PARSER_VERSION = "dvd-parser-5"  # Preserve every structural node during final assembly
 
 SKIP_CATEGORIES = {"Header", "Footer", "PageBreak"}
 

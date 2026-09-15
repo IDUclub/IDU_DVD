@@ -226,15 +226,18 @@ def test_tables_keep_original_html_and_standalone_ranges(parser, fake_ollama):
     assert parts[1]["category"] == "Table" and parts[1]["html"] == blocks[1]["html"]
 
 
-def semantic_tree(parser, texts, types=None):
+def semantic_tree(parser, texts, types=None, numberings=None, assemble=True):
     """Real source extraction/tag anchoring with deterministic structural decisions."""
     parts = parser.to_logical_parts(raw(*texts), None)
+    from src.dvd_service.modules.source_structure import SourceStructure
+
+    SourceStructure.annotate(parts)
     tagger = StructureTagger(parser.settings)
     in_article = False
     for i, part in enumerate(parts):
         part.update(
             raw_type=types[i] if types else "paragraph",
-            numbering="",
+            numbering=numberings[i] if numberings else "",
             relation="deeper",
             block="main",
             tags=[],
@@ -251,7 +254,8 @@ def semantic_tree(parser, texts, types=None):
         tagger.numbering_ranks(parts),
         semantic=True,
     )
-    builder.assemble_semantic(tree)
+    if assemble:
+        builder.assemble_semantic(tree)
     nodes = builder.flatten(tree)
     source, _ = parser.source_index(raw(*texts))
     grounded = [n for n in nodes if n.get("source_text") is not None]
@@ -262,8 +266,139 @@ def semantic_tree(parser, texts, types=None):
     return tree, nodes
 
 
+def test_llm_sentence_as_number_cannot_reset_numbered_parent(parser):
+    _, nodes = semantic_tree(
+        parser,
+        [
+            "Раздел 4. Общие положения",
+            "4.2 Требования. " + "а" * 520,
+            "Допускается превышение показателей.\n",
+            "4.2.1 Уточнение.",
+        ],
+        numberings=["4", "4.2", "Допускается превышение показателей.", "4.2.1"],
+        assemble=False,
+    )
+    by_id = {n["id"]: n for n in nodes}
+    child = next(n for n in nodes if n["numbering"] == "4.2.1")
+    assert by_id[child["parent_id"]]["numbering"] == "4.2"
+    assert not any(n["numbering"].startswith("Допускается") for n in nodes)
+
+
+def test_unnumbered_clause_label_cannot_reset_numbered_parent(parser):
+    _, nodes = semantic_tree(
+        parser,
+        [
+            "Раздел 7. Безопасность",
+            "7.6 Требования. " + "а" * 520,
+            "Лестницы могут быть деревянными.",
+            "7.6.1 Уточнение.",
+        ],
+        ["section", "subclause", "clause", "subclause"],
+        assemble=False,
+    )
+    by_id = {n["id"]: n for n in nodes}
+    child = next(n for n in nodes if n["numbering"] == "7.6.1")
+    assert by_id[child["parent_id"]]["numbering"] == "7.6"
+
+
+def test_repeated_addresses_keep_their_distinct_source_sections(parser):
+    _, nodes = semantic_tree(
+        parser,
+        [
+            "Раздел I. Общие требования",
+            "3.3 Первое требование.",
+            "Раздел II. Специальные требования",
+            "3.3 Второе требование.",
+        ],
+    )
+    by_id = {n["id"]: n for n in nodes}
+    hits = [n for n in nodes if n["numbering"] == "3.3"]
+    assert len(hits) == 2
+    assert [by_id[n["parent_id"]]["numbering"] for n in hits] == ["I", "II"]
+
+
+def test_bare_section_uses_source_children_despite_wrong_llm_label(parser):
+    _, nodes = semantic_tree(
+        parser,
+        [
+            "3 Термины и определения",
+            "3.1 Первый термин.",
+            "[ГОСТ 20400–2013, статья 3]",
+            "3.2 Второй термин.",
+        ],
+        ["paragraph", "paragraph", "bibliography", "paragraph"],
+    )
+    section = next(n for n in nodes if n["type"] == "section")
+    assert section["numbering"] == "3"
+    assert all(
+        n["parent_id"] == section["id"]
+        for n in nodes
+        if n["numbering"] in {"3.1", "3.2"}
+    )
+
+
+def test_bare_article_heading_owns_parts_even_with_wrong_llm_type(parser):
+    _, nodes = semantic_tree(
+        parser,
+        [
+            "Глава 2. Права и свободы",
+            "Комментарий к статье 18",
+            "Статья 19",
+            "1. Все равны перед законом и судом.",
+            "2. Государство гарантирует равенство прав.",
+            "Статья 20",
+            "1. Каждый имеет право на жизнь.",
+        ],
+    )
+    article = next(
+        (n for n in nodes if n["type"] == "article" and n["numbering"] == "19"), None
+    )
+    assert (
+        article is not None
+    ), "Bare article heading must be an authoritative structural anchor"
+    assert {n["numbering"] for n in nodes if n["parent_id"] == article["id"]} == {
+        "1",
+        "2",
+    }
+
+
+def test_inferred_bibliography_cannot_reset_explicit_section(parser):
+    _, nodes = semantic_tree(
+        parser,
+        [
+            "Раздел 3. Термины",
+            "3.1 Первый термин.",
+            "[ГОСТ 20400–2013, статья 3]",
+            "3.2 Второй термин.",
+        ],
+        ["section", "paragraph", "bibliography", "paragraph"],
+    )
+    section = next(n for n in nodes if n["type"] == "section" and n["numbering"] == "3")
+    clause = next(n for n in nodes if n["numbering"] == "3.2")
+    assert clause["parent_id"] == section["id"]
+
+
+def test_inferred_article_type_on_body_cannot_detach_content(parser):
+    _, nodes = semantic_tree(
+        parser,
+        [
+            "Статья 31",
+            "Граждане имеют право собираться мирно.",
+            "Статья 32",
+            "1. Следующая норма.",
+        ],
+        ["article", "article", "article", "clause"],
+    )
+    article = next(
+        n for n in nodes if n["type"] == "article" and n["numbering"] == "31"
+    )
+    content = next(n for n in nodes if n["text"].startswith("Граждане"))
+    assert content["type"] == "paragraph"
+    assert content["parent_id"] == article["id"]
+
+
 @pytest.mark.parametrize("size", [511, 512, 513])
-def test_final_clause_size_includes_subpoints_and_source_separators(parser, size):
+def test_final_clause_size_never_removes_subpoint_addresses(parser, size):
     texts = [
         "1. Требования:",
         "1.1. Проверка.",
@@ -272,17 +407,10 @@ def test_final_clause_size_includes_subpoints_and_source_separators(parser, size
     tree, nodes = semantic_tree(parser, texts)
     clause = tree["children"][0]
     assert clause["type"] == "clause" and clause["numbering"] == "1"
-    assert clause["is_container"] == (size > 512)
-    if size <= 512:
-        assert not clause["children"]
-        assert "1.1." in clause["text"] and "1.2." in clause["text"]
-        assert len(clause["source_text"]) == size
-    else:
-        assert len(clause["children"]) == 1
-        child = clause["children"][0]
-        assert child["type"] == "subclause_group"
-        assert child["source_text"] == "\n".join(texts[1:])
-        assert nodes[-1]["search_text"].startswith("Требования:")
+    assert clause["is_container"]
+    assert [c["numbering"] for c in clause["children"]] == ["1.1", "1.2"]
+    assert clause["source_text"] == texts[0] + "\n"
+    assert nodes[-1]["search_text"].startswith("Требования:")
 
 
 def test_large_children_descend_into_their_own_subtrees(parser):
@@ -300,9 +428,9 @@ def test_large_children_descend_into_their_own_subtrees(parser):
     one, two = tree["children"]
     assert one["is_container"] and two["numbering"] == "2"
     assert [c["numbering"] for c in one["children"]] == ["1.1", "1.2"]
-    assert all(not c["is_container"] and not c["children"] for c in one["children"])
-    assert "1.1.1." in one["children"][0]["text"]
-    assert "1.2.1." in one["children"][1]["text"]
+    assert all(c["is_container"] for c in one["children"])
+    assert one["children"][0]["children"][0]["numbering"] == "1.1.1"
+    assert one["children"][1]["children"][0]["numbering"] == "1.2.1"
 
 
 def test_number_prefix_prevents_unrelated_parentage_and_keeps_section(parser):
@@ -343,7 +471,8 @@ def test_legal_article_inserted_parts_remain_siblings(parser):
     )
     article = tree["children"][0]
     assert [c["numbering"] for c in article["children"]] == ["3", "3.3"]
-    assert "а)" in article["children"][1]["text"]
+    assert article["children"][1]["children"][0]["numbering"] == "1"
+    assert article["children"][1]["children"][0]["children"][0]["numbering"] == "а)"
 
 
 def test_repair_cuts_structural_and_size_boundaries_without_retry(settings):
@@ -368,10 +497,12 @@ def test_explicit_unnumbered_list_stays_with_introduction(parser):
     )
     assert len(tree["children"]) == 1
     paragraph = tree["children"][0]
-    assert not paragraph["is_container"]
-    assert (
-        paragraph["source_text"] == "Необходимые документы:\n- паспорт;\n- заявление."
-    )
+    assert paragraph["is_container"]
+    assert paragraph["source_text"] == "Необходимые документы:\n"
+    assert [c["source_text"].strip() for c in paragraph["children"]] == [
+        "- паспорт;",
+        "- заявление.",
+    ]
 
 
 def test_table_survives_final_assembly(parser):

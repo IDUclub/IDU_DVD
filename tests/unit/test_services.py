@@ -122,8 +122,9 @@ def test_range_mode_preserves_exact_source_through_storage_and_library(wired):
     result = wired.ingestion.ingest("doc.docx", raw, DocumentParser.content_hash(raw))
     document = wired.library.get_document(result["doc_id"])
     fragments = [f for f in document.fragments if f.source_text is not None]
-    assert len(fragments) == 1
-    assert fragments[0].type == "clause" and not fragments[0].is_container
+    assert len(fragments) == 3
+    assert fragments[0].type == "clause" and fragments[0].is_container
+    assert all(f.parent_id == fragments[0].id for f in fragments[1:])
     assert "".join(f.source_text for f in fragments) == source
     for f in fragments:
         assert f.source_text == source[f.char_start : f.char_end]
@@ -2129,18 +2130,22 @@ def test_semantic_containers_are_in_library_but_search_returns_contextual_conten
     result = wired.ingestion.ingest("doc.docx", raw, DocumentParser.content_hash(raw))
     fragments = wired.library.get_document(result["doc_id"]).fragments
     clause = next(f for f in fragments if f.type == "clause")
-    group = next(f for f in fragments if f.type == "subclause_group")
-    assert clause.is_container and group.parent_id == clause.id
-    assert group.search_text.startswith(clause.text.rstrip())
-    assert group.search_text.endswith(group.text)
-    assert group.search_text in [
-        text for batch in wired.ollama.embed_calls for text in batch
-    ]
+    children = [f for f in fragments if f.parent_id == clause.id]
+    assert clause.is_container
+    assert [f.numbering for f in children] == ["1.1", "1.2"]
+    for child in children:
+        assert child.search_text.startswith(clause.text.rstrip())
+        assert child.search_text.endswith(child.text.rstrip())
+        assert child.search_text in [
+            text for batch in wired.ollama.embed_calls for text in batch
+        ]
     hits = wired.search.search(SearchRequest(query="проверка", limit=20)).hits
-    assert [h.id for h in hits] == [group.id]
+    assert {h.id for h in hits} == {child.id for child in children}
 
 
-def test_semantic_update_rebuilds_grouping_and_context_for_new_revision(wired):
+def test_semantic_update_preserves_addresses_and_rebuilds_context_for_new_revision(
+    wired,
+):
     wired.ingestion.settings.logical_partition_mode = "ranges"
     raw = [
         {"text": t, "category": "NarrativeText"}
@@ -2159,10 +2164,18 @@ def test_semantic_update_rebuilds_grouping_and_context_for_new_revision(wired):
     payloads = [pl for _, pl in wired.qdrant.points.values()]
     old = [p for p in payloads if p["versions"] == [first["version"]]]
     new = [p for p in payloads if p["versions"] == ["ред. 2"]]
-    assert len(old) == 2 and len(new) == 3
-    assert next(p for p in new if p["type"] == "subclause_group")[
-        "search_text"
-    ].startswith("Новые правила")
+    assert len(old) == 4 and len(new) == 4
+    for revision in (old, new):
+        assert {p["numbering"] for p in revision if p["numbering"]} == {
+            "1",
+            "1.1",
+            "1.2",
+        }
+    assert all(
+        p["search_text"].startswith("Новые правила")
+        for p in new
+        if p["numbering"] in {"1.1", "1.2"}
+    )
     new_ids = {
         pid
         for pid, (_, pl) in wired.qdrant.points.items()

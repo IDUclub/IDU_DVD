@@ -65,6 +65,49 @@ def fragments(settings):
     repo.client.close()
 
 
+def test_short_designation_matches_long_title_without_other_documents(fragments):
+    svc, ids = fragments
+    svc.qdrant.client.set_payload(
+        svc.qdrant.collection,
+        payload={"name": "СП 55.13330.2016 Дома жилые одноквартирные"},
+        points=ids[:6],
+    )
+    svc.qdrant.client.set_payload(
+        svc.qdrant.collection,
+        payload={"name": "СП 550.13330.2016 Другой документ"},
+        points=[ids[6]],
+    )
+    response = svc.search(
+        FragmentSearchRequest(
+            pattern="3.3", document_names=["СП 55"], include_children=False
+        )
+    )
+    assert [h.id for h in response.hits] == [ids[1]]
+
+
+def test_explicit_article_selector_does_not_match_chapter_or_legal_part():
+    pattern = StructurePattern("Статья 1")
+    assert pattern.matches({"numbering": "1", "type": "article"}, {})
+    assert not pattern.matches({"numbering": "1", "type": "chapter"}, {})
+    assert not pattern.matches({"numbering": "1", "type": "clause"}, {})
+
+
+def test_same_number_in_two_paths_requires_clarification(fragments):
+    svc, ids = fragments
+    svc.qdrant.client.set_payload(
+        svc.qdrant.collection,
+        payload={"numbering": "3.3", "parent_id": None},
+        points=[ids[4]],
+    )
+    response = svc.search(
+        FragmentSearchRequest(
+            pattern="3.3", document_names=["СП 2"], include_children=False
+        )
+    )
+    assert response.ambiguous and response.match_count == 2
+    assert {h.id for h in response.hits} == {ids[1], ids[4]}
+
+
 def test_exact_reference_finds_definition_and_children_without_vectors(fragments):
     svc, ids = fragments
     response = svc.search(

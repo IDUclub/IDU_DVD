@@ -67,7 +67,7 @@ class FragmentPreview:
             hierarchy.cap_unnumbered_nesting(tree)
         hierarchy.group_amendment(tree)
         if semantic:
-            hierarchy.assemble_semantic(tree, parser.range_partitioner.max_chars)
+            hierarchy.assemble_semantic(tree)
         nodes = annotate_fragments(hierarchy.flatten(tree))
         _, spans = parser.source_index(raw)
         doc_id = str(uuid.uuid4())
