@@ -1,3 +1,11 @@
+## v0.17.1 (2026-09-15)
+
+### Fix
+
+- resolve document filters before scoped fragment ranking (#84)
+- preserve source structure and exact document clause addresses (#83)
+- keep bulk reparse queue visible and up to date in admin UI (#81)
+
 ## v0.17.0 (2026-09-14)
 
 ### Feat
