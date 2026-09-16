@@ -14,6 +14,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from src.common.auth import require_admin
 from src.common.config import Settings
 from src.common.middlewares import REQUEST_ID_HEADER, RequestLoggingMiddleware
 from src.dependencies import Dependencies
@@ -214,6 +215,7 @@ def settings_client(settings_controller):
     app = FastAPI()
     app.include_router(system_router)
     app.dependency_overrides[Dependencies.get_system] = lambda: settings_controller
+    app.dependency_overrides[require_admin] = lambda: None
     with TestClient(app) as c:
         yield c
 
@@ -251,3 +253,20 @@ class TestSettingsEndpoint:
             "/system/settings", json={"updates": {"DVD_NOPE": "1"}}
         )
         assert resp.status_code == 422
+
+
+def test_app_diagnostics_are_public_but_settings_write_requires_auth(controller):
+    from src.main import app
+
+    app.dependency_overrides[Dependencies.get_system] = lambda: controller
+    try:
+        # No lifespan: external services are unnecessary for diagnostic reads.
+        client = TestClient(app)
+        assert client.get("/system/logs").status_code == 200
+        assert client.get("/system/settings").status_code == 200
+        response = client.put(
+            "/system/settings", json={"updates": {"DVD_SEARCH_LIMIT": 25}}
+        )
+        assert response.status_code in {401, 403}
+    finally:
+        app.dependency_overrides.pop(Dependencies.get_system, None)
