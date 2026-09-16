@@ -10,6 +10,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from src.common.auth import require_admin
 from src.dependencies import Dependencies
 from src.system_service.controllers import SystemController
 
@@ -100,7 +101,11 @@ async def read_settings(
     return SettingsResponse(**system.settings_snapshot())
 
 
-@router.put("/settings", response_model=EnvUpdateResponse)
+@router.put(
+    "/settings",
+    response_model=EnvUpdateResponse,
+    dependencies=[Depends(require_admin)],
+)
 async def write_settings(
     body: EnvUpdateRequest = Body(...),
     system: SystemController = Depends(Dependencies.get_system),

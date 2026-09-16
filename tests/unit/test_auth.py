@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import time
 
+import httpx
 import pytest
-from fastapi import HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials
-from fastmcp.exceptions import AuthorizationError
+from fastmcp import FastMCP
 from fastmcp.server.auth import AccessToken
 
 from src.common.auth import (
@@ -124,8 +125,51 @@ async def test_service_verifier_accepts_service_token():
 
 
 async def test_service_verifier_rejects_user_token():
-    with pytest.raises(AuthorizationError):
-        await service_token_verifier.verify_token("user-token")
+    assert await service_token_verifier.verify_token("user-token") is None
+
+
+@pytest.mark.parametrize(
+    "token,expected_status",
+    [
+        (None, 401),
+        ("invalid-token", 401),
+        ("user-token", 401),
+        ("admin-token", 401),
+        ("no-sub-token", 401),
+        ("service-token", 200),
+    ],
+)
+async def test_mcp_http_initialization_requires_service_token(token, expected_status):
+    mcp_app = FastMCP("auth-test", auth=service_token_verifier).http_app(path="/")
+    app = FastAPI()
+    app.mount("/mcp", mcp_app)
+    headers = {"Accept": "application/json, text/event-stream"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    async with mcp_app.lifespan(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+            base_url="http://testserver",
+        ) as client:
+            response = await client.post(
+                "/mcp/",
+                headers=headers,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {},
+                        "clientInfo": {"name": "auth-test", "version": "1"},
+                    },
+                },
+            )
+
+    assert response.status_code == expected_status
+    if expected_status == 401:
+        assert "bearer" in response.headers["www-authenticate"].lower()
 
 
 def _request(session: str | None = None) -> Request:

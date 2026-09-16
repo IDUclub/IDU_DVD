@@ -12,7 +12,7 @@ There are two gates:
 | Gate | Accepts | Applies to |
 |------|---------|------------|
 | authenticated | any live token — a user's or a service account's | reading the shared corpus: `GET /documents`, `GET /documents/available`, `GET /documents/{name}/source`, all of `/library` except its `PATCH`es, all of `/search`, `GET /tags`, `GET /scopes`; user-scoped routes derive the owner from the token |
-| admin | a user holding the `DVD_ADMIN_ROLE` realm role (`ADMIN` by default) or a service account | everything that changes the shared corpus or the service itself: `POST`/`PATCH`/`PUT`/`DELETE /documents`, `/documents/direct`, the `/documents/jobs/*` views that track those ingests, `PATCH /library/...`, `/tagging`, `/system` |
+| admin | a user holding the `DVD_ADMIN_ROLE` realm role (`ADMIN` by default) or a service account | everything that changes the shared corpus or the service itself: `POST`/`PATCH`/`PUT`/`DELETE /documents`, `/documents/direct`, the `/documents/jobs/*` views that track those ingests, `PATCH /library/...`, `/tagging`, `PUT /system/settings` |
 
 A user who is authenticated but lacks the role is answered `403`, not `401`: the token is
 fine, the person is not entitled. Service accounts are not asked for the role — holding the
@@ -761,6 +761,8 @@ curl "http://localhost:8000/library/documents/9f63..."
 ```
 
 ## System
+
+Reading logs and settings requires no authorization. Updating settings requires admin authorization.
 
 ### GET /system/logs
 
