@@ -7,7 +7,7 @@ from collections.abc import Generator
 import httpx
 from fastapi import Header, HTTPException, Request, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from fastmcp.exceptions import AuthorizationError, ToolError
+from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import AccessToken, TokenVerifier
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 from fastmcp.server.dependencies import get_http_headers
@@ -271,7 +271,9 @@ class ServiceTokenVerifier(TokenVerifier):
         if access_token is None:
             return None
         if not _is_service_account(access_token):
-            raise AuthorizationError("A service-account token is required")
+            # The HTTP auth backend expects None for rejected tokens. Tool-level
+            # AuthorizationError escapes that backend and becomes an HTTP 500.
+            return None
         return access_token
 
 
