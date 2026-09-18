@@ -113,6 +113,7 @@ jobs:
           DVD_SERVICE_AUTH_REALM: ${{ vars.DVD_SERVICE_AUTH_REALM }}
           DVD_SERVICE_AUTH_CLIENT_ID: ${{ vars.DVD_SERVICE_AUTH_CLIENT_ID }}
           DVD_SERVICE_AUTH_CLIENT_SECRET: ${{ secrets.DVD_SERVICE_AUTH_CLIENT_SECRET }}
+          DVD_URBAN_API_URL: ${{ vars.DVD_URBAN_API_URL }}
         run: |
           : > .env.overrides
           env | grep '^DVD_' | grep -vE '^(DVD_IMAGE|DVD_HOST_PORT)=' | grep -v '=$' >> .env.overrides || true
