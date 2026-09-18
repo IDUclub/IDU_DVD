@@ -331,23 +331,38 @@ class TestRepr:
 
 
 @pytest.mark.parametrize(
-    "base",
+    "base, api_root",
     [
-        "https://urban.test:8443",
-        "https://urban.test:8443/",
-        "https://urban.test:8443/api",
-        " https://urban.test:8443/api/// ",
-        "https://urban.test:8443/api/api/",
+        ("https://urban.test:8443", "https://urban.test:8443/api"),
+        ("https://urban.test:8443/", "https://urban.test:8443/api"),
+        ("https://urban.test:8443/api", "https://urban.test:8443/api"),
+        (" https://urban.test:8443/api/// ", "https://urban.test:8443/api"),
+        (
+            "https://prostor-api.idu.actocgnitive.org/urban_api",
+            "https://prostor-api.idu.actocgnitive.org/urban_api",
+        ),
+        (
+            "https://prostor-api.idu.actocgnitive.org/urban_api/",
+            "https://prostor-api.idu.actocgnitive.org/urban_api",
+        ),
+        (
+            "https://urban.test/gateway/urban_api/",
+            "https://urban.test/gateway/urban_api",
+        ),
     ],
 )
-def test_api_prefix_is_normalized_for_catalogue_scenarios_and_health(base):
+def test_configured_api_root_is_used_for_catalogue_scenarios_and_health(base, api_root):
     paths = []
 
     def respond(request):
-        paths.append(request.url.path)
+        paths.append(str(request.url))
         if request.url.path.endswith("/scenarios/7"):
             return httpx.Response(200, json={"project": {"project_id": 42}})
-        return _catalogue_handler(request)
+        if request.url.path.endswith("/territory/12639"):
+            return httpx.Response(200, json=RUSSIA)
+        if request.url.path.endswith("/territory_types"):
+            return httpx.Response(200, json=[])
+        return httpx.Response(404)
 
     with UrbanApiClient(base=base) as client:
         client._client.close()
@@ -356,9 +371,9 @@ def test_api_prefix_is_normalized_for_catalogue_scenarios_and_health(base):
         assert client.project_id_for_scenario(7, user_id="u1") == "42"
         assert client.territory(12639).territory_id == 12639
     assert paths == [
-        "/api/v1/territory_types",
-        "/api/v1/scenarios/7",
-        "/api/v1/territory/12639",
+        f"{api_root}/v1/territory_types",
+        f"{api_root}/v1/scenarios/7",
+        f"{api_root}/v1/territory/12639",
     ]
 
 
@@ -367,7 +382,8 @@ def test_api_prefix_is_normalized_for_catalogue_scenarios_and_health(base):
     [
         ("http://api", "http://api/api"),
         ("https://urban.test/gateway/api/", "https://urban.test/gateway/api"),
-        ("https://urban.test/gateway/", "https://urban.test/gateway/api"),
+        ("https://urban.test/gateway/", "https://urban.test/gateway"),
+        ("https://urban.test/api/api/", "https://urban.test/api/api"),
     ],
 )
 def test_normalization_preserves_authority_and_proxy_path(base, expected):
