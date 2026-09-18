@@ -150,6 +150,12 @@ without it would silently degrade every ingest forever. A runtime *outage* is di
 document is indexed with `tagging_status="pending"` and the backfill job tags it later, so a stand
 that is down never blocks uploads.
 
+`DVD_URBAN_API_URL` accepts a bare origin or an explicit API root. A bare origin uses
+`/api`; an explicit path is preserved, with trailing slashes removed. For example,
+`https://prostor-api.idu.actocgnitive.org/urban_api` produces requests to
+`https://prostor-api.idu.actocgnitive.org/urban_api/v1/scenarios/123`, without appending
+another `/api`. This applies to catalogue queries and health checks as well.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DVD_URBAN_API_URL` | `https://urban-api.testing.idulab.ru` | Urban API base URL; empty value fails startup |

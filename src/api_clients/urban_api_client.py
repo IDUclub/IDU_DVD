@@ -23,6 +23,7 @@ import structlog
 
 from src.common.auth import SyncServiceTokenAuth
 from src.common.config import settings
+from src.common.urban_api_url import normalize_urban_api_url
 
 log = structlog.get_logger(__name__)
 
@@ -145,7 +146,7 @@ class UrbanApiClient:
         timeout: float | None = None,
         service_auth: SyncServiceTokenAuth | None = None,
     ) -> None:
-        self.base = (base or settings.urban_api_url).rstrip("/")
+        self.base = normalize_urban_api_url(base or settings.urban_api_url)
         self.timeout = timeout or settings.urban_api_timeout
         self.service_auth = service_auth
         self._client = httpx.Client(timeout=self.timeout, auth=service_auth)
@@ -172,7 +173,7 @@ class UrbanApiClient:
         """Cheap reachability probe — used by the health endpoint and the backfill job."""
         try:
             self._client.get(
-                self.base + "/api/v1/territory_types", timeout=5
+                self.base + "/v1/territory_types", timeout=5
             ).raise_for_status()
             return True
         except Exception as exc:  # noqa: BLE001
@@ -249,7 +250,7 @@ class UrbanApiClient:
             return cached
         try:
             data = self._get(
-                f"/api/v1/scenarios/{int(sid)}",
+                f"/v1/scenarios/{int(sid)}",
                 not_found=ScenarioNotFound,
                 user_id=user_id,
             )
@@ -274,7 +275,7 @@ class UrbanApiClient:
             return cached
         # The single-territory endpoint carries the full polygon; only the scalar fields are
         # kept, and the result is cached, so the payload cost is paid once per territory.
-        data = self._get(f"/api/v1/territory/{int(territory_id)}")
+        data = self._get(f"/v1/territory/{int(territory_id)}")
         territory = Territory.from_api(data)
         self._cache.set(key, territory)
         return territory
@@ -290,7 +291,7 @@ class UrbanApiClient:
             params["get_all_levels"] = "true"
         found = [
             Territory.from_api(item)
-            for item in self._paginated("/api/v1/territories_without_geometry", params)
+            for item in self._paginated("/v1/territories_without_geometry", params)
         ]
         self._cache.set(key, found)
         return found
@@ -325,9 +326,7 @@ class UrbanApiClient:
                 params["get_all_levels"] = "true"
             cached = [
                 Territory.from_api(item)
-                for item in self._paginated(
-                    "/api/v1/territories_without_geometry", params
-                )
+                for item in self._paginated("/v1/territories_without_geometry", params)
             ]
             self._cache.set(key, cached)
         return cached[:limit] if limit else cached
