@@ -150,6 +150,8 @@ without it would silently degrade every ingest forever. A runtime *outage* is di
 document is indexed with `tagging_status="pending"` and the backfill job tags it later, so a stand
 that is down never blocks uploads.
 
+`DVD_URBAN_API_URL` accepts a bare origin or a URL ending in `/api` (with optional trailing slashes). All Urban API requests, including health checks, use exactly one `/api` prefix.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DVD_URBAN_API_URL` | `https://urban-api.testing.idulab.ru` | Urban API base URL; empty value fails startup |

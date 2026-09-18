@@ -23,6 +23,7 @@ from src.api_clients.urban_api_client import (
     UrbanApiError,
     normalized_level,
 )
+from src.common.urban_api_url import normalize_urban_api_url
 
 # Real shapes, trimmed to the fields the client reads.
 RUSSIA = {
@@ -327,3 +328,63 @@ class TestCaching:
 class TestRepr:
     def test_repr_shows_the_base_url(self):
         assert "urban-api.test" in repr(UrbanApiClient(base="http://urban-api.test"))
+
+
+@pytest.mark.parametrize(
+    "base",
+    [
+        "https://urban.test:8443",
+        "https://urban.test:8443/",
+        "https://urban.test:8443/api",
+        " https://urban.test:8443/api/// ",
+        "https://urban.test:8443/api/api/",
+    ],
+)
+def test_api_prefix_is_normalized_for_catalogue_scenarios_and_health(base):
+    paths = []
+
+    def respond(request):
+        paths.append(request.url.path)
+        if request.url.path.endswith("/scenarios/7"):
+            return httpx.Response(200, json={"project": {"project_id": 42}})
+        return _catalogue_handler(request)
+
+    with UrbanApiClient(base=base) as client:
+        client._client.close()
+        client._client = httpx.Client(transport=httpx.MockTransport(respond))
+        assert client.available()
+        assert client.project_id_for_scenario(7, user_id="u1") == "42"
+        assert client.territory(12639).territory_id == 12639
+    assert paths == [
+        "/api/v1/territory_types",
+        "/api/v1/scenarios/7",
+        "/api/v1/territory/12639",
+    ]
+
+
+@pytest.mark.parametrize(
+    "base, expected",
+    [
+        ("http://api", "http://api/api"),
+        ("https://urban.test/gateway/api/", "https://urban.test/gateway/api"),
+        ("https://urban.test/gateway/", "https://urban.test/gateway/api"),
+    ],
+)
+def test_normalization_preserves_authority_and_proxy_path(base, expected):
+    assert normalize_urban_api_url(base) == expected
+    assert normalize_urban_api_url(expected) == expected
+
+
+@pytest.mark.parametrize(
+    "base",
+    [
+        "",
+        "urban.test",
+        "ftp://urban.test",
+        "https://urban.test?x=1",
+        "https://urban.test#fragment",
+    ],
+)
+def test_invalid_base_url_is_rejected(base):
+    with pytest.raises(ValueError, match="Urban API URL"):
+        normalize_urban_api_url(base)
