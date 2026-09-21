@@ -146,7 +146,7 @@ class UrbanApiClient:
         timeout: float | None = None,
         service_auth: SyncServiceTokenAuth | None = None,
     ) -> None:
-        self.base = normalize_urban_api_url(base or settings.urban_api_url)
+        self.base = (base or settings.urban_api_url).rstrip("/")
         self.timeout = timeout or settings.urban_api_timeout
         self.service_auth = service_auth
         self._client = httpx.Client(timeout=self.timeout, auth=service_auth)
@@ -203,7 +203,14 @@ class UrbanApiClient:
                 if response.status_code == 404:
                     raise not_found(f"Urban API 404: {path}")
                 if response.status_code < 500:
-                    response.raise_for_status()
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        # Routers handle UrbanApiError, not transport exceptions.
+                        # A rejected request is terminal; only network/5xx failures retry.
+                        raise UrbanApiError(
+                            f"Urban API HTTP {response.status_code}: {path}"
+                        ) from exc
                     return response.json()
                 last_error = UrbanApiError(
                     f"Urban API {response.status_code}: {response.text[:200]}"

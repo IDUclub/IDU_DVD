@@ -1,3 +1,49 @@
+## v0.17.2 (2026-09-21)
+
+### Fix
+
+- restore document title and territory editing (#90)
+
+## v0.17.1 (2026-09-15)
+
+### Fix
+
+- resolve document filters before scoped fragment ranking (#84)
+- preserve source structure and exact document clause addresses (#83)
+- keep bulk reparse queue visible and up to date in admin UI (#81)
+
+## v0.17.0 (2026-09-14)
+
+### Feat
+
+- add bulk document reparsing to admin panel (#78)
+- add structural and fragment name retrieval (#75)
+- support multiple document uploads in admin UI (#74)
+
+### Fix
+
+- recover document catalog and scope source reparsing (#79)
+- preserve source clause hierarchy and reject incomplete markup (#77)
+- preserve neighbouring context in structural retrieval (#76)
+
+## v0.16.0 (2026-09-08)
+
+### Feat
+
+- allow document territory and version metadata updates (#71)
+
+## v0.15.3 (2026-09-07)
+
+### Fix
+
+- **ci**: replace develop branch references with dev (#69)
+
+## v0.15.2 (2026-09-04)
+
+### Fix
+
+- **cors**: answer browser preflight and expose CORS headers
+
 ## v0.15.1 (2026-08-23)
 
 ### Fix

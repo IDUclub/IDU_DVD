@@ -210,6 +210,27 @@ def test_territory_search_reports_an_urban_api_outage():
     Dependencies.reset()
 
 
+@pytest.mark.parametrize("status_code", [403, 422])
+def test_territory_search_handles_upstream_http_errors(status_code):
+    import httpx
+
+    from src.api_clients.urban_api_client import UrbanApiClient
+
+    urban = UrbanApiClient(base="http://urban.test/api")
+    urban._client.close()
+    urban._client = httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(status_code))
+    )
+    try:
+        with _authenticated_client(urban) as client:
+            response = client.get("/admin/ui/territories?query=Выборг")
+        assert response.status_code == 502
+        assert str(status_code) in response.json()["detail"]
+    finally:
+        urban.close()
+        Dependencies.reset()
+
+
 def test_panel_exposes_the_scope_controls():
     with _client() as client:
         page = client.get("/admin/ui/assets/admin.js").text

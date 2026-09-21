@@ -1,6 +1,6 @@
 "use strict";
 
-const state = { documents: [], tags: [], jobs: [], scopes: { levels: [], territories: [] }, territoryOptions: [], current: null, fragment: null };
+const state = { documents: [], tags: [], jobs: [], scopes: { levels: [], territories: [] }, current: null, fragment: null };
 
 const LEVEL_LABELS = { federal: "Федеральный", regional: "Региональный", municipal: "Муниципальный" };
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -191,37 +191,55 @@ async function loadDocuments() {
 }
 
 // --- territory autocomplete (server-side: the tree is far too large to ship to the browser) ---
-let territoryLookupTimer = null;
+const territoryLookups = new WeakMap();
 
-async function lookupTerritories(query, datalistId) {
-  if (!query || query.trim().length < 2) return;
+function territoryLabel(item) {
+  return item.parent_name ? `${item.name} — ${item.parent_name}` : item.name;
+}
+
+async function lookupTerritories(query, inputId, datalistId, requestId) {
+  const input = $(inputId), lookup = territoryLookups.get(input);
+  const isCurrent = () => $(inputId) === input && lookup.requestId === requestId && input.value.trim() === query;
   try {
-    const data = await request(`/admin/ui/territories?query=${encodeURIComponent(query.trim())}`);
-    state.territoryOptions = data.territories || [];
+    const data = await request(`/admin/ui/territories?query=${encodeURIComponent(query)}`);
+    if (!isCurrent()) return;
+    lookup.options = data.territories || [];
     const list = $(datalistId); list.replaceChildren();
-    state.territoryOptions.forEach((item) => {
+    lookup.options.forEach((item) => {
       const option = document.createElement("option");
       // the parent is what distinguishes two identically named districts
-      option.value = item.parent_name ? `${item.name} — ${item.parent_name}` : item.name;
+      option.value = territoryLabel(item);
       option.label = item.type_name || "";
       list.append(option);
     });
-  } catch (error) { console.error(error); }
+  } catch (error) {
+    if (isCurrent()) toast(`Не удалось загрузить территории: ${error.message}`, true);
+  }
 }
 
 function bindTerritoryLookup(inputId, datalistId) {
-  $(inputId).addEventListener("input", (event) => {
-    window.clearTimeout(territoryLookupTimer);
-    const value = event.target.value;
-    territoryLookupTimer = window.setTimeout(() => lookupTerritories(value, datalistId), 250);
+  const input = $(inputId);
+  const lookup = { options: [], selected: null, requestId: 0, timer: null };
+  territoryLookups.set(input, lookup);
+  input.addEventListener("input", () => {
+    window.clearTimeout(lookup.timer);
+    const value = input.value.trim(), requestId = ++lookup.requestId;
+    // A datalist selection also fires input. Keep its ID instead of searching the
+    // decorated label (name + parent), which is not a territory name in Urban API.
+    lookup.selected = lookup.options.find((item) => territoryLabel(item) === value) || null;
+    if (lookup.selected) return;
+    lookup.options = [];
+    $(datalistId).replaceChildren();
+    if (value.length < 2) return;
+    lookup.timer = window.setTimeout(() => lookupTerritories(value, inputId, datalistId, requestId), 250);
   });
 }
 
 function selectedTerritoryId(inputId) {
   const value = $(inputId).value.trim();
   if (!value) return null;
-  const match = state.territoryOptions.find((item) => (item.parent_name ? `${item.name} — ${item.parent_name}` : item.name) === value);
-  return match ? match.territory_id : null;
+  const match = territoryLookups.get($(inputId))?.selected;
+  return match && territoryLabel(match) === value ? match.territory_id : null;
 }
 
 async function runBackfill() {
@@ -438,18 +456,24 @@ function parseJson(id) {
 }
 
 async function saveMetadata(event) {
-  event.preventDefault(); if (!state.current) return;
+  event.preventDefault(); const current = state.current; if (!current) return;
   try {
+    const selectedTerritory = territoryLookups.get($("#meta-territory"))?.selected;
     const body = { title: $("#meta-title").value || null, doc_type: $("#meta-doc-type").value, corpus: $("#meta-corpus").value, lang: $("#meta-lang").value || null, status: $("#meta-status").value, effective_date: $("#meta-effective-date").value || null, tags: $("#meta-tags").value.split(",").map((v) => v.trim()).filter(Boolean), external_ids: parseJson("#meta-external"), metadata: parseJson("#meta-metadata") };
     const territoryInput = $("#meta-territory").value.trim();
-    const stored = state.current.detail.territory_name || "";
+    const stored = current.detail.territory_name || "";
     if (territoryInput !== stored) {
       // An emptied field clears the tag; anything else must resolve to a real territory.
       const territoryId = territoryInput ? selectedTerritoryId("#meta-territory") : null;
       if (territoryInput && territoryId === null) { toast("Выберите территорию из подсказки", true); return; }
-      body.territory_id = territoryId;
+      if (territoryId !== (current.detail.territory_id ?? null)) body.territory_id = territoryId;
     }
-    await request(`/library/documents/${encodeURIComponent(state.current.detail.doc_id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); toast("Метаданные сохранены"); await loadDocuments();
+    await request(`/library/documents/${encodeURIComponent(current.detail.doc_id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    Object.assign(current.detail, body);
+    if (Object.hasOwn(body, "territory_id")) {
+      current.detail.territory_name = selectedTerritory?.name || "";
+    }
+    toast("Метаданные сохранены"); await loadDocuments();
   } catch (error) { toast(error.message, true); }
 }
 
