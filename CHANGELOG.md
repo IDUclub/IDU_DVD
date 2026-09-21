@@ -1,3 +1,9 @@
+## v0.17.2 (2026-09-21)
+
+### Fix
+
+- restore document title and territory editing (#90)
+
 ## v0.17.1 (2026-09-15)
 
 ### Fix
