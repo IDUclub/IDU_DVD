@@ -1881,7 +1881,13 @@ class LibraryService:
     @staticmethod
     def _summary_from_record(rec: dict) -> DocumentSummary:
         return DocumentSummary(
-            **{k: rec[k] for k in DocumentSummary.model_fields if k in rec},
+            # Older manual edits persisted absent fields as null, including the
+            # derived URL. Let model defaults restore those fields on read.
+            **{
+                k: rec[k]
+                for k in DocumentSummary.model_fields
+                if k != "source_file_url" and rec.get(k) is not None
+            },
             source_file_url=build_source_url(
                 rec, rec.get("name", ""), rec.get("version", "")
             ),
@@ -2267,9 +2273,23 @@ class DocumentEditorService:
             self.qdrant.set_document_payload(doc_id, changes)
             changed_ids.update(p["id"] for p in points)
 
-        record = self.registry.get_document(doc_id) or {
-            k: first.get(k) for k in DocumentSummary.model_fields
-        }
+        record = self.registry.get_document(doc_id)
+        if not record:
+            record = LibraryService._summary_from_payload(
+                first, len(points)
+            ).model_dump(exclude={"source_file_url"})
+            record.update(
+                {
+                    key: first[key]
+                    for key in (
+                        "source_object_key",
+                        "user_id",
+                        "project_id",
+                        "scenario_id",
+                    )
+                    if key in first
+                }
+            )
         if rename is not None:
             old, new, _ = rename
             if record.get("version") == old:

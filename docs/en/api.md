@@ -681,6 +681,14 @@ Admin `PATCH /library/documents/{doc_id}` accepts the same metadata fields, incl
 `territory_id`, `version` and `current_version`, with the same edition-renaming rules as
 `PATCH /user-documents/{doc_id}/metadata` above.
 
+To edit the document heading, send `{"title": "New heading"}`; the document identity
+(`name`, `doc_id`) remains unchanged. A title-only patch does not call Urban API.
+Selecting a territory in the admin panel retains its ID for saving; later title edits
+do not resubmit an unchanged territory. An unknown territory returns 404, and an
+Urban API request failure returns 502 before any metadata is written.
+Documents whose Redis summary is missing remain editable and readable: their summary
+is restored from the indexed payload with default values for absent metadata.
+
 A consumer-facing read API (e.g. for the MSI-TSIM service) that complements semantic search with
 direct, per-document access: enumerate documents and fetch one by `doc_id` as assembled text +
 metadata + ordered fragments, each with its source grounding.

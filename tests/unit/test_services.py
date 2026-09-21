@@ -1770,6 +1770,99 @@ class TestLibrary:
 
 
 class TestDocumentEditor:
+    @pytest.mark.parametrize("missing_registry", [False, True])
+    def test_title_patch_remains_readable_without_urban_api(
+        self, wired, sample_raw, missing_registry
+    ):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from src.common.auth import require_admin, require_authenticated
+        from src.dependencies import Dependencies
+        from src.dvd_service.routers import library_router
+
+        result = wired.ingestion.ingest(
+            "doc.docx", sample_raw, DocumentParser.content_hash(sample_raw)
+        )
+        doc_id = result["doc_id"]
+        original = wired.library.get_document(doc_id)
+        vectors = {key: vector[:] for key, (vector, _) in wired.qdrant.points.items()}
+        if missing_registry:
+            wired.registry.unregister_document(doc_id)
+        app = FastAPI()
+        app.include_router(library_router)
+        app.dependency_overrides[require_admin] = lambda: None
+        app.dependency_overrides[require_authenticated] = lambda: None
+        app.dependency_overrides[Dependencies.get_editor] = lambda: wired.editor
+        app.dependency_overrides[Dependencies.get_library] = lambda: wired.library
+        with TestClient(app) as client:
+            assert client.get(f"/library/documents/{doc_id}").status_code == 200
+            response = client.patch(
+                f"/library/documents/{doc_id}", json={"title": "Новый заголовок"}
+            )
+            assert response.status_code == 200
+            assert response.json()["fields_updated"] == ["title"]
+            detail = client.get(f"/library/documents/{doc_id}")
+            assert detail.status_code == 200
+            assert detail.json()["title"] == "Новый заголовок"
+            assert detail.json()["name"] == original.name
+        assert wired.registry.get_document(doc_id)["title"] == "Новый заголовок"
+        assert all(
+            p["title"] == "Новый заголовок" for p in wired.qdrant.list_by_doc(doc_id)
+        )
+        assert {
+            key: vector for key, (vector, _) in wired.qdrant.points.items()
+        } == vectors
+
+    @pytest.mark.parametrize("scope", [{}, {"user_id": "u1", "project_id": "p1"}])
+    def test_title_edit_restores_defaults_for_sparse_legacy_document(
+        self, wired, scope
+    ):
+        wired.qdrant.points["point"] = (
+            [0.1],
+            {
+                "doc_id": "legacy",
+                "name": "Old",
+                "version": "v1",
+                "text": "Content",
+                "source_object_key": "original.txt",
+                **scope,
+            },
+        )
+        before = wired.library.get_document("legacy")
+        assert before.doc_type == "document"
+        wired.editor.update_document("legacy", {"title": "New"})
+        detail = wired.library.get_document("legacy")
+        assert detail.title == "New"
+        assert detail.doc_type == "document"
+        assert detail.node_count == 1
+        assert detail.tags == []
+        assert detail.territory_path == []
+        assert detail.source_file_url == before.source_file_url
+        assert detail.source_file_url.startswith(
+            "/user-documents/" if scope else "/documents/"
+        )
+        assert "source_file_url" not in wired.registry.get_document("legacy")
+
+    def test_reads_summary_written_by_previous_legacy_edit(self, wired):
+        from src.dvd_service.dto import DocumentSummary
+
+        payload = {
+            "doc_id": "legacy",
+            "name": "Old",
+            "version": "v1",
+            "text": "Content",
+        }
+        wired.qdrant.points["point"] = ([0.1], payload)
+        # The old editor persisted absent fields as null, including the derived URL.
+        record = {key: payload.get(key) for key in DocumentSummary.model_fields}
+        record["title"] = "Edited earlier"
+        wired.registry.register_document("legacy", record)
+        detail = wired.library.get_document("legacy")
+        assert detail.title == "Edited earlier"
+        assert detail.doc_type == "document"
+        assert detail.source_file_url is None
+
     def test_renamed_edition_can_be_updated_and_deleted(self, wired, sample_raw):
         result = wired.ingestion.ingest(
             "doc.docx",
