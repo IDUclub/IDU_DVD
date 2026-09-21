@@ -1,12 +1,19 @@
 """HTTP contracts for manual document and fragment editing."""
 
+from unittest.mock import Mock
+
+import httpx
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from src.api_clients.urban_api_client import UrbanApiClient
 from src.common.auth import require_admin, require_authenticated
 from src.dependencies import Dependencies
 from src.dvd_service.dto import DocumentUpdateResponse
+from src.dvd_service.modules.territory import TerritoryResolver
 from src.dvd_service.routers import library_router
+from src.dvd_service.services.dvd_service import DocumentEditorService
 
 
 class FakeEditor:
@@ -69,6 +76,58 @@ def test_document_metadata_patch_accepts_version_and_territory():
         response = client.patch("/library/documents/doc-1", json=body)
     assert response.status_code == 200
     assert editor.document_calls == [("doc-1", body)]
+
+
+@pytest.mark.parametrize(
+    "urban_status, expected_status", [(200, 200), (403, 502), (422, 502), (404, 404)]
+)
+def test_territory_patch_resolves_before_writing(
+    urban_status, expected_status, fake_qdrant
+):
+    original = {"doc_id": "doc-1", "name": "Name", "version": "v1", "title": "Old"}
+    fake_qdrant.points["p"] = ([0.1], original.copy())
+    registry = Mock()
+    registry.get_document.return_value = original.copy()
+    urban = UrbanApiClient(base="http://urban.test/api")
+    urban._client.close()
+    urban._client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                urban_status,
+                json={
+                    "territory_id": 12639,
+                    "name": "Россия",
+                    "level": 1,
+                    "parent": None,
+                },
+            )
+        )
+    )
+    editor = DocumentEditorService(
+        fake_qdrant, registry, Mock(), TerritoryResolver(urban)
+    )
+    client, _ = _client()
+    client.app.dependency_overrides[Dependencies.get_editor] = lambda: editor
+    try:
+        with client:
+            response = client.patch(
+                "/library/documents/doc-1", json={"title": "New", "territory_id": 12639}
+            )
+        assert response.status_code == expected_status
+        if expected_status == 200:
+            payload = fake_qdrant.points["p"][1]
+            assert payload["title"] == "New"
+            assert payload["name"] == "Name"
+            assert payload["territory_id"] == 12639
+            assert payload["territory_path"] == [12639]
+            assert payload["territory_source"] == "manual"
+            assert registry.register_document.call_args.args[1]["territory_id"] == 12639
+        else:
+            assert "Urban API" in response.json()["detail"]
+            assert fake_qdrant.points["p"][1] == original
+            registry.register_document.assert_not_called()
+    finally:
+        urban.close()
 
 
 def test_fragment_patch_returns_edited_fragment():

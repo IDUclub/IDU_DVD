@@ -203,7 +203,14 @@ class UrbanApiClient:
                 if response.status_code == 404:
                     raise not_found(f"Urban API 404: {path}")
                 if response.status_code < 500:
-                    response.raise_for_status()
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        # Routers handle UrbanApiError, not transport exceptions.
+                        # A rejected request is terminal; only network/5xx failures retry.
+                        raise UrbanApiError(
+                            f"Urban API HTTP {response.status_code}: {path}"
+                        ) from exc
                     return response.json()
                 last_error = UrbanApiError(
                     f"Urban API {response.status_code}: {response.text[:200]}"
@@ -248,16 +255,11 @@ class UrbanApiClient:
         cached = self._cache.get(key)
         if cached is not None:
             return cached
-        try:
-            data = self._get(
-                f"/v1/scenarios/{int(sid)}",
-                not_found=ScenarioNotFound,
-                user_id=user_id,
-            )
-        except httpx.HTTPStatusError as exc:
-            raise UrbanApiError(
-                f"Urban API denied scenario {sid}: HTTP {exc.response.status_code}"
-            ) from exc
+        data = self._get(
+            f"/v1/scenarios/{int(sid)}",
+            not_found=ScenarioNotFound,
+            user_id=user_id,
+        )
         project_id = (data.get("project") or {}).get("project_id")
         if project_id is None:
             raise UrbanApiError(

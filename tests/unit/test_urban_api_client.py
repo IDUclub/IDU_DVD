@@ -250,15 +250,16 @@ class TestErrorsAndRetries:
             client.territory(54)
         assert attempts["n"] == 3
 
-    def test_a_4xx_is_not_retried(self):
+    @pytest.mark.parametrize("status_code", [400, 401, 403, 422, 429])
+    def test_a_4xx_is_reported_as_an_urban_api_error_without_retry(self, status_code):
         attempts = {"n": 0}
 
         def handler(request: httpx.Request) -> httpx.Response:
             attempts["n"] += 1
-            return httpx.Response(400, text="bad request")
+            return httpx.Response(status_code, text="bad request")
 
         client = _client_with(handler)
-        with pytest.raises(httpx.HTTPStatusError):
+        with pytest.raises(UrbanApiError, match=str(status_code)):
             client.territory(54)
         assert attempts["n"] == 1
 
