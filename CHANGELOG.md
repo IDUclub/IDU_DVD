@@ -1,3 +1,10 @@
+## v0.17.3 (2026-09-22)
+
+### Fix
+
+- renew admin session tokens through auth helper (#94)
+- respect configured Urban API roots behind load balancers (#87)
+
 ## v0.17.2 (2026-09-21)
 
 ### Fix
