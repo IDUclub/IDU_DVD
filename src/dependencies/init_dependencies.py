@@ -11,6 +11,7 @@ from pathlib import Path
 import structlog
 from minio import Minio
 
+from src.admin_service.branding import BrandingService
 from src.api_clients import AuthHelperClient, UrbanApiClient, probe_embedding_dim
 from src.broker.outbox import EventOutbox
 from src.broker.publisher import KafkaPublisher
@@ -263,6 +264,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         ingest_queue=ingest_queue,
         registry=registry,
         document_storage=document_storage,
+        branding=BrandingService(document_storage),
         user_document_storage=user_document_storage,
         parser=parser,
         structure=structure,

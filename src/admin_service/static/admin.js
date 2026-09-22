@@ -142,7 +142,7 @@ async function request(url, options = {}) {
 function showView(name) {
   $$(".view").forEach((view) => view.classList.toggle("active", view.id === `view-${name}`));
   $$(".nav-link").forEach((link) => link.classList.toggle("active", link.dataset.view === name));
-  $("#page-title").textContent = { overview: "Обзор", documents: "Документы", jobs: "Очередь обработки", settings: "Настройки парсинга" }[name];
+  $("#page-title").textContent = { overview: "Обзор", documents: "Документы", jobs: "Очередь обработки", settings: "Настройки парсинга", branding: "Оформление" }[name];
   location.hash = name;
 }
 
@@ -626,6 +626,43 @@ async function saveSettings(event) {
   catch (error) { toast(error.message, true); }
 }
 
+
+function bindBranding() {
+  const input = $("#logo-file"), save = $("#logo-save"), status = $("#logo-status");
+  let generation = 0, readyFile = null;
+  input.addEventListener("change", async () => {
+    const current = ++generation, file = input.files[0];
+    readyFile = null; save.disabled = true; status.textContent = "";
+    $("#logo-preview").src = "/admin/ui/logo.png";
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) { status.textContent = "Изображение должно быть не больше 5 МБ."; return; }
+    status.textContent = "Подготовка прозрачного изображения…";
+    const body = new FormData(); body.append("file", file);
+    try {
+      const result = await request("/admin/ui/logo?preview=true", { method: "POST", body });
+      if (current !== generation) return;
+      $("#logo-preview").src = result.preview;
+      readyFile = file; save.disabled = false;
+      status.textContent = "Предпросмотр готов. Сохраните, чтобы применить логотип.";
+    } catch (error) { if (current === generation) status.textContent = error.message; }
+  });
+  $("#logo-form").addEventListener("submit", async (event) => {
+    event.preventDefault(); if (!readyFile || save.disabled) return;
+    save.disabled = true; input.disabled = true;
+    const body = new FormData(); body.append("file", readyFile);
+    try {
+      await request("/admin/ui/logo", { method: "POST", body });
+      const revision = Date.now();
+      $$(".brand-logo").forEach((image) => { image.src = `/admin/ui/logo.png?v=${revision}`; });
+      $("#site-favicon").href = `/admin/ui/favicon.png?v=${revision}`;
+      status.textContent = "Логотип сохранён.";
+      toast("Логотип и иконка вкладки обновлены");
+      input.value = ""; readyFile = null;
+    } catch (error) { status.textContent = error.message; save.disabled = false; }
+    finally { input.disabled = false; }
+  });
+}
+
 function init() {
   bindLogin();
   if (document.body.classList.contains("login-page")) return;
@@ -640,6 +677,7 @@ function init() {
     adminSession.clear();
     form.submit();
   });
+  bindBranding();
   const storedTheme = localStorage.getItem("dvd-admin-theme") || "dark"; document.documentElement.dataset.theme = storedTheme;
   $("#theme-toggle").addEventListener("click", () => { const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark"; document.documentElement.dataset.theme = theme; localStorage.setItem("dvd-admin-theme", theme); });
   $$(".nav-link").forEach((link) => link.addEventListener("click", () => showView(link.dataset.view))); $$(".goto").forEach((link) => link.addEventListener("click", () => showView(link.dataset.target)));

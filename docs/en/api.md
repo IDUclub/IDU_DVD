@@ -917,3 +917,22 @@ IDs resolve against authorized stored documents; no match never removes the filt
   require a choice unless `allow_multiple=true`.
 
 Deploy the DVD endpoint before updating gMART to use `search_filtered`.
+
+
+## Admin logo
+
+The **Оформление** section of `/admin/ui` previews and saves a shared logo for the sidebar,
+login page and browser favicon. The bundled default is a transparent version of
+`docs/assets/logo.jpg`; the original is unchanged.
+
+- `POST /admin/ui/logo?preview=true`: admin-only multipart `file`; returns a PNG data URL
+  for preview without saving. `POST /admin/ui/logo` validates again and persists it.
+- Accepts static PNG, JPEG and WebP up to 5 MiB / 16 million pixels. Opaque images have
+  near-uniform background connected to their edges removed; enclosed shapes are preserved.
+  Existing transparency is retained. Complex backgrounds require a pre-cut transparent PNG.
+- The normalized 512×512 PNG is stored at `_admin/branding/logo.png` in the existing
+  `DVD_MINIO_BUCKET_DOCUMENTS` bucket. No new configuration is needed; it survives deployments.
+  Saving fails with 503 if storage is unavailable, without reporting success.
+- `GET /admin/ui/logo.png` and `GET /admin/ui/favicon.png` are public branding assets
+  (PNG, `Cache-Control: no-store`); the favicon is 64×64. The bundled logo is used when
+  no custom object exists. Saving refreshes both URLs in the current page immediately.
