@@ -9,10 +9,11 @@ the helper using credentials held only in browser memory, like gMART.
 
 from __future__ import annotations
 
+import base64
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import (
     HTMLResponse,
@@ -22,8 +23,14 @@ from fastapi.responses import (
 )
 
 from src.__version__ import VERSION
+from src.admin_service.branding import BrandingService
 from src.api_clients import AuthHelperClient, AuthHelperError, UrbanApiError
-from src.common.auth import ADMIN_SESSION_COOKIE, admin_session, verify_admin_token
+from src.common.auth import (
+    ADMIN_SESSION_COOKIE,
+    admin_session,
+    require_admin,
+    verify_admin_token,
+)
 from src.dependencies import Dependencies
 
 router = APIRouter(prefix="/admin/ui", tags=["admin-ui"], include_in_schema=False)
@@ -206,3 +213,58 @@ async def admin_ui(request: Request):
     if not await admin_session(request):
         return RedirectResponse("/admin/ui/login", status_code=303)
     return _html("admin.html", version=VERSION)
+
+
+@router.get("/logo.png")
+@router.get("/favicon.png")
+async def branding_image(
+    request: Request,
+    branding: BrandingService = Depends(Dependencies.get_branding),
+):
+    try:
+        data = await run_in_threadpool(
+            branding.read, favicon=request.url.path.endswith("/favicon.png")
+        )
+    except Exception:
+        return Response(status_code=503, headers={"Cache-Control": "no-store"})
+    return Response(
+        data,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.post("/logo", dependencies=[Depends(require_admin)])
+async def upload_logo(
+    file: UploadFile,
+    preview: bool = False,
+    branding: BrandingService = Depends(Dependencies.get_branding),
+):
+    try:
+        data = await file.read(BrandingService.MAX_BYTES + 1)
+        if len(data) > BrandingService.MAX_BYTES:
+            raise HTTPException(413, "Изображение должно быть не больше 5 МБ.")
+        if preview:
+            result = await run_in_threadpool(branding.prepare, data)
+            return JSONResponse(
+                {
+                    "preview": "data:image/png;base64,"
+                    + base64.b64encode(result).decode()
+                },
+                headers={"Cache-Control": "no-store"},
+            )
+        await run_in_threadpool(branding.save, data)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            503, "Не удалось сохранить логотип. Попробуйте позже."
+        ) from exc
+    finally:
+        await file.close()
+    return {"url": "/admin/ui/logo.png"}
