@@ -69,7 +69,7 @@ BY_ID = {
 
 
 def _client_with(handler) -> UrbanApiClient:
-    client = UrbanApiClient(base="http://urban-api.test")
+    client = UrbanApiClient(base="http://urban-api.test/api")
     client._client = httpx.Client(transport=httpx.MockTransport(handler))
     return client
 
@@ -144,6 +144,30 @@ class TestParsing:
 
 
 class TestCatalogue:
+    def test_global_and_scoped_searches_have_separate_caches(self):
+        requests = []
+
+        def catalogue(request):
+            requests.append(dict(request.url.params))
+            results = [] if "parent_id" in request.url.params else [RUSSIA]
+            return httpx.Response(200, json={"results": results, "next": None})
+
+        with UrbanApiClient(base="http://urban.test/api") as client:
+            client._client.close()
+            client._client = httpx.Client(transport=httpx.MockTransport(catalogue))
+            assert client.find_by_name("Россия") == []
+            assert (
+                client.find_by_name("Россия", parent_id=None)[0].territory_id == 12639
+            )
+            assert client.find_by_name("Россия") == []
+            assert (
+                client.find_by_name("Россия", parent_id=None)[0].document_level
+                == "federal"
+            )
+        assert len(requests) == 2
+        assert requests[0]["parent_id"] == "12639"
+        assert "parent_id" not in requests[1]
+
     def test_territory_by_id(self):
         client = _client_with(_catalogue_handler)
         assert client.territory(54).name == "Выборгский муниципальный район"
@@ -334,8 +358,8 @@ class TestRepr:
 @pytest.mark.parametrize(
     "base, api_root",
     [
-        ("https://urban.test:8443", "https://urban.test:8443/api"),
-        ("https://urban.test:8443/", "https://urban.test:8443/api"),
+        ("https://urban.test:8443", "https://urban.test:8443"),
+        ("https://urban.test:8443/", "https://urban.test:8443"),
         ("https://urban.test:8443/api", "https://urban.test:8443/api"),
         (" https://urban.test:8443/api/// ", "https://urban.test:8443/api"),
         (
@@ -381,7 +405,7 @@ def test_configured_api_root_is_used_for_catalogue_scenarios_and_health(base, ap
 @pytest.mark.parametrize(
     "base, expected",
     [
-        ("http://api", "http://api/api"),
+        ("http://api", "http://api"),
         ("https://urban.test/gateway/api/", "https://urban.test/gateway/api"),
         ("https://urban.test/gateway/", "https://urban.test/gateway"),
         ("https://urban.test/api/api/", "https://urban.test/api/api"),

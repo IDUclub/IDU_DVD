@@ -255,11 +255,16 @@ class UrbanApiClient:
         cached = self._cache.get(key)
         if cached is not None:
             return cached
-        data = self._get(
-            f"/v1/scenarios/{int(sid)}",
-            not_found=ScenarioNotFound,
-            user_id=user_id,
-        )
+        try:
+            data = self._get(
+                f"/v1/scenarios/{int(sid)}",
+                not_found=ScenarioNotFound,
+                user_id=user_id,
+            )
+        except httpx.HTTPStatusError as exc:
+            raise UrbanApiError(
+                f"Urban API denied scenario {sid}: HTTP {exc.response.status_code}"
+            ) from exc
         project_id = (data.get("project") or {}).get("project_id")
         if project_id is None:
             raise UrbanApiError(
@@ -305,12 +310,14 @@ class UrbanApiClient:
     def find_by_name(
         self,
         query: str,
-        parent_id: int = COUNTRY_TERRITORY_ID,
+        parent_id: int | None = COUNTRY_TERRITORY_ID,
         *,
         all_levels: bool = True,
         limit: int = 20,
     ) -> list[Territory]:
-        """Server-side substring search over territory names, scoped to a subtree.
+        """Server-side substring search, optionally scoped to a territory's descendants.
+
+        ``parent_id=None`` searches the whole catalogue, including country roots.
 
         Backs both the automatic match during ingestion and the admin autocomplete: the Urban
         API filters by ``name`` itself, so neither has to enumerate a 100k-node tree. The
@@ -320,10 +327,13 @@ class UrbanApiClient:
         cleaned = (query or "").strip()
         if not cleaned:
             return []
-        key = ("find", cleaned.lower(), int(parent_id), all_levels)
+        parent = int(parent_id) if parent_id is not None else None
+        key = ("find", cleaned.lower(), parent, all_levels)
         cached = self._cache.get(key)
         if cached is None:
-            params: dict = {"parent_id": int(parent_id), "name": cleaned}
+            params: dict = {"name": cleaned}
+            if parent is not None:
+                params["parent_id"] = parent
             if all_levels:
                 params["get_all_levels"] = "true"
             cached = [

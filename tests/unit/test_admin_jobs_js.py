@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize("script", ["admin_jobs.test.cjs", "admin_metadata.test.cjs"])
+@pytest.mark.parametrize(
+    "script", ["admin_jobs.test.cjs", "admin_metadata.test.cjs", "admin_auth.test.cjs"]
+)
 def test_admin_javascript(script):
     node = shutil.which("node")
     if node is None:

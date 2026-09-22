@@ -29,7 +29,7 @@ call its neighbours. See the API page for which gate each endpoint sits behind.
 | `DVD_SERVICE_AUTH_CLIENT_ID` | — | the service's own client (client credentials) |
 | `DVD_SERVICE_AUTH_CLIENT_SECRET` | — | its secret; masked in `GET /system/settings` |
 | `DVD_ADMIN_ROLE` | `ADMIN` | realm role a **user** must hold to change the shared corpus and to open `/admin/ui`. Service accounts are not asked for it — holding the client credentials is the authorisation |
-| `DVD_AUTH_HELPER_URL` | empty | IDU auth helper: the panel's login form posts credentials here (`POST /api/token`), the same service gMART proxies behind its `/auth/token` |
+| `DVD_AUTH_HELPER_URL` | empty | IDU auth helper for login and automatic token renewal (`POST /api/token`), the same service gMART proxies behind its `/auth/token`. Renewal reuses credentials held only in the open page's memory; no refresh-token setting is required |
 | `DVD_AUTH_HELPER_API_KEY` | empty | key sent as `X-Auth-Helper-Api-Key`; never reaches the browser, masked in `GET /system/settings`. **Without both halves nobody can log into the panel** — there is no local password to fall back on |
 | `DVD_AUTH_HELPER_TIMEOUT` | `15.0` | seconds to wait for the helper |
 
@@ -150,15 +150,16 @@ without it would silently degrade every ingest forever. A runtime *outage* is di
 document is indexed with `tagging_status="pending"` and the backfill job tags it later, so a stand
 that is down never blocks uploads.
 
-`DVD_URBAN_API_URL` accepts a bare origin or an explicit API root. A bare origin uses
-`/api`; an explicit path is preserved, with trailing slashes removed. For example,
+`DVD_URBAN_API_URL` is the complete API root, including the load balancer path
+(`/api`, `/urban_api`, etc.). The client never adds `/api` automatically; it only
+removes trailing slashes and appends `/v1/...`. For example,
 `https://prostor-api.idu.actocgnitive.org/urban_api` produces requests to
 `https://prostor-api.idu.actocgnitive.org/urban_api/v1/scenarios/123`, without appending
 another `/api`. This applies to catalogue queries and health checks as well.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DVD_URBAN_API_URL` | `https://urban-api.testing.idulab.ru` | Urban API base URL; empty value fails startup |
+| `DVD_URBAN_API_URL` | `https://urban-api.testing.idulab.ru/api` | Urban API base URL; empty value fails startup |
 | `DVD_URBAN_API_TIMEOUT` | `10.0` | request timeout, seconds (3 retries with backoff on 5xx/network errors) |
 | `DVD_TAGGING_BACKFILL_DELAY` | `30` | seconds after startup before the first backfill sweep |
 | `DVD_TAGGING_BACKFILL_INTERVAL` | `3600` | seconds between sweeps; `0` disables the timer |

@@ -29,7 +29,7 @@ pydantic-settings. Значения переопределяются перем�
 | `DVD_SERVICE_AUTH_CLIENT_ID` | — | собственный клиент сервиса (client credentials) |
 | `DVD_SERVICE_AUTH_CLIENT_SECRET` | — | его секрет; маскируется в `GET /system/settings` |
 | `DVD_ADMIN_ROLE` | `ADMIN` | realm-роль, которую должен иметь **пользователь**, чтобы менять общий корпус и войти в `/admin/ui`. С сервис-аккаунтов она не спрашивается — авторизацией служит владение client credentials |
-| `DVD_AUTH_HELPER_URL` | пусто | IDU auth helper: форма входа панели отправляет учётные данные сюда (`POST /api/token`) — тот же сервис, что gMART проксирует за своим `/auth/token` |
+| `DVD_AUTH_HELPER_URL` | пусто | IDU auth helper для входа и автоматического обновления токена (`POST /api/token`) — тот же сервис, что gMART проксирует за своим `/auth/token`. Для продления используются учётные данные только из памяти открытой страницы; настройка refresh-токенов не требуется |
 | `DVD_AUTH_HELPER_API_KEY` | пусто | ключ в заголовке `X-Auth-Helper-Api-Key`; в браузер не попадает, маскируется в `GET /system/settings`. **Без обеих переменных войти в панель невозможно** — локального пароля больше нет |
 | `DVD_AUTH_HELPER_TIMEOUT` | `15.0` | сколько секунд ждать ответа helper'а |
 
@@ -154,15 +154,16 @@ documents__bge_m3_1024                        # резервный ollama / 1024
 `tagging_status="pending"`, и фоновая задача дотегирует его позже, поэтому лежащий стенд никогда не
 блокирует загрузку.
 
-`DVD_URBAN_API_URL` принимает адрес хоста или готовый корень API. К адресу без пути
-добавляется `/api`; заданный путь сохраняется, завершающие слеши удаляются. Например,
+`DVD_URBAN_API_URL` задаёт полный корень API, включая путь балансировщика
+(`/api`, `/urban_api` и т. п.). Клиент не добавляет `/api` автоматически: он только
+удаляет завершающие слеши и дописывает `/v1/...`. Например,
 `https://prostor-api.idu.actocgnitive.org/urban_api` даёт запросы на
 `https://prostor-api.idu.actocgnitive.org/urban_api/v1/scenarios/123`, без дополнительного
 `/api`. Это относится и к запросам каталога, и к проверке доступности.
 
 | Переменная | По умолчанию | Описание |
 |------------|--------------|----------|
-| `DVD_URBAN_API_URL` | `https://urban-api.testing.idulab.ru` | базовый URL Urban API; пустое значение роняет старт |
+| `DVD_URBAN_API_URL` | `https://urban-api.testing.idulab.ru/api` | базовый URL Urban API; пустое значение роняет старт |
 | `DVD_URBAN_API_TIMEOUT` | `10.0` | таймаут запроса, сек (3 ретрая с backoff на 5xx и сетевых ошибках) |
 | `DVD_TAGGING_BACKFILL_DELAY` | `30` | секунд после старта до первого прогона дотегирования |
 | `DVD_TAGGING_BACKFILL_INTERVAL` | `3600` | секунд между прогонами; `0` отключает таймер |
