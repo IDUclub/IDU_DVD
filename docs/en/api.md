@@ -686,6 +686,9 @@ To edit the document heading, send `{"title": "New heading"}`; the document iden
 Selecting a territory in the admin panel retains its ID for saving; later title edits
 do not resubmit an unchanged territory. An unknown territory returns 404, and an
 Urban API request failure returns 502 before any metadata is written.
+The panel's territory autocomplete searches the whole Urban API catalogue, including
+countries and territories outside Russia. Selecting "Россия" (12639) assigns the
+document the `federal` level; the level is derived from the selected territory.
 Documents whose Redis summary is missing remain editable and readable: their summary
 is restored from the indexed payload with default values for absent metadata.
 

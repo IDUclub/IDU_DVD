@@ -129,6 +129,79 @@ class TestBestMatch:
 
 
 class TestFederal:
+    @pytest.mark.parametrize("level", ["regional", "municipal", "unknown"])
+    def test_missing_lower_scope_falls_back_with_federal_evidence(
+        self, resolver, level
+    ):
+        scope = resolver.from_hints(
+            DocumentHead(
+                "n",
+                "v",
+                level,
+                "Несуществующая территория",
+                federal_scope_evidence="Действует на всей территории Российской Федерации",
+            )
+        )
+        assert scope["territory_id"] == COUNTRY_TERRITORY_ID
+        assert scope["document_level"] == "federal"
+        assert scope["tagging_status"] == STATUS_OK
+        assert scope["territory_source"] == SOURCE_AUTO
+
+    @pytest.mark.parametrize("name", ["Россия", "Российская Федерация", "РФ"])
+    def test_explicit_country_hint_can_resolve_without_level(self, resolver, name):
+        scope = resolver.from_hints(DocumentHead("n", "v", "unknown", name))
+        assert scope["territory_id"] == COUNTRY_TERRITORY_ID
+
+    @pytest.mark.parametrize(
+        "level, name, expected_id",
+        [
+            ("regional", "Ленинградская область", 1),
+            ("municipal", "Выборгский муниципальный район", 54),
+            ("unknown", "Ленинградская область", 1),
+        ],
+    )
+    def test_matching_lower_scope_wins_over_federal_evidence(
+        self, resolver, level, name, expected_id
+    ):
+        scope = resolver.from_hints(
+            DocumentHead(
+                "n",
+                "v",
+                level,
+                name,
+                federal_scope_evidence="Действует на всей территории Российской Федерации",
+            )
+        )
+        assert scope["territory_id"] == expected_id
+
+    def test_ambiguity_is_not_replaced_with_russia(self, resolver):
+        scope = resolver.from_hints(
+            DocumentHead(
+                "n",
+                "v",
+                "municipal",
+                "Кировский район",
+                federal_scope_evidence="Действует на всей территории Российской Федерации",
+            )
+        )
+        assert scope["tagging_status"] == STATUS_PENDING
+        assert scope["territory_id"] is None
+
+    def test_outage_is_not_replaced_with_russia(self):
+        resolver = TerritoryResolver(FakeUrbanApi(broken=True))
+        scope = resolver.from_hints(
+            DocumentHead(
+                "n",
+                "v",
+                "municipal",
+                "Выборг",
+                federal_scope_evidence="Действует на всей территории Российской Федерации",
+            )
+        )
+        assert scope["tagging_status"] == STATUS_PENDING
+        assert scope["territory_id"] is None
+        assert "недоступен" in scope["tagging_error"]
+
     def test_federal_points_at_russia(self, resolver):
         scope = resolver.from_hints(DocumentHead("СП 1", "СП 1", "federal"))
         assert scope["territory_id"] == COUNTRY_TERRITORY_ID

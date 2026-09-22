@@ -7,10 +7,30 @@ structure pass — see test_structure.)
 
 from __future__ import annotations
 
+import pytest
+
 from src.dvd_service.modules.tagging import VersionDetector
 
 
 class TestDocumentHead:
+    @pytest.mark.parametrize(
+        "evidence, expected",
+        [
+            ("Действует на всей территории Российской Федерации", True),
+            ("Действует на территории России", False),
+            ("", False),
+        ],
+    )
+    def test_federal_evidence_must_be_present_in_source(self, evidence, expected):
+        class Client:
+            def chat(self, system, text, schema):
+                return {"federal_scope_evidence": evidence, "level": "unknown"}
+
+        head = VersionDetector().detect_head(
+            [{"text": "Действует на всей территории Российской Федерации"}], Client()
+        )
+        assert bool(head.federal_scope_evidence) is expected
+
     def test_head_carries_identity_and_scope_hints(self, fake_ollama):
         head = VersionDetector().detect_head([{"text": "СП ..."}], fake_ollama)
         assert head.name == "ТЕСТ 1" and head.version == "ТЕСТ 1 ред. 1"

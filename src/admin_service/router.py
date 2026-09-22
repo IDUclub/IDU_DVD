@@ -136,7 +136,10 @@ async def territories(
         return JSONResponse({"detail": "unauthorized"}, status_code=401)
     try:
         found = await run_in_threadpool(
-            Dependencies.get_urban_api().find_by_name, query, limit=limit
+            Dependencies.get_urban_api().find_by_name,
+            query,
+            parent_id=None,
+            limit=limit,
         )
     except UrbanApiError as exc:
         return JSONResponse({"detail": f"Urban API недоступен: {exc}"}, status_code=502)

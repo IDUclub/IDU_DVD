@@ -286,6 +286,13 @@ class TerritoryResolver:
             return None, score, "неоднозначное название территории"
         return match, score, ""
 
+    def _federal_fallback(self, head: DocumentHead, reason: str) -> dict:
+        """Use Russia only with affirmative evidence, never from a failed lookup alone."""
+        if not head.federal_scope_evidence:
+            return pending_scope(reason)
+        country = self.urban.territory(COUNTRY_TERRITORY_ID)
+        return self._scope_of(country, SOURCE_AUTO, 1.0)
+
     def from_hints(self, head: DocumentHead) -> dict:
         """Resolve the head hints into a scope, or return a ``pending`` slice with the reason.
 
@@ -294,25 +301,39 @@ class TerritoryResolver:
         """
         level_hint = (head.level_hint or "unknown").lower()
         try:
-            if level_hint == LEVEL_FEDERAL:
+            country_named = normalize_name(head.territory_hint) in {
+                "россия",
+                "российская федерация",
+                "рф",
+            }
+            if level_hint == LEVEL_FEDERAL or country_named:
                 country = self.urban.territory(COUNTRY_TERRITORY_ID)
                 return self._scope_of(country, SOURCE_AUTO, 1.0)
 
-            if level_hint not in (LEVEL_REGIONAL, LEVEL_MUNICIPAL):
+            if (
+                level_hint not in (LEVEL_REGIONAL, LEVEL_MUNICIPAL)
+                and not head.federal_scope_evidence
+            ):
                 return pending_scope("уровень документа не определён")
             if not head.territory_hint:
-                return pending_scope("территория не названа в документе")
+                return self._federal_fallback(head, "территория не названа в документе")
 
-            if level_hint == LEVEL_REGIONAL:
+            if level_hint != LEVEL_MUNICIPAL:
                 match, score = self._match_region(head.territory_hint)
-                if match is None:
+                if match is not None:
+                    return self._scope_of(match, SOURCE_AUTO, round(score, 3))
+                if score >= _MIN_RATIO:
+                    # A close but ambiguous regional match is not evidence for federal scope.
                     return pending_scope("субъект РФ не распознан")
-            else:
-                match, score, reason = self._match_municipality(
-                    head.territory_hint, head.region_hint
-                )
-                if match is None:
+                if level_hint == LEVEL_REGIONAL:
+                    return self._federal_fallback(head, "субъект РФ не распознан")
+            match, score, reason = self._match_municipality(
+                head.territory_hint, head.region_hint
+            )
+            if match is None:
+                if score >= _MIN_RATIO:
                     return pending_scope(reason)
+                return self._federal_fallback(head, reason)
             return self._scope_of(match, SOURCE_AUTO, round(score, 3))
         except UrbanApiError as exc:
             log.warning("territory_resolve_unavailable", error=str(exc))

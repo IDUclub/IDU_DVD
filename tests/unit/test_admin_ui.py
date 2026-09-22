@@ -210,6 +210,49 @@ def test_territory_search_reports_an_urban_api_outage():
     Dependencies.reset()
 
 
+@pytest.mark.parametrize(
+    "territory_id, name, level, expected_level",
+    [(12639, "Россия", 1, "federal"), (900001, "Минск", 2, "regional")],
+)
+def test_territory_search_includes_country_and_foreign_territories(
+    territory_id, name, level, expected_level
+):
+    import httpx
+
+    from src.api_clients.urban_api_client import UrbanApiClient
+
+    def catalogue(request):
+        assert request.url.path == "/api/v1/territories_without_geometry"
+        assert request.url.params["name"] == name
+        assert request.url.params["get_all_levels"] == "true"
+        # Neither Russia itself nor a foreign territory is a descendant of Russia.
+        results = (
+            []
+            if "parent_id" in request.url.params
+            else [{"territory_id": territory_id, "name": name, "level": level}]
+        )
+        return httpx.Response(200, json={"results": results, "next": None})
+
+    with UrbanApiClient(base="http://urban.test/api") as urban:
+        urban._client.close()
+        urban._client = httpx.Client(transport=httpx.MockTransport(catalogue))
+        try:
+            with _authenticated_client(urban) as client:
+                response = client.get("/admin/ui/territories", params={"query": name})
+            assert response.status_code == 200
+            assert response.json()["territories"] == [
+                {
+                    "territory_id": territory_id,
+                    "name": name,
+                    "parent_name": None,
+                    "type_name": None,
+                    "document_level": expected_level,
+                }
+            ]
+        finally:
+            Dependencies.reset()
+
+
 @pytest.mark.parametrize("status_code", [403, 422])
 def test_territory_search_handles_upstream_http_errors(status_code):
     import httpx

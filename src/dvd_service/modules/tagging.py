@@ -31,12 +31,20 @@ HEAD_SCHEMA = {
         },
         "territory": {"type": "string"},
         "region": {"type": "string"},
+        "federal_scope_evidence": {"type": "string"},
     },
-    "required": ["name", "version", "level", "territory", "region"],
+    "required": [
+        "name",
+        "version",
+        "level",
+        "territory",
+        "region",
+        "federal_scope_evidence",
+    ],
 }
 HEAD_SYSTEM = (
     "Тебе даны первые фрагменты документа (титул, предисловие, выходные данные). "
-    "Верни пять полей:\n"
+    "Верни шесть полей:\n"
     'name - КРАТКОЕ обозначение документа без редакции/изменений ("СП 19.13330.2019", '
     '"ГОСТ 12.1.004-91", или название, если обозначения нет).\n'
     "version - ПОЛНАЯ версия/редакция: обозначение + год + редакция/изменение, если указаны "
@@ -49,7 +57,13 @@ HEAD_SYSTEM = (
     'падеж, без типа документа ("Ленинградская область", "Выборгский муниципальный район", '
     '"Санкт-Петербург"). Для federal верни "".\n'
     "region - название субъекта РФ, в котором находится эта территория (для level=municipal "
-    'помогает различить одноимённые районы). Если неизвестно - верни "".'
+    'помогает различить одноимённые районы). Если неизвестно - верни "".\n'
+    "federal_scope_evidence - независимо от выбранного level проверь, есть ли признаки "
+    "общероссийского действия самого документа: явно указанная область действия на всю РФ "
+    "или собственный статус федерального закона, СП, ГОСТ, СНиП, акта федерального органа. "
+    "Верни дословную цитату из данных фрагментов, подтверждающую это. Упоминание России "
+    "в адресе, ссылка на чужой федеральный акт или отсутствие местной территории не являются "
+    'подтверждением. Если таких признаков нет или область действия явно местная - верни "".'
 )
 
 
@@ -62,6 +76,7 @@ class DocumentHead:
     level_hint: str = "unknown"
     territory_hint: str = ""
     region_hint: str = ""
+    federal_scope_evidence: str = ""
 
 
 class VersionDetector:
@@ -79,12 +94,17 @@ class VersionDetector:
             data = client.chat(HEAD_SYSTEM, head_text, HEAD_SCHEMA)
             name = (data.get("name") or "").strip()
             version = (data.get("version") or "").strip()
+            evidence = (data.get("federal_scope_evidence") or "").strip()
+            # Only source-grounded evidence may enable the country fallback.
+            if " ".join(evidence.split()) not in " ".join(head_text.split()):
+                evidence = ""
             return DocumentHead(
                 name=name or "unknown",
                 version=version or name or "unknown",
                 level_hint=(data.get("level") or "unknown").strip().lower(),
                 territory_hint=(data.get("territory") or "").strip(),
                 region_hint=(data.get("region") or "").strip(),
+                federal_scope_evidence=evidence,
             )
         except (OllamaError, Exception) as exc:  # noqa: BLE001
             log.warning("version_detect_failed", error=str(exc))
