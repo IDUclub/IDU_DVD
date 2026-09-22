@@ -25,8 +25,22 @@ The MCP server at `/mcp` requires a service token as a whole.
 `/admin/ui` has no password of its own. Its login form posts the visitor's Keycloak
 credentials to the IDU auth helper (`DVD_AUTH_HELPER_URL` + `DVD_AUTH_HELPER_API_KEY`, the
 same service behind gMART's `/auth/token`), and the panel opens only for a holder of the admin
-role. The session cookie stores the issued access token itself, so the panel's own API calls
-are ordinary bearer requests and the session ends when the token expires.
+role. The HttpOnly session cookie stores the issued access token itself, so the panel's own
+API calls are ordinary bearer requests.
+
+The open panel renews its token before expiry through `POST /admin/ui/session`, which proxies
+the same username/password exchange to the helper's `POST /api/token`, as in gMART. This is
+credential-based renewal, not a refresh-token grant. The endpoint accepts form fields
+`username` and `password`, checks the new token's signature, expiry and admin role, updates
+the cookie and returns only `expires_in` with `Cache-Control: no-store`. Tokens and the
+helper API key are never returned to JavaScript.
+
+Credentials stay only in the page's memory, never in browser storage or cookies. Login opens
+the panel without navigation so renewal keeps working. A full page reload or a new tab loses
+those credentials; when its cookie expires, an inline login dialog lets the user sign in
+without discarding edits. Logout clears the credentials and cookie. API requests and file
+uploads share one renewal per tab and retry once on `401`; other errors are not replayed.
+Temporary helper outages keep the credentials for retry; rejected credentials require login.
 
 The upload dialog accepts multiple files for new documents and sends one `POST /documents`
 request per file, showing aggregate transfer progress. Shared metadata and territory fields apply

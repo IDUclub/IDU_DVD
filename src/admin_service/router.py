@@ -3,7 +3,8 @@
 Entry is a Keycloak login: the form posts to the IDU auth helper through
 :class:`AuthHelperClient`, and only a user carrying the ``DVD_ADMIN_ROLE`` realm role is let
 in. The session cookie holds the issued access token itself, so the panel's own API calls are
-authenticated exactly like any other bearer request and expire with the token.
+authenticated exactly like any other bearer request. The open panel renews the token through
+the helper using credentials held only in browser memory, like gMART.
 """
 
 from __future__ import annotations
@@ -65,6 +66,7 @@ async def login_page(
     )
 
 
+@router.post("/session")
 @router.post("/login", response_class=HTMLResponse)
 async def login(
     request: Request,
@@ -74,29 +76,54 @@ async def login(
 ):
     """Log in with Keycloak credentials and keep the issued token as the session."""
 
+    json_response = request.url.path.endswith("/session")
     try:
         token = await auth_helper.issue_token(username, password)
     except AuthHelperError as exc:
         if exc.status_code == 503:
+            if json_response:
+                return JSONResponse(
+                    {"detail": _NOT_CONFIGURED},
+                    status_code=503,
+                    headers={"Cache-Control": "no-store"},
+                )
             return _html("login.html", error="", configured=_NOT_CONFIGURED)
         error = (
             "Неверный логин или пароль"
             if exc.status_code == 401
             else "Сервис авторизации недоступен, попробуйте позже"
         )
+        if json_response:
+            return JSONResponse(
+                {"detail": error},
+                status_code=exc.status_code,
+                headers={"Cache-Control": "no-store"},
+            )
         return _html("login.html", error=error, configured="")
 
     try:
         access_token = await verify_admin_token(token)
     except HTTPException as exc:
         error = _NOT_ENTITLED if exc.status_code == 403 else "Токен не принят"
+        if json_response:
+            return JSONResponse(
+                {"detail": error},
+                status_code=exc.status_code,
+                headers={"Cache-Control": "no-store"},
+            )
         return _html("login.html", error=error, configured="")
 
-    response = RedirectResponse("/admin/ui", status_code=303)
+    seconds = _session_seconds(access_token.expires_at)
+    response = (
+        JSONResponse({"expires_in": seconds})
+        if json_response
+        else RedirectResponse("/admin/ui", status_code=303)
+    )
+    response.headers["Cache-Control"] = "no-store"
     response.set_cookie(
         ADMIN_SESSION_COOKIE,
         token,
-        max_age=_session_seconds(access_token.expires_at),
+        max_age=seconds,
         httponly=True,
         secure=request.url.scheme == "https",
         samesite="strict",
@@ -110,7 +137,7 @@ def _session_seconds(expires_at: int | None) -> int:
 
     if expires_at is None:
         return _SESSION_FALLBACK_SECONDS
-    return max(60, int(expires_at) - int(time.time()))
+    return max(1, int(expires_at) - int(time.time()))
 
 
 @router.post("/logout")
