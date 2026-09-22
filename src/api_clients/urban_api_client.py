@@ -146,7 +146,7 @@ class UrbanApiClient:
         timeout: float | None = None,
         service_auth: SyncServiceTokenAuth | None = None,
     ) -> None:
-        self.base = (base or settings.urban_api_url).rstrip("/")
+        self.base = normalize_urban_api_url(base or settings.urban_api_url)
         self.timeout = timeout or settings.urban_api_timeout
         self.service_auth = service_auth
         self._client = httpx.Client(timeout=self.timeout, auth=service_auth)
