@@ -4,7 +4,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 
 def normalize_urban_api_url(base_url: str) -> str:
-    """Preserve explicit API roots; use /api only for an origin without a path."""
+    """Validate the configured API root without inventing a proxy path."""
     url = urlsplit(base_url.strip())
     if (
         url.scheme not in {"http", "https"}
@@ -15,5 +15,5 @@ def normalize_urban_api_url(base_url: str) -> str:
         raise ValueError(
             "Urban API URL must be an HTTP(S) base URL without query or fragment"
         )
-    path = url.path.rstrip("/") or "/api"
+    path = url.path.rstrip("/")
     return urlunsplit((url.scheme, url.netloc, path, "", ""))

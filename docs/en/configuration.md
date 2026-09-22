@@ -150,15 +150,16 @@ without it would silently degrade every ingest forever. A runtime *outage* is di
 document is indexed with `tagging_status="pending"` and the backfill job tags it later, so a stand
 that is down never blocks uploads.
 
-`DVD_URBAN_API_URL` accepts a bare origin or an explicit API root. A bare origin uses
-`/api`; an explicit path is preserved, with trailing slashes removed. For example,
+`DVD_URBAN_API_URL` is the complete API root, including the load balancer path
+(`/api`, `/urban_api`, etc.). The client never adds `/api` automatically; it only
+removes trailing slashes and appends `/v1/...`. For example,
 `https://prostor-api.idu.actocgnitive.org/urban_api` produces requests to
 `https://prostor-api.idu.actocgnitive.org/urban_api/v1/scenarios/123`, without appending
 another `/api`. This applies to catalogue queries and health checks as well.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DVD_URBAN_API_URL` | `https://urban-api.testing.idulab.ru` | Urban API base URL; empty value fails startup |
+| `DVD_URBAN_API_URL` | `https://urban-api.testing.idulab.ru/api` | Urban API base URL; empty value fails startup |
 | `DVD_URBAN_API_TIMEOUT` | `10.0` | request timeout, seconds (3 retries with backoff on 5xx/network errors) |
 | `DVD_TAGGING_BACKFILL_DELAY` | `30` | seconds after startup before the first backfill sweep |
 | `DVD_TAGGING_BACKFILL_INTERVAL` | `3600` | seconds between sweeps; `0` disables the timer |

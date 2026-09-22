@@ -69,7 +69,7 @@ BY_ID = {
 
 
 def _client_with(handler) -> UrbanApiClient:
-    client = UrbanApiClient(base="http://urban-api.test")
+    client = UrbanApiClient(base="http://urban-api.test/api")
     client._client = httpx.Client(transport=httpx.MockTransport(handler))
     return client
 
@@ -358,8 +358,8 @@ class TestRepr:
 @pytest.mark.parametrize(
     "base, api_root",
     [
-        ("https://urban.test:8443", "https://urban.test:8443/api"),
-        ("https://urban.test:8443/", "https://urban.test:8443/api"),
+        ("https://urban.test:8443", "https://urban.test:8443"),
+        ("https://urban.test:8443/", "https://urban.test:8443"),
         ("https://urban.test:8443/api", "https://urban.test:8443/api"),
         (" https://urban.test:8443/api/// ", "https://urban.test:8443/api"),
         (
@@ -405,7 +405,7 @@ def test_configured_api_root_is_used_for_catalogue_scenarios_and_health(base, ap
 @pytest.mark.parametrize(
     "base, expected",
     [
-        ("http://api", "http://api/api"),
+        ("http://api", "http://api"),
         ("https://urban.test/gateway/api/", "https://urban.test/gateway/api"),
         ("https://urban.test/gateway/", "https://urban.test/gateway"),
         ("https://urban.test/api/api/", "https://urban.test/api/api"),

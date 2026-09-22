@@ -144,7 +144,7 @@ class Settings(BaseSettings):
     # A mandatory dependency: an empty URL fails fast at startup (see _require_urban_api).
     # A *runtime* outage never blocks ingestion — the document is indexed with
     # ``tagging_status="pending"`` and the backfill job fills the tags in later.
-    urban_api_url: str = "https://urban-api.testing.idulab.ru"
+    urban_api_url: str = "https://urban-api.testing.idulab.ru/api"
     urban_api_timeout: float = 10.0
     urban_api_token: str | None = None  # Bearer token for private project scenarios
 
@@ -349,7 +349,7 @@ class Settings(BaseSettings):
             raise ValueError(
                 "DVD_URBAN_API_URL: обязательный параметр — Urban API поставляет иерархию "
                 "территорий для тегирования документов (например "
-                "https://urban-api.testing.idulab.ru)"
+                "https://urban-api.testing.idulab.ru/api)"
             )
         return self
 
