@@ -224,6 +224,14 @@ Resolution order:
    89 subjects; `municipal` → found through the Urban API's server-side name search and narrowed by
    the region hint.
 
+If no lower-level territory matches, the head pass also checks the document's own federal
+scope. It returns `federal_scope_evidence`, a supporting quotation that must occur in the
+source fragments. With this evidence, the resolver may fall back to "Россия" (12639),
+including when the initial level was unknown. An explicit country hint ("Россия",
+"Российская Федерация", "РФ") also resolves to Russia. A matched region or municipality
+takes precedence over the evidence-based fallback. Merely failing to find a territory,
+citing a federal act, or mentioning Russia in an address is not sufficient.
+
 **An ambiguous name is not resolved.** "Кировский район" exists in a dozen regions; the document is
 stored with `tagging_status="pending"` and the reason in `tagging_error` instead of a plausible
 guess. The same happens when the Urban API is unreachable — ingestion is never blocked by it.
