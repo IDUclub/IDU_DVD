@@ -8,6 +8,16 @@
   <script src="/admin/ui/assets/admin.js" defer></script>
 </head>
 <body>
+  <dialog id="session-login">
+    <h2>Войти в панель</h2>
+    <p class="muted">Сессия истекла. Войдите снова, чтобы продолжить работу.</p>
+    <form id="login-form" method="post" action="/admin/ui/login" class="stack">
+      <label>Логин<input name="username" type="text" required autocomplete="username"></label>
+      <label>Пароль<input name="password" type="password" required autocomplete="current-password"></label>
+      <button class="button primary" type="submit">Войти</button>
+    </form>
+    <p id="login-error" class="form-error" role="alert"></p>
+  </dialog>
   <aside class="sidebar">
     <a class="brand" href="#overview"><span class="brand-mark">D</span><span>DVD Admin<small>Document Vector DB</small></span></a>
     <nav>

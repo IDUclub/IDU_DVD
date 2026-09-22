@@ -20,8 +20,114 @@ function toast(message, error = false) {
   window.setTimeout(() => { item.className = "toast"; }, 3200);
 }
 
+class AdminSession {
+  constructor() {
+    this.credentials = null;
+    this.expiresAt = 0;
+    this.generation = 0;
+    this.pending = null;
+    this.timer = null;
+  }
+
+  clear() {
+    this.credentials = null;
+    this.expiresAt = 0;
+    window.clearTimeout(this.timer);
+  }
+
+  requireLogin() {
+    this.clear();
+    const dialog = $("#session-login");
+    if (dialog && !dialog.open) dialog.showModal();
+  }
+
+  schedule(delay) {
+    window.clearTimeout(this.timer);
+    this.timer = window.setTimeout(() => {
+      this.refresh().catch((error) => {
+        // A helper outage is retryable; keep the credentials in memory.
+        if (this.credentials) this.schedule(15000);
+        if ($("#toast")) toast(error.message, true);
+        else $("#login-error").textContent = error.message;
+      });
+    }, delay);
+  }
+
+  async login(credentials) {
+    const response = await fetch("/admin/ui/session", {
+      method: "POST", credentials: "same-origin",
+      body: new URLSearchParams(credentials),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      const error = new Error(data.detail || "Не удалось обновить сессию");
+      error.status = response.status;
+      throw error;
+    }
+    this.credentials = credentials;
+    this.generation += 1;
+    const seconds = Number(data.expires_in);
+    this.expiresAt = Date.now() + seconds * 1000;
+    // Also renew very short-lived tokens, without a zero-delay loop.
+    this.schedule(Math.max(1000, (seconds - Math.min(30, seconds / 2)) * 1000));
+  }
+
+  async refresh() {
+    if (this.pending) return this.pending;
+    if (!this.credentials) {
+      this.requireLogin();
+      throw new Error("Сессия истекла. Войдите снова.");
+    }
+    this.pending = this.login(this.credentials);
+    try { await this.pending; }
+    catch (error) {
+      if (error.status === 401 || error.status === 403) this.requireLogin();
+      throw error;
+    } finally { this.pending = null; }
+  }
+
+  async run(send) {
+    if (this.pending || (this.credentials && Date.now() >= this.expiresAt)) await this.refresh();
+    const generation = this.generation;
+    let response = await send();
+    if (response.status === 401) {
+      // A late 401 from a parallel request may belong to the previous token.
+      if (generation === this.generation) await this.refresh();
+      response = await send();
+      if (response.status === 401) this.requireLogin();
+    }
+    return response;
+  }
+}
+
+const adminSession = new AdminSession();
+
+function bindLogin() {
+  $("#login-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget, button = $("button[type=submit]", form);
+    const credentials = { username: form.elements.username.value, password: form.elements.password.value };
+    button.disabled = true; $("#login-error").textContent = "";
+    try {
+      await adminSession.login(credentials);
+      form.reset();
+      const dialog = $("#session-login");
+      if (dialog) { dialog.close(); return; }
+      // Keep this JS context alive: a navigation would discard in-memory credentials.
+      const response = await fetch("/admin/ui");
+      const page = new DOMParser().parseFromString(await response.text(), "text/html");
+      if (!response.ok || !page.querySelector("#session-login")) throw new Error("Не удалось открыть панель");
+      document.body.replaceWith(document.importNode(page.body, true));
+      document.title = page.title;
+      history.replaceState(null, "", "/admin/ui");
+      init();
+    } catch (error) { $("#login-error").textContent = error.message; }
+    finally { button.disabled = false; }
+  });
+}
+
 async function request(url, options = {}) {
-  const response = await fetch(url, options);
+  const response = await adminSession.run(() => fetch(url, options));
   const type = response.headers.get("content-type") || "";
   const data = type.includes("json") ? await response.json() : await response.text();
   if (!response.ok) {
@@ -351,19 +457,20 @@ function setUploadProgress(overall, task, label) {
   $("#upload-task-label").textContent = label; $("#upload-task-value").textContent = `${percent(task)}%`; $("#upload-task-bar").value = percent(task);
 }
 
-function uploadRequest(url, method, form, onProgress) {
-  return new Promise((resolve, reject) => {
+async function uploadRequest(url, method, form, onProgress) {
+  const response = await adminSession.run(() => new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest(); xhr.open(method, url); xhr.responseType = "json";
     xhr.upload.addEventListener("progress", (event) => { if (event.lengthComputable) onProgress(event.loaded / event.total * 100); });
     xhr.upload.addEventListener("load", () => onProgress(100));
-    xhr.addEventListener("load", () => {
-      const data = xhr.response || {};
-      if (xhr.status >= 200 && xhr.status < 300) resolve(data);
-      else reject(new Error((data && data.detail) || `HTTP ${xhr.status}`));
-    });
+    xhr.addEventListener("load", () => resolve(xhr));
     xhr.addEventListener("error", () => reject(new Error("Не удалось передать файл на сервер")));
     xhr.send(form);
-  });
+  }));
+  const data = response.response || {};
+  if (response.status >= 200 && response.status < 300) return data;
+  const error = new Error(data.detail || `HTTP ${response.status}`);
+  error.status = response.status;
+  throw error;
 }
 
 async function submitUpload(event) {
@@ -520,6 +627,19 @@ async function saveSettings(event) {
 }
 
 function init() {
+  bindLogin();
+  if (document.body.classList.contains("login-page")) return;
+  $("#session-login").addEventListener("cancel", (event) => event.preventDefault());
+  $("form[action='/admin/ui/logout']").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    window.clearTimeout(adminSession.timer);
+    // Let an in-flight renewal finish before the logout response deletes its cookie.
+    try { if (adminSession.pending) await adminSession.pending; }
+    catch { /* Logout must work even when the helper is unavailable. */ }
+    adminSession.clear();
+    form.submit();
+  });
   const storedTheme = localStorage.getItem("dvd-admin-theme") || "dark"; document.documentElement.dataset.theme = storedTheme;
   $("#theme-toggle").addEventListener("click", () => { const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark"; document.documentElement.dataset.theme = theme; localStorage.setItem("dvd-admin-theme", theme); });
   $$(".nav-link").forEach((link) => link.addEventListener("click", () => showView(link.dataset.view))); $$(".goto").forEach((link) => link.addEventListener("click", () => showView(link.dataset.target)));

@@ -1,5 +1,7 @@
 """Authentication and delivery tests for the server-rendered admin UI."""
 
+import time
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -95,6 +97,88 @@ def test_login_stores_the_issued_token_and_opens_ui():
         page = client.get("/admin/ui")
         assert page.status_code == 200
         assert "DVD Admin" in page.text and 'data-theme="dark"' in page.text
+
+
+def test_session_renews_an_expired_cookie_and_returns_only_verified_lifetime(
+    monkeypatch,
+):
+    async def verify(token):
+        return AccessToken(
+            token=token,
+            client_id="frontend",
+            scopes=[],
+            claims=ADMIN_CLAIMS,
+            expires_at=int(time.time()) + 20,
+        )
+
+    monkeypatch.setattr(auth.keycloak_token_verifier, "verify_token", verify)
+    helper = FakeAuthHelper()
+    with _client(helper) as client:
+        client.cookies.set(auth.ADMIN_SESSION_COOKIE, "expired-token")
+        response = client.post(
+            "/admin/ui/session", data={"username": "admin", "password": "right"}
+        )
+        assert response.status_code == 200
+        assert set(response.json()) == {"expires_in"}
+        assert 0 < response.json()["expires_in"] <= 20
+        assert response.headers["cache-control"] == "no-store"
+        cookie = response.headers["set-cookie"]
+        assert "admin-token" in cookie and "HttpOnly" in cookie
+        assert "SameSite=strict" in cookie and "Path=/" in cookie
+        assert helper.calls == [("admin", "right")]
+
+
+def test_session_cookie_is_secure_over_https():
+    with _client() as client:
+        response = client.post(
+            "https://testserver/admin/ui/session",
+            data={"username": "admin", "password": "right"},
+        )
+        assert "Secure" in response.headers["set-cookie"]
+
+
+@pytest.mark.parametrize(
+    "helper,username,password,status",
+    [
+        (FakeAuthHelper(), "admin", "wrong", 401),
+        (FakeAuthHelper(), "user", "right", 403),
+        (FakeAuthHelper(unreachable=True), "admin", "right", 502),
+        (FakeAuthHelper(configured=False), "admin", "right", 503),
+    ],
+)
+def test_session_errors_are_json_and_do_not_replace_the_cookie(
+    helper, username, password, status
+):
+    with _client(helper) as client:
+        response = client.post(
+            "/admin/ui/session", data={"username": username, "password": password}
+        )
+        assert response.status_code == status
+        assert response.json()["detail"]
+        assert response.headers["cache-control"] == "no-store"
+        assert "set-cookie" not in response.headers
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_session_still_verifies_the_new_token(monkeypatch, expired):
+    async def verify(token):
+        if not expired:
+            return None
+        return AccessToken(
+            token=token,
+            client_id="frontend",
+            scopes=[],
+            claims=ADMIN_CLAIMS,
+            expires_at=int(time.time()) - 1,
+        )
+
+    monkeypatch.setattr(auth.keycloak_token_verifier, "verify_token", verify)
+    with _client() as client:
+        response = client.post(
+            "/admin/ui/session", data={"username": "admin", "password": "right"}
+        )
+        assert response.status_code == 401
+        assert "set-cookie" not in response.headers
 
 
 def test_user_without_the_admin_role_is_turned_away():
