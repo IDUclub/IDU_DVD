@@ -3,9 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link id="site-favicon" rel="icon" type="image/png" href="/admin/ui/favicon.png">
   <title>DVD Admin</title>
-  <link rel="stylesheet" href="/admin/ui/assets/admin.css">
-  <script src="/admin/ui/assets/admin.js" defer></script>
+  <link rel="stylesheet" href="/admin/ui/assets/admin.css?v=branding">
+  <script src="/admin/ui/assets/admin.js?v=branding" defer></script>
 </head>
 <body>
   <dialog id="session-login">
@@ -19,12 +20,13 @@
     <p id="login-error" class="form-error" role="alert"></p>
   </dialog>
   <aside class="sidebar">
-    <a class="brand" href="#overview"><span class="brand-mark">D</span><span>DVD Admin<small>Document Vector DB</small></span></a>
+    <a class="brand" href="#overview"><img class="brand-logo" src="/admin/ui/logo.png" alt="Логотип DVD" width="44" height="44"><span>DVD Admin<small>Document Vector DB</small></span></a>
     <nav>
       <button class="nav-link active" data-view="overview">Обзор</button>
       <button class="nav-link" data-view="documents">Документы</button>
       <button class="nav-link" data-view="jobs">Очередь <span id="jobs-badge" class="badge">0</span></button>
       <button class="nav-link" data-view="settings">Парсинг</button>
+      <button class="nav-link" data-view="branding">Оформление</button>
     </nav>
     <div class="sidebar-footer">
       <span>Версия {{ version }}</span>
@@ -69,6 +71,20 @@
     <section id="view-jobs" class="view">
       <p id="jobs-error" class="notice hidden" role="status"></p>
       <article class="panel"><div class="panel-head"><div><p class="eyebrow">ОЧЕРЕДЬ</p><h2>Обработка документов</h2></div><span class="live-dot">● обновляется автоматически</span></div><div id="jobs-list" class="job-list"></div><div id="jobs-empty" class="empty">Активных задач нет</div></article>
+    </section>
+
+    <section id="view-branding" class="view">
+      <article class="panel settings-panel">
+        <div class="panel-head"><div><p class="eyebrow">ОФОРМЛЕНИЕ</p><h2>Логотип</h2></div></div>
+        <p class="muted">Логотип отображается в левом верхнем углу панели и на вкладке браузера. Однотонный фон по краям удаляется автоматически; прозрачность PNG сохраняется.</p>
+        <form id="logo-form" class="stack">
+          <div class="logo-preview"><img id="logo-preview" src="/admin/ui/logo.png" alt="Предпросмотр логотипа" width="160" height="160"></div>
+          <label>Изображение<input id="logo-file" type="file" accept="image/png,image/jpeg,image/webp" required aria-describedby="logo-hint"></label>
+          <small id="logo-hint" class="muted">PNG, JPEG или WebP · до 5 МБ и 16 млн пикселей. Проверьте результат на шахматном фоне перед сохранением.</small>
+          <p id="logo-status" class="muted" role="status" aria-live="polite"></p>
+          <div class="form-actions"><button id="logo-save" class="button primary" type="submit" disabled>Сохранить логотип</button></div>
+        </form>
+      </article>
     </section>
 
     <section id="view-settings" class="view">

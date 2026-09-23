@@ -11,6 +11,7 @@ from typing import Any
 
 from idu_service_auth import KeycloakTokenClient
 
+from src.admin_service.branding import BrandingService
 from src.api_clients import AuthHelperClient, UrbanApiClient
 from src.broker.outbox import EventOutbox
 from src.broker.publisher import KafkaPublisher
@@ -64,6 +65,7 @@ class Dependencies:
         "ingest_queue",
         "registry",
         "document_storage",
+        "branding",
         "user_document_storage",
         "parser",
         "structure",
@@ -99,6 +101,7 @@ class Dependencies:
     ingest_queue: IngestQueue
     registry: DocumentRegistry
     document_storage: DocumentStorage
+    branding: BrandingService
     user_document_storage: DocumentStorage
     parser: DocumentParser
     structure: StructureTagger
@@ -140,6 +143,7 @@ class Dependencies:
         ingest_queue: IngestQueue,
         registry: DocumentRegistry,
         document_storage: DocumentStorage,
+        branding: BrandingService,
         user_document_storage: DocumentStorage,
         parser: DocumentParser,
         structure: StructureTagger,
@@ -172,6 +176,7 @@ class Dependencies:
         self.jobs = jobs
         self.ingest_queue = ingest_queue
         self.registry = registry
+        self.branding = branding
         self.document_storage = document_storage
         self.user_document_storage = user_document_storage
         self.parser = parser
@@ -247,6 +252,10 @@ class Dependencies:
     @classmethod
     def get_registry(cls) -> DocumentRegistry:
         return cls.instance().registry
+
+    @classmethod
+    def get_branding(cls) -> BrandingService:
+        return cls.instance().branding
 
     @classmethod
     def get_document_storage(cls) -> DocumentStorage:
