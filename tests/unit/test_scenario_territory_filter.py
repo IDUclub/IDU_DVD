@@ -49,7 +49,10 @@ PARENTS = {
     SVETOGORSK: SVETOGORSK_GP,
     PRIMORSK_GP: VYBORG_DISTRICT,
 }
-BOUNDARY = {"type": "Polygon", "coordinates": [[[28.8, 61.1], [28.9, 61.1], [28.8, 61.1]]]}
+BOUNDARY = {
+    "type": "Polygon",
+    "coordinates": [[[28.8, 61.1], [28.9, 61.1], [28.8, 61.1]]],
+}
 
 
 def _territory(territory_id: int, level: int) -> Territory:
@@ -344,9 +347,7 @@ def corpus(settings):
         )
     urban = FakeUrbanApi()
     resolver = TerritoryResolver(urban)
-    search = SearchService(
-        repo, settings, None, territory=resolver, urban_api=urban
-    )
+    search = SearchService(repo, settings, None, territory=resolver, urban_api=urban)
     yield repo, search, resolver
     repo.client.close()
 
@@ -364,7 +365,9 @@ def _request(**overrides) -> SearchRequest:
 
 def test_a_scenario_search_sees_what_is_in_force_there(corpus):
     repo, search, _ = corpus
-    assert _names(repo, search._build_filter(_request(), None)) == IN_FORCE_IN_SVETOGORSK
+    assert (
+        _names(repo, search._build_filter(_request(), None)) == IN_FORCE_IN_SVETOGORSK
+    )
 
 
 UNFILTERED = set(DOCUMENTS) - {"foreign_project"}
