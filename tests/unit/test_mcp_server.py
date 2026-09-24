@@ -65,8 +65,11 @@ class FakeDocuments:
         document_level=None,
         territory_ids=None,
         tagging_status=None,
+        scenario_condition=None,
     ):
         self.calls.append((name, version, block, tags, uploaded_from, uploaded_to))
+        self.scenario_conditions = getattr(self, "scenario_conditions", [])
+        self.scenario_conditions.append(scenario_condition)
         self.scope_calls = getattr(self, "scope_calls", [])
         self.scope_calls.append((document_level, territory_ids, tagging_status))
         return DocumentListResponse(count=0, documents=[])
@@ -146,7 +149,8 @@ class FakeTags:
     def get_tags(self):
         return TagsResponse(count=1, tags=["alpha"])
 
-    def get_scopes(self):
+    def get_scopes(self, scenario_condition=None):
+        self.scenario_condition = scenario_condition
         return ScopesResponse(
             levels=["federal", "municipal"],
             territories=[

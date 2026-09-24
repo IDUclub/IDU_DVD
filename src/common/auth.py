@@ -238,6 +238,11 @@ def get_mcp_user_id() -> str:
     return user_id
 
 
+def get_optional_mcp_user_id() -> str | None:
+    """The ``X-User-Id`` of an MCP call, for tools that need it only for some arguments."""
+    return get_http_headers(include_all=True).get("x-user-id", "").strip() or None
+
+
 class SyncServiceTokenAuth(httpx.Auth):
     """Bridge the async token cache to DVD's thread-pool based sync HTTP client."""
 

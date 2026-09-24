@@ -18,7 +18,10 @@ from __future__ import annotations
 
 import difflib
 import re
+import threading
+import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import structlog
 
@@ -27,11 +30,13 @@ from src.api_clients import (
     LEVEL_FEDERAL,
     LEVEL_MUNICIPAL,
     LEVEL_REGIONAL,
+    ScenarioNotFound,
     Territory,
     TerritoryNotFound,
     UrbanApiClient,
     UrbanApiError,
 )
+from src.common.config import settings
 from src.dvd_service.modules.tagging import DocumentHead
 
 log = structlog.get_logger(__name__)
@@ -58,6 +63,29 @@ SCOPE_FIELDS = (
     "tagging_status",
     "tagging_error",
 )
+
+SCENARIO_SOURCE_GEOMETRY = "geometry"
+SCENARIO_SOURCE_REGION = "region"
+# A degraded scope (Urban API down, no boundary) is kept briefly: long enough that a burst of
+# searches does not pay the client's retries each time, short enough to recover soon.
+_DEGRADED_SCOPE_TTL = 60.0
+# The tree is 5-6 levels deep; this only guards the descent against a malformed answer.
+_MAX_DESCENT_LEVELS = 12
+
+
+@dataclass(frozen=True)
+class ScenarioScope:
+    """Where a scenario is, as a territory filter over the shared corpus.
+
+    ``territory_ids`` are the deepest territories under the project boundary (the region when
+    the boundary is unknown); ``ancestor_ids`` add every level above them, so the filter
+    matches documents of those territories, of anything inside them and in force above them.
+    """
+
+    territory_ids: tuple[int, ...]
+    ancestor_ids: tuple[int, ...]
+    source: str
+
 
 # Accept a match only when it is both good enough on its own and clearly better than the
 # runner-up: two candidates that score alike are exactly the ambiguity we refuse to guess at.
@@ -165,6 +193,10 @@ class TerritoryResolver:
 
     def __init__(self, urban: UrbanApiClient) -> None:
         self.urban = urban
+        self._scenario_cache: dict[
+            tuple[str, str], tuple[float, ScenarioScope | None]
+        ] = {}
+        self._scenario_lock = threading.Lock()
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(urban={self.urban!r})"
@@ -249,6 +281,113 @@ class TerritoryResolver:
                 )
                 expanded.append(int(territory_id))
         return sorted(set(expanded))
+
+    # --- scenario scope -------------------------------------------------------------------
+
+    def scenario_scope(
+        self, scenario_id: str | int, user_id: str
+    ) -> ScenarioScope | None:
+        """The territories a scenario covers, or ``None`` when nothing narrows the corpus.
+
+        Descends the Urban API tree from the project's region, one level per
+        ``intersecting_territories`` call, and keeps the deepest territories the project
+        boundary touches — «город Светогорск» rather than the whole Выборгский район. A
+        regional project covers its region. Without a boundary, or when the Urban API fails
+        part-way, the region is the scope; without a region there is none.
+
+        A scenario that does not exist (``ScenarioNotFound``) or a malformed id raises: that
+        is the caller's mistake, not an outage. When the scenario itself cannot be looked up,
+        there is no scope; a degraded answer is cached only briefly.
+        """
+        if not settings.scenario_territory_filter:
+            return None
+        key = (str(user_id), str(scenario_id).strip())
+        with self._scenario_lock:
+            cached = self._scenario_cache.get(key)
+        if cached is not None and cached[0] > time.time():
+            return cached[1]
+        try:
+            project = self.urban.scenario_project(scenario_id, user_id)
+        except ScenarioNotFound:
+            raise
+        except UrbanApiError as exc:
+            log.warning(
+                "scenario_scope_degraded", scenario_id=str(scenario_id), error=str(exc)
+            )
+            project, scope, complete = None, None, False
+        else:
+            scope, complete = self._scenario_scope(project, user_id)
+        ttl = settings.scenario_territory_cache_ttl if complete else _DEGRADED_SCOPE_TTL
+        with self._scenario_lock:
+            self._scenario_cache[key] = (time.time() + ttl, scope)
+        log.info(
+            "scenario_scope_resolved",
+            scenario_id=str(scenario_id),
+            project_id=project.project_id if project else None,
+            territory_ids=list(scope.territory_ids) if scope else None,
+            source=scope.source if scope else None,
+            complete=complete,
+        )
+        return scope
+
+    def _scenario_scope(
+        self, project, user_id: str
+    ) -> tuple[ScenarioScope | None, bool]:
+        """``(scope, complete)`` — ``complete`` is false when a fallback was used."""
+        region = project.region_id
+        try:
+            if self.urban.project(project.project_id, user_id).get("is_regional"):
+                return self._scope((region,), SCENARIO_SOURCE_REGION), True
+            geometry = self.urban.project_geometry(project.project_id, user_id)
+            if geometry is None:
+                log.warning("scenario_scope_no_boundary", project_id=project.project_id)
+                return self._scope((region,), SCENARIO_SOURCE_REGION), False
+            if region is None:
+                log.warning("scenario_scope_no_region", project_id=project.project_id)
+                return None, False
+            leaves = self._descend(region, geometry)
+            return self._scope(leaves, SCENARIO_SOURCE_GEOMETRY), True
+        except Exception as exc:  # noqa: BLE001 — a search must not fail on an outage
+            log.warning(
+                "scenario_scope_degraded", project_id=project.project_id, error=str(exc)
+            )
+            return self._scope((region,), SCENARIO_SOURCE_REGION), False
+
+    def _descend(self, region_id: int, geometry: dict) -> tuple[int, ...]:
+        """The deepest territories under ``geometry``, starting from ``region_id``.
+
+        A territory whose children do not intersect the boundary (or that has none) is a
+        leaf. Once the request budget is spent the remaining frontier counts as leaves: a
+        coarser scope still contains everything the finer one would.
+        """
+        budget = max(1, settings.scenario_territory_max_requests)
+        leaves: list[int] = []
+        frontier = [int(region_id)]
+        for _ in range(_MAX_DESCENT_LEVELS):
+            if not frontier:
+                break
+            deeper: list[int] = []
+            for parent in frontier:
+                if budget <= 0:
+                    leaves.append(parent)
+                    continue
+                budget -= 1
+                children = self.urban.intersecting_territories(parent, geometry)
+                if children:
+                    deeper.extend(child.territory_id for child in children)
+                else:
+                    leaves.append(parent)
+            frontier = deeper
+        leaves.extend(frontier)
+        return tuple(sorted(set(leaves)))
+
+    def _scope(
+        self, territory_ids: Sequence[int | None], source: str
+    ) -> ScenarioScope | None:
+        ids = tuple(sorted({int(t) for t in territory_ids if t is not None}))
+        if not ids:
+            return None
+        return ScenarioScope(ids, tuple(self.filter_ids(ids)), source)
 
     # --- automatic detection ------------------------------------------------------------
 

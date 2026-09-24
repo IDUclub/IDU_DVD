@@ -173,8 +173,11 @@ class FakeDocuments:
         document_level=None,
         territory_ids=None,
         tagging_status=None,
+        scenario_condition=None,
     ):
         self.calls.append((name, version, block, tags, uploaded_from, uploaded_to))
+        self.scenario_conditions = getattr(self, "scenario_conditions", [])
+        self.scenario_conditions.append(scenario_condition)
         self.scope_calls = getattr(self, "scope_calls", [])
         self.scope_calls.append((document_level, territory_ids, tagging_status))
         return DocumentListResponse(count=0, documents=[])
@@ -184,8 +187,9 @@ class FakeLibrary:
     def __init__(self):
         self.available_calls = []
 
-    def list_available_documents(self, *, territory_ids=None):
+    def list_available_documents(self, *, territory_ids=None, scenario_condition=None):
         self.available_calls.append(territory_ids)
+        self.scenario_condition = scenario_condition
         return AvailableDocumentListResponse(
             count=1,
             documents=[

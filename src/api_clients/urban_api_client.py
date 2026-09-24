@@ -77,6 +77,18 @@ class ScenarioNotFound(UrbanApiError):
     """The requested scenario id does not exist in the Urban API."""
 
 
+class ProjectNotFound(UrbanApiError):
+    """The requested project (or its territory) does not exist in the Urban API."""
+
+
+@dataclass(frozen=True)
+class ScenarioProject:
+    """What a scenario says about where it is: its project and the project's region."""
+
+    project_id: str
+    region_id: int | None = None
+
+
 @dataclass(frozen=True)
 class Territory:
     """One node of the Urban API territory tree, reduced to what DVD stores."""
@@ -190,12 +202,26 @@ class UrbanApiClient:
         not_found: type[UrbanApiError] = TerritoryNotFound,
         user_id: str | None = None,
     ):
+        return self._request(
+            "GET", path, params=params, not_found=not_found, user_id=user_id
+        )
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        params: dict | None = None,
+        *,
+        body=None,
+        not_found: type[UrbanApiError] = TerritoryNotFound,
+        user_id: str | None = None,
+    ):
         last_error: Exception | None = None
         for attempt in range(_MAX_RETRIES):
             try:
                 headers = {"X-User-Id": user_id} if user_id else None
-                response = self._client.get(
-                    self.base + path, params=params, headers=headers
+                response = self._client.request(
+                    method, self.base + path, params=params, json=body, headers=headers
                 )
             except httpx.HTTPError as exc:
                 last_error = exc
@@ -248,6 +274,15 @@ class UrbanApiClient:
         ``project.project_id``.  Cache the mapping because scenario ownership is immutable for
         the lifetime of a scenario and this method sits on the document read path.
         """
+        return self.scenario_project(scenario_id, user_id).project_id
+
+    def scenario_project(
+        self, scenario_id: str | int, user_id: str
+    ) -> "ScenarioProject":
+        """The project owning ``scenario_id`` and the region it belongs to.
+
+        Cached like ``project_id_for_scenario``: a scenario never moves to another project.
+        """
         sid = str(scenario_id).strip()
         if not sid or not sid.isdigit() or int(sid) <= 0:
             raise ValueError("scenario_id must be a positive integer")
@@ -265,14 +300,52 @@ class UrbanApiClient:
             raise UrbanApiError(
                 f"Urban API denied scenario {sid}: HTTP {exc.response.status_code}"
             ) from exc
-        project_id = (data.get("project") or {}).get("project_id")
-        if project_id is None:
+        project = data.get("project") or {}
+        if project.get("project_id") is None:
             raise UrbanApiError(
                 f"Urban API returned scenario {sid} without project.project_id"
             )
-        resolved = str(project_id)
+        region_id = (project.get("region") or {}).get("id")
+        resolved = ScenarioProject(
+            project_id=str(project["project_id"]),
+            region_id=int(region_id) if region_id is not None else None,
+        )
         self._cache.set(key, resolved)
         return resolved
+
+    def project(self, project_id: str | int, user_id: str) -> dict:
+        """One project's attributes (``is_regional``, ``territory``, …); not cached."""
+        return self._get(
+            f"/v1/projects/{int(project_id)}",
+            not_found=ProjectNotFound,
+            user_id=user_id,
+        )
+
+    def project_geometry(self, project_id: str | int, user_id: str) -> dict | None:
+        """The project boundary (GeoJSON geometry, EPSG:4326), or ``None`` without one.
+
+        Not cached here: a boundary can be redrawn; callers cache what they derive from it.
+        """
+        try:
+            data = self._get(
+                f"/v1/projects/{int(project_id)}/territory",
+                not_found=ProjectNotFound,
+                user_id=user_id,
+            )
+        except ProjectNotFound:
+            return None
+        return data.get("geometry") or None
+
+    def intersecting_territories(
+        self, parent_id: int, geometry: dict
+    ) -> list[Territory]:
+        """Children of ``parent_id`` (one level down only) that intersect ``geometry``."""
+        data = self._request(
+            "POST",
+            f"/v1/territory/{int(parent_id)}/intersecting_territories",
+            body=geometry,
+        )
+        return [Territory.from_api(item) for item in data or []]
 
     def territory(self, territory_id: int) -> Territory:
         """One territory by id (with its parent) — the entry point for path resolution."""

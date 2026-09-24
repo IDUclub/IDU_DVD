@@ -20,7 +20,11 @@ from fastapi import (
 from fastapi.concurrency import run_in_threadpool
 from minio.error import S3Error
 
-from src.common.auth import require_admin, require_authenticated
+from src.common.auth import (
+    get_effective_user_id,
+    require_admin,
+    require_authenticated,
+)
 from src.common.config import Settings
 from src.common.db.minio_client import DocumentStorage
 from src.common.db.qdrant_client import QdrantRepository
@@ -39,6 +43,11 @@ from src.dvd_service.dto import (
 from src.dvd_service.dto.upload import ReparseAllResponse, ReparseSkipped, ReparseTarget
 from src.dvd_service.ingest_queue import IngestQueue
 from src.dvd_service.modules.doc_parsers import DocumentParser
+from src.dvd_service.routers._scenario_scope import (
+    SCENARIO_FILTER_DESCRIPTION,
+    SCENARIO_ID_DESCRIPTION,
+    scenario_condition,
+)
 from src.dvd_service.routers._upload_common import document_meta as _document_meta
 from src.dvd_service.routers._upload_common import (
     download_response as _download_response,
@@ -436,14 +445,23 @@ async def list_documents(
     tagging_status: str | None = Query(
         None, description="ok | pending (pending = awaiting automatic tagging)"
     ),
+    scenario_id: str | None = Query(None, description=SCENARIO_ID_DESCRIPTION),
+    scenario_territory_filter: bool = Query(
+        True, description=SCENARIO_FILTER_DESCRIPTION
+    ),
     documents: DocumentsService = Depends(Dependencies.get_documents),
+    user_id: str | None = Depends(get_effective_user_id),
 ):
     """Documents already in the store, aggregated by (name, version), with optional filters.
 
     ``uploaded_from``/``uploaded_to`` are ISO 8601 timestamps (e.g. ``2026-06-01``).
     ``territory_ids`` filters on the stored ancestor chain, so asking for a municipality also
-    returns the regional and federal documents in force there.
+    returns the regional and federal documents in force there. ``scenario_id`` does the same
+    for the territories under the scenario's project boundary.
     """
+    condition = await scenario_condition(
+        scenario_id, user_id, territory_ids, scenario_territory_filter
+    )
     return await run_in_threadpool(
         partial(
             documents.list_documents,
@@ -456,6 +474,7 @@ async def list_documents(
             document_level=document_level,
             territory_ids=territory_ids,
             tagging_status=tagging_status,
+            scenario_condition=condition,
         )
     )
 
@@ -470,11 +489,23 @@ async def list_available_documents(
         None,
         description="Urban API territory ids; includes every document in force there",
     ),
+    scenario_id: str | None = Query(None, description=SCENARIO_ID_DESCRIPTION),
+    scenario_territory_filter: bool = Query(
+        True, description=SCENARIO_FILTER_DESCRIPTION
+    ),
     library: LibraryService = Depends(Dependencies.get_library),
+    user_id: str | None = Depends(get_effective_user_id),
 ):
     """Fully indexed shared-corpus documents, optionally filtered by applicability."""
+    condition = await scenario_condition(
+        scenario_id, user_id, territory_ids, scenario_territory_filter
+    )
     return await run_in_threadpool(
-        partial(library.list_available_documents, territory_ids=territory_ids)
+        partial(
+            library.list_available_documents,
+            territory_ids=territory_ids,
+            scenario_condition=condition,
+        )
     )
 
 
