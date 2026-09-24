@@ -164,6 +164,17 @@ class Settings(BaseSettings):
     # --- Search ---
     search_limit: int = 10
     max_context_height: int = 6  # cap on context height (neighbours before/after)
+    # A search, listing or scope request naming a scenario sees only the part of the shared
+    # corpus in force there: the territories under the project boundary (down to the deepest
+    # level the Urban API tree has), everything inside them and every level above. Explicit
+    # ``territory_ids`` replace it; a request can also switch it off.
+    scenario_territory_filter: bool = True
+    scenario_territory_cache_ttl: float = (
+        3600.0  # seconds; a project boundary can be redrawn
+    )
+    scenario_territory_max_requests: int = (
+        100  # intersection lookups per scenario before the descent stops at that level
+    )
 
     # --- Reference linking (extract links to other documents/clauses, resolve against the store) ---
     enable_reference_linking: bool = True

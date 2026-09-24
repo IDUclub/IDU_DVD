@@ -244,6 +244,9 @@ the ingestion path apart; deletion of a directly-ingested document still emits t
 |----------|---------|-------------|
 | `DVD_SEARCH_LIMIT` | `10` | default number of results |
 | `DVD_MAX_CONTEXT_HEIGHT` | `6` | cap on context width (neighbours before and after) |
+| `DVD_SCENARIO_TERRITORY_FILTER` | `true` | a request with `scenario_id` sees only the shared documents in force where the scenario is (see *Scenario territory* in `api.md`) |
+| `DVD_SCENARIO_TERRITORY_CACHE_TTL` | `3600` | seconds a scenario's resolved territories are kept (a fallback only 60 s) |
+| `DVD_SCENARIO_TERRITORY_MAX_REQUESTS` | `100` | Urban API intersection lookups per scenario; when spent, the descent stops at the current level |
 
 ### Reference linking
 

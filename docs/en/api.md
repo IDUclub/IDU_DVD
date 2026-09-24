@@ -685,6 +685,29 @@ Filters accepted by `POST /search*`, `GET /documents` and `GET /library/document
 | `territory_ids` | a territory **and everything under it**, plus the higher-level documents **in force on it** — one OR over the stored ancestor chain |
 | `tagging_status` | `pending` lists the documents still awaiting automatic tagging |
 
+### Scenario territory
+
+A request that names a `scenario_id` — `POST /search*`, `/search/structure|names|filtered`, the
+`search_*` MCP tools, `GET /documents`, `GET /documents/available`, `GET /library/documents`,
+`GET /scopes` and the `list_documents` / `get_document_scopes` MCP tools — sees only the part of
+the **shared** corpus in force where the scenario is. The project's own documents are never
+narrowed.
+
+The territories come from the Urban API: scenario → project → region, then the project boundary
+(`/projects/{id}/territory`) is intersected with the tree one level at a time
+(`/territory/{id}/intersecting_territories`) down to the deepest territories it touches —
+«город Светогорск», not the whole Выборгский район. The filter then works like `territory_ids`
+with those territories: their own documents, everything inside them and every level above
+(district, region, Russia). Documents with no territory yet (tagging pending) always pass.
+
+- A regional project covers its whole region; without a boundary, or when the Urban API fails
+  part-way, the region is used; if the scenario itself cannot be looked up, nothing is filtered.
+  An unknown scenario is `404`.
+- Explicit `territory_ids` replace the scenario's territories.
+- A named document (`name`, `document_names`, `doc_id`) is found wherever it applies.
+- `scenario_territory_filter=false` (body field or query parameter) switches it off for one
+  request, `DVD_SCENARIO_TERRITORY_FILTER=false` for the service.
+
 Setting a territory manually: `territory_id` as a form field on `POST`/`PATCH`/`PUT /documents` and
 `/user-documents`, as a field of the direct-ingestion DTO, or via `PATCH
 /library/documents/{doc_id}`. Sending `territory_id: null` in the PATCH clears the tag and hands
@@ -893,6 +916,7 @@ All tools are synchronous and share the same `Dependencies` singleton as the HTT
 
 `search_*` also accept `parent_id` — search only inside one node (e.g. within a table you already found) instead of across the corpus.
 Every `search_*` tool and `list_documents` also accept `document_level` and `territory_ids`; call `get_document_scopes` first — it is the only place those ids come from.
+With `scenario_id`, `search_*`, `list_documents` and `get_document_scopes` narrow the shared corpus to the scenario's territories (see *Scenario territory*); `scenario_territory_filter=false` turns that off.
 | `find_document` | resolve documents by lookup key / external id (`key`) |
 | `get_tags` | all unique tags in the collection, sorted alphabetically — no parameters |
 | `get_document_scopes` | levels and territories the collection actually holds, with document counts — where an agent gets `territory_ids` |

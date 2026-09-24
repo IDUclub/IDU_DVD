@@ -52,6 +52,11 @@ class SearchRequest(BaseModel):
     include_inherited: bool = (
         True  # deprecated compatibility flag; projects contain all scenario documents
     )
+    scenario_territory_filter: bool = (
+        True  # with scenario_id: narrow the shared corpus to the scenario's territories
+        # (under the project boundary, inside them and above them). Ignored when
+        # territory_ids is given or a document is named (name/document_names/doc_id)
+    )
 
     @model_validator(mode="after")
     def _user_scope_requires_target(self) -> "SearchRequest":

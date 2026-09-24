@@ -12,7 +12,11 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 
 from src.api_clients import TerritoryNotFound, UrbanApiError
-from src.common.auth import require_admin, require_authenticated
+from src.common.auth import (
+    get_effective_user_id,
+    require_admin,
+    require_authenticated,
+)
 from src.dependencies import Dependencies
 from src.dvd_service.dto import (
     DocumentDetail,
@@ -24,6 +28,11 @@ from src.dvd_service.dto import (
     NodeDetail,
 )
 from src.dvd_service.dto.fragment_search import NameBackfillRequest
+from src.dvd_service.routers._scenario_scope import (
+    SCENARIO_FILTER_DESCRIPTION,
+    SCENARIO_ID_DESCRIPTION,
+    scenario_condition,
+)
 from src.dvd_service.services.dvd_service import DocumentEditorService, LibraryService
 
 router = APIRouter(prefix="/library", tags=["library"])
@@ -60,20 +69,30 @@ async def list_documents(
         description="Urban API territory ids; matches the territory or anything above it",
     ),
     tagging_status: str | None = Query(None, description="ok | pending"),
+    scenario_id: str | None = Query(None, description=SCENARIO_ID_DESCRIPTION),
+    scenario_territory_filter: bool = Query(
+        True, description=SCENARIO_FILTER_DESCRIPTION
+    ),
     library: LibraryService = Depends(Dependencies.get_library),
+    user_id: str | None = Depends(get_effective_user_id),
 ):
     """All documents in the store with their identity/corpus/scope metadata.
 
     The administrative-scope filters narrow the listing the same way they narrow search:
     ``territory_ids`` matches the stored ancestor chain, so a municipality also brings back
-    the regional and federal documents in force there.
+    the regional and federal documents in force there; ``scenario_id`` does the same for the
+    territories under the scenario's project boundary.
     """
+    condition = await scenario_condition(
+        scenario_id, user_id, territory_ids, scenario_territory_filter
+    )
     return await run_in_threadpool(
         partial(
             library.list_documents,
             document_level=document_level,
             territory_ids=territory_ids,
             tagging_status=tagging_status,
+            scenario_condition=condition,
         )
     )
 

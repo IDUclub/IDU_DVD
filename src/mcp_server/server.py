@@ -11,7 +11,11 @@ from fastmcp.dependencies import Depends
 from fastmcp.exceptions import ToolError
 
 from src.api_clients import UrbanApiError
-from src.common.auth import get_mcp_user_id, service_token_verifier
+from src.common.auth import (
+    get_mcp_user_id,
+    get_optional_mcp_user_id,
+    service_token_verifier,
+)
 from src.dependencies import Dependencies
 from src.dvd_service.dto import (
     DeleteResponse,
@@ -32,7 +36,10 @@ from src.dvd_service.dto.fragment_search import (
     FragmentSearchResponse,
 )
 from src.dvd_service.modules.reference_patterns import normalize_designation
-from src.dvd_service.services.dvd_service import DocumentsService
+from src.dvd_service.services.dvd_service import (
+    DocumentsService,
+    scenario_listing_condition,
+)
 from src.dvd_service.services.fragment_search import FragmentSearchService
 from src.dvd_service.services.user_index_service import build_user_ingestion_from_deps
 
@@ -116,6 +123,24 @@ def search_fragment_names(
     return _fragment_search(request, user_id)
 
 
+def _scenario_listing_condition(
+    scenario_id: str | None,
+    user_id: str | None,
+    territory_ids: list[int] | None,
+    enabled: bool,
+):
+    try:
+        return scenario_listing_condition(
+            Dependencies.get_territory(),
+            scenario_id,
+            user_id,
+            territory_ids=territory_ids,
+            enabled=enabled,
+        )
+    except (UrbanApiError, ValueError) as exc:
+        raise ToolError(str(exc)) from exc
+
+
 def _project_id_for_scenario(scenario_id: str, user_id: str) -> str:
     try:
         return Dependencies.get_urban_api().project_id_for_scenario(
@@ -145,6 +170,7 @@ def _search(
     document_level: str | None = None,
     territory_ids: list[int] | None = None,
     doc_id: str | None = None,
+    scenario_territory_filter: bool = True,
 ) -> SearchResponse:
     req = SearchRequest(
         query=query,
@@ -165,6 +191,7 @@ def _search(
         parent_id=parent_id,
         document_level=document_level,
         territory_ids=territory_ids,
+        scenario_territory_filter=scenario_territory_filter,
     )
     return Dependencies.get_search().search(req, kind)
 
@@ -188,6 +215,7 @@ def search_texts(
     parent_id: str | None = None,
     document_level: str | None = None,
     territory_ids: list[int] | None = None,
+    scenario_territory_filter: bool = True,
     user_id: str = Depends(get_mcp_user_id),
 ) -> SearchResponse:
     """Vector search over text fragments (kind=text) with filters and context height.
@@ -203,6 +231,10 @@ def search_texts(
     Set ``user_id``+``scenario_id`` to also search a user document index (combined search);
     add ``include_shared=False`` to search only that index, or ``include_inherited=False`` to
     skip its inheritance chain.
+    With ``scenario_id`` the shared corpus is narrowed to where the scenario is: the
+    territories under its project boundary, everything inside them and every level above.
+    Explicit ``territory_ids`` or a named document override it;
+    ``scenario_territory_filter=False`` switches it off.
     """
     return _search(
         query,
@@ -224,6 +256,7 @@ def search_texts(
         document_level=document_level,
         territory_ids=territory_ids,
         doc_id=doc_id,
+        scenario_territory_filter=scenario_territory_filter,
     )
 
 
@@ -246,6 +279,7 @@ def search_tables(
     parent_id: str | None = None,
     document_level: str | None = None,
     territory_ids: list[int] | None = None,
+    scenario_territory_filter: bool = True,
     user_id: str = Depends(get_mcp_user_id),
 ) -> SearchResponse:
     """Vector search over tables (kind=table) with filters and context height.
@@ -256,6 +290,10 @@ def search_tables(
     Set ``user_id``+``scenario_id`` to also search a user document index (combined search); add
     ``include_shared=False`` to search only that index, or ``include_inherited=False`` to skip
     its inheritance chain.
+    With ``scenario_id`` the shared corpus is narrowed to where the scenario is: the
+    territories under its project boundary, everything inside them and every level above.
+    Explicit ``territory_ids`` or a named document override it;
+    ``scenario_territory_filter=False`` switches it off.
     """
     return _search(
         query,
@@ -277,6 +315,7 @@ def search_tables(
         document_level=document_level,
         territory_ids=territory_ids,
         doc_id=doc_id,
+        scenario_territory_filter=scenario_territory_filter,
     )
 
 
@@ -299,6 +338,7 @@ def search_all(
     parent_id: str | None = None,
     document_level: str | None = None,
     territory_ids: list[int] | None = None,
+    scenario_territory_filter: bool = True,
     user_id: str = Depends(get_mcp_user_id),
 ) -> SearchResponse:
     """Vector search across all entities (texts and tables) with filters and context height.
@@ -311,6 +351,10 @@ def search_all(
     Narrow by administrative scope with ``document_level`` (federal/regional/municipal)
     and ``territory_ids`` — Urban API territory ids from ``get_document_scopes``, which
     match both a territory's own documents and the higher-level ones in force there.
+    With ``scenario_id`` the shared corpus is narrowed to where the scenario is: the
+    territories under its project boundary, everything inside them and every level above.
+    Explicit ``territory_ids`` or a named document override it;
+    ``scenario_territory_filter=False`` switches it off.
     """
     return _search(
         query,
@@ -332,6 +376,7 @@ def search_all(
         document_level=document_level,
         territory_ids=territory_ids,
         doc_id=doc_id,
+        scenario_territory_filter=scenario_territory_filter,
     )
 
 
@@ -472,13 +517,21 @@ def list_documents(
     document_level: str | None = None,
     territory_ids: list[int] | None = None,
     tagging_status: str | None = None,
+    scenario_id: str | None = None,
+    scenario_territory_filter: bool = True,
+    user_id: str | None = Depends(get_optional_mcp_user_id),
 ) -> DocumentListResponse:
     """Documents already in the shared store, aggregated by (name, version), with optional filters.
 
     ``document_level`` is federal/regional/municipal; ``territory_ids`` are Urban API territory
     ids (get them from ``get_document_scopes``) and match both the documents of a territory and
-    the higher-level documents in force on it.
+    the higher-level documents in force on it. ``scenario_id`` lists only the shared documents
+    in force where the scenario is (its project's documents: ``list_user_documents``);
+    explicit ``territory_ids`` replace it, ``scenario_territory_filter=False`` switches it off.
     """
+    scenario_condition = _scenario_listing_condition(
+        scenario_id, user_id, territory_ids, scenario_territory_filter
+    )
     return Dependencies.get_documents().list_documents(
         name,
         version,
@@ -489,6 +542,7 @@ def list_documents(
         document_level=document_level,
         territory_ids=territory_ids,
         tagging_status=tagging_status,
+        scenario_condition=scenario_condition,
     )
 
 
@@ -645,11 +699,20 @@ def get_tags() -> TagsResponse:
 
 
 @mcp.tool()
-def get_document_scopes() -> ScopesResponse:
+def get_document_scopes(
+    scenario_id: str | None = None,
+    scenario_territory_filter: bool = True,
+    user_id: str | None = Depends(get_optional_mcp_user_id),
+) -> ScopesResponse:
     """Document levels and territories the collection actually holds, with document counts.
 
     Call this before filtering by ``document_level`` / ``territory_ids``: it is where the
     territory ids come from. Only territories that have documents behind them are listed, so
-    every value it returns is a filter that returns something.
+    every value it returns is a filter that returns something. ``scenario_id`` limits it to
+    the documents in force where the scenario is.
     """
-    return Dependencies.get_tags().get_scopes()
+    return Dependencies.get_tags().get_scopes(
+        _scenario_listing_condition(
+            scenario_id, user_id, None, scenario_territory_filter
+        )
+    )
