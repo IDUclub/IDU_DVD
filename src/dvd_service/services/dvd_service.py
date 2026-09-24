@@ -2206,9 +2206,13 @@ class DocumentEditorService:
         return old, new, related
 
     def _rename_version(
-        self, old: str, new: str, points: list[dict], edited_at: str
+        self, old: str, new: str, points: list[dict], edited_at: str | None
     ) -> tuple[set[str], set[str]]:
-        """Rewrite version labels in batches, preserving other editions and all vectors."""
+        """Rewrite version labels in batches, preserving other editions and all vectors.
+
+        ``edited_at`` stamps ``manual_edited_at``; ``None`` marks a system correction, which
+        must not look like a human decision.
+        """
         groups: dict[str, tuple[dict, list[str]]] = {}
         changed_ids: set[str] = set()
         fields = {"version"}
@@ -2228,7 +2232,8 @@ class DocumentEditorService:
             if not changes:
                 continue
             fields.update(changes)
-            changes["manual_edited_at"] = edited_at
+            if edited_at is not None:
+                changes["manual_edited_at"] = edited_at
             key = json.dumps(changes, sort_keys=True)
             groups.setdefault(key, (changes, []))[1].append(point["id"])
             changed_ids.add(point["id"])
@@ -2237,7 +2242,14 @@ class DocumentEditorService:
         self.registry.rename_version(points[0]["name"], old, new)
         return changed_ids, fields
 
-    def update_document(self, doc_id: str, updates: dict) -> DocumentUpdateResponse:
+    def update_document(
+        self, doc_id: str, updates: dict, *, manual: bool = True
+    ) -> DocumentUpdateResponse:
+        """Apply edits to every fragment and the Redis summary of one document.
+
+        ``manual=False`` is for system corrections (the version repair): the same writes,
+        without the ``manual_edited_at`` stamp.
+        """
         points = self.qdrant.list_by_doc(doc_id)
         if not points:
             raise KeyError("document not found")
@@ -2262,14 +2274,15 @@ class DocumentEditorService:
             changes["lookup_keys"] = build_lookup_keys(
                 first.get("name", ""), external_ids
             )
-        edited_at = datetime.now(timezone.utc).isoformat()
+        edited_at = datetime.now(timezone.utc).isoformat() if manual else None
         changed_ids: set[str] = set()
         fields = set(changes)
         if rename is not None:
             changed_ids, version_fields = self._rename_version(*rename, edited_at)
             fields.update(version_fields)
         if changes:
-            changes["manual_edited_at"] = edited_at
+            if edited_at is not None:
+                changes["manual_edited_at"] = edited_at
             self.qdrant.set_document_payload(doc_id, changes)
             changed_ids.update(p["id"] for p in points)
 

@@ -41,6 +41,7 @@ from src.dvd_service.services.dvd_service import (
 )
 from src.dvd_service.services.tagging_backfill import TaggingBackfillService
 from src.dvd_service.services.user_index_service import UserIndexService
+from src.dvd_service.services.version_repair import VersionRepairService
 from src.system_service.controllers import SystemController
 
 
@@ -84,6 +85,7 @@ class Dependencies:
         "library",
         "tags",
         "tagging_backfill",
+        "version_repair",
         "user_index_registry",
         "user_index_service",
         "system",
@@ -120,6 +122,7 @@ class Dependencies:
     library: LibraryService
     tags: TagsService
     tagging_backfill: TaggingBackfillService
+    version_repair: VersionRepairService
     user_index_registry: UserIndexRegistry
     user_index_service: UserIndexService
     system: SystemController
@@ -162,6 +165,7 @@ class Dependencies:
         library: LibraryService,
         tags: TagsService,
         tagging_backfill: TaggingBackfillService,
+        version_repair: VersionRepairService,
         user_index_registry: UserIndexRegistry,
         user_index_service: UserIndexService,
         system: SystemController,
@@ -196,6 +200,7 @@ class Dependencies:
         self.library = library
         self.tags = tags
         self.tagging_backfill = tagging_backfill
+        self.version_repair = version_repair
         self.user_index_registry = user_index_registry
         self.user_index_service = user_index_service
         self.system = system
@@ -336,6 +341,10 @@ class Dependencies:
     @classmethod
     def get_tagging_backfill(cls) -> TaggingBackfillService:
         return cls.instance().tagging_backfill
+
+    @classmethod
+    def get_version_repair(cls) -> VersionRepairService:
+        return cls.instance().version_repair
 
     @classmethod
     def get_user_index_registry(cls) -> UserIndexRegistry:

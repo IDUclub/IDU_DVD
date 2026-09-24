@@ -14,7 +14,9 @@ import re
 _SEP = re.compile(r"[\s./\\:\-—–]+", re.U)
 _NON_WORD = re.compile(r"[^\w]+", re.U)
 _MULTI = re.compile(r"_+")
-_VERSION_DIGITS = re.compile(r"(?<!\d)(\d{4})(?!\d)")
+# A four-digit group is an edition year only when it looks like one and is not a document
+# number carrying its own year suffix: «СП 2.4.3648-20» is document 3648 of 2020.
+_VERSION_DIGITS = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)(?!\s*-\s*\d)")
 
 
 def normalize_key(value: str) -> str:
@@ -30,10 +32,11 @@ def normalize_key(value: str) -> str:
 
 
 def extract_version_from_name(name: str) -> str | None:
-    """The last standalone 4-digit group of a document name, or None.
+    """The last standalone 4-digit year (1900–2099) of a document name, or None.
 
     ``"СП 2.13130.2020"`` -> ``"2020"`` (``13130`` is 5 digits and is skipped);
-    ``"ГОСТ 12.1.004-91"`` -> ``None``. Longer digit runs never match partially.
+    ``"ГОСТ 12.1.004-91"`` -> ``None``; ``"СП 2.4.3648-20"`` -> ``None`` (``3648`` is the
+    document number, not a year). Longer digit runs never match partially.
     """
     matches = _VERSION_DIGITS.findall(name or "")
     return matches[-1] if matches else None

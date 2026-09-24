@@ -207,9 +207,16 @@ class QdrantRepository:
         ).points
 
     def scroll_payloads(
-        self, query_filter: Filter | None = None, batch: int = 256
+        self,
+        query_filter: Filter | None = None,
+        batch: int = 256,
+        fields: Sequence[str] | None = None,
     ) -> list[dict]:
-        """All payloads matching ``query_filter`` (paginated scroll until exhausted)."""
+        """All payloads matching ``query_filter`` (paginated scroll until exhausted).
+
+        ``fields`` limits each payload to those keys — a corpus-wide sweep that needs a few
+        identity fields should not pull every fragment's text and table HTML.
+        """
         out: list[dict] = []
         offset = None
         while True:
@@ -218,7 +225,7 @@ class QdrantRepository:
                 scroll_filter=query_filter,
                 limit=batch,
                 offset=offset,
-                with_payload=True,
+                with_payload=list(fields) if fields else True,
             )
             out.extend((r.payload or {}) for r in recs)
             if offset is None:

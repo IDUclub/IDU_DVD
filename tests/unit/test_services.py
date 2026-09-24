@@ -637,6 +637,14 @@ class TestManualIdentity:
         )  # detector's version, detected name ignored
         assert _version_detect_calls(wired.ollama)
 
+    def test_document_number_is_not_taken_for_an_edition_year(self, wired, sample_raw):
+        h = DocumentParser.content_hash(sample_raw)
+        res = wired.ingestion.ingest(
+            "doc.docx", sample_raw, h, name_override="СП 2.4.3648-20"
+        )
+        assert res["version"] == "ТЕСТ 1 ред. 1"  # the head pass, not «3648»
+        assert _version_detect_calls(wired.ollama)
+
     def test_version_override_beats_4digit_extraction(self, wired, sample_raw):
         h = DocumentParser.content_hash(sample_raw)
         res = wired.ingestion.ingest(
@@ -2275,3 +2283,111 @@ def test_semantic_update_preserves_addresses_and_rebuilds_context_for_new_revisi
         if pl["versions"] == ["ред. 2"]
     }
     assert all(p["parent_id"] is None or p["parent_id"] in new_ids for p in new)
+
+
+class TestVersionRepair:
+    """Editions stored by the old heuristic («3648» for «СП 2.4.3648-20») are relabelled."""
+
+    @staticmethod
+    def _ingest(wired, raw, name, version, content_hash=None):
+        return wired.ingestion.ingest(
+            "doc.docx",
+            raw,
+            content_hash or DocumentParser.content_hash(raw),
+            name_override=name,
+            version_override=version,
+        )
+
+    @staticmethod
+    def _repair(wired, monkeypatch, head_version="ТЕСТ 1 ред. 1"):
+        import src.dvd_service.services.version_repair as version_repair
+        from tests.conftest import FakeOllama
+
+        def head(system, user, schema):
+            return {"name": "", "version": head_version, "level": "federal"}
+
+        monkeypatch.setattr(version_repair, "create_llm", lambda: FakeOllama(head))
+        return version_repair.VersionRepairService(
+            wired.qdrant, wired.editor, VersionDetector()
+        )
+
+    def _payload_versions(self, wired, name):
+        return {pl.get("version") for pl in wired.qdrant.points_by_name(name)}
+
+    def test_document_number_becomes_the_detected_edition(
+        self, wired, sample_raw, monkeypatch
+    ):
+        doc = self._ingest(wired, sample_raw, "СП 2.4.3648-20", "3648")
+
+        report = self._repair(wired, monkeypatch).run()
+
+        assert report["repaired"] == 1
+        assert wired.registry.versions("СП 2.4.3648-20") == ["ТЕСТ 1 ред. 1"]
+        assert self._payload_versions(wired, "СП 2.4.3648-20") == {"ТЕСТ 1 ред. 1"}
+        assert wired.registry.get_document(doc["doc_id"])["version"] == "ТЕСТ 1 ред. 1"
+        # a system correction, not a human edit
+        assert not any(
+            "manual_edited_at" in pl
+            for pl in wired.qdrant.points_by_name("СП 2.4.3648-20")
+        )
+
+    def test_without_a_detected_edition_the_designation_replaces_the_number(
+        self, wired, sample_raw, monkeypatch
+    ):
+        self._ingest(wired, sample_raw, "СП 2.4.3648-20", "3648")
+
+        self._repair(wired, monkeypatch, head_version="").run()
+
+        assert wired.registry.versions("СП 2.4.3648-20") == ["СП 2.4.3648-20"]
+
+    def test_real_years_and_unresolvable_unknowns_are_left_alone(
+        self, wired, sample_raw, monkeypatch
+    ):
+        self._ingest(wired, sample_raw, "СП 42.13330.2016", "2016")
+        self._ingest(wired, sample_raw, "Тестовые Нормы", "unknown", "other-hash")
+
+        report = self._repair(wired, monkeypatch, head_version="").run()
+
+        assert wired.registry.versions("СП 42.13330.2016") == ["2016"]
+        assert wired.registry.versions("Тестовые Нормы") == ["unknown"]
+        assert report["repaired"] == 0 and report["unchanged"] == 1
+
+    def test_unknown_edition_takes_a_detected_one(self, wired, sample_raw, monkeypatch):
+        self._ingest(wired, sample_raw, "Тестовые Нормы", "unknown")
+
+        self._repair(wired, monkeypatch).run()
+
+        assert wired.registry.versions("Тестовые Нормы") == ["ТЕСТ 1 ред. 1"]
+
+    def test_dry_run_reports_and_writes_nothing(self, wired, sample_raw, monkeypatch):
+        self._ingest(wired, sample_raw, "СП 2.4.3648-20", "3648")
+
+        report = self._repair(wired, monkeypatch).run(dry_run=True)
+
+        assert [e["status"] for e in report["editions"]] == ["planned"]
+        assert report["editions"][0]["new_version"] == "ТЕСТ 1 ред. 1"
+        assert wired.registry.versions("СП 2.4.3648-20") == ["3648"]
+
+    def test_an_existing_edition_is_never_overwritten(
+        self, wired, sample_raw, monkeypatch
+    ):
+        self._ingest(wired, sample_raw, "СП 2.4.3648-20", "3648")
+        wired.ingestion.update(
+            "СП 2.4.3648-20",
+            "doc.docx",
+            sample_raw,
+            "different-hash",
+            version_override="ТЕСТ 1 ред. 1",
+        )
+
+        report = self._repair(wired, monkeypatch).run()
+
+        assert report["conflicts"] == 1
+        assert wired.registry.versions("СП 2.4.3648-20") == ["3648", "ТЕСТ 1 ред. 1"]
+
+    def test_a_second_run_finds_nothing(self, wired, sample_raw, monkeypatch):
+        self._ingest(wired, sample_raw, "СП 2.4.3648-20", "3648")
+        repair = self._repair(wired, monkeypatch)
+        repair.run()
+
+        assert repair.candidates() == []

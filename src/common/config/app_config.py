@@ -157,6 +157,9 @@ class Settings(BaseSettings):
         3600.0  # seconds between sweeps; 0 disables the timer
     )
     tagging_max_attempts: int = 5
+    # Relabel editions stored by the old version-from-name heuristic («СП 2.4.3648-20» as
+    # «3648») once after each startup, with the same delay as the tagging sweep. Idempotent.
+    version_repair_on_startup: bool = True
 
     # --- Search ---
     search_limit: int = 10
