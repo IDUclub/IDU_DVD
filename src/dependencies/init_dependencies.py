@@ -44,6 +44,7 @@ from src.dvd_service.services.dvd_service import (
 )
 from src.dvd_service.services.tagging_backfill import TaggingBackfillService
 from src.dvd_service.services.user_index_service import UserIndexService
+from src.dvd_service.services.version_repair import VersionRepairService
 from src.system_service.controllers import SystemController
 
 log = structlog.get_logger(__name__)
@@ -242,6 +243,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     tagging_backfill = TaggingBackfillService(
         qdrant, registry, territory, version_detector, jobs, s
     )
+    version_repair = VersionRepairService(qdrant, editor, version_detector)
     user_index_service = UserIndexService(
         qdrant,
         redis,
@@ -283,6 +285,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         library=library,
         tags=tags,
         tagging_backfill=tagging_backfill,
+        version_repair=version_repair,
         user_index_registry=user_index_registry,
         user_index_service=user_index_service,
         system=system,

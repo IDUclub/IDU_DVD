@@ -43,7 +43,7 @@ class DirectDocumentIn(BaseModel):
     """One document to ingest directly. Only ``name`` and a non-empty ``fragments`` are required."""
 
     name: str = Field(..., min_length=1)
-    version: str | None = None  # else trailing 4-digit group of the name, else "1"
+    version: str | None = None  # else trailing year (1900–2099) of the name, else "1"
     doc_type: str | None = None
     corpus: str | None = None
     lang: str | None = None

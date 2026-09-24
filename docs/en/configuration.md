@@ -164,6 +164,7 @@ another `/api`. This applies to catalogue queries and health checks as well.
 | `DVD_TAGGING_BACKFILL_DELAY` | `30` | seconds after startup before the first backfill sweep |
 | `DVD_TAGGING_BACKFILL_INTERVAL` | `3600` | seconds between sweeps; `0` disables the timer |
 | `DVD_TAGGING_MAX_ATTEMPTS` | `5` | automatic attempts per document before it is left to a human |
+| `DVD_VERSION_REPAIR_ON_STARTUP` | `true` | relabel editions stored by the old version heuristic once after startup (see `POST /documents/version-repair`) |
 
 The sweep deliberately runs *after* startup rather than during it (it makes LLM and HTTP calls),
 and the timer matters as much as the startup run: without it, a document that arrived during an
