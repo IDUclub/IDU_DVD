@@ -97,14 +97,14 @@ class VersionRepairService:
                 entry["texts"].append(payload["text"])
         result = []
         for entry in documents.values():
-            bogus = sorted(v for v in entry["versions"] if is_bogus_version(entry["name"], v))
+            bogus = sorted(
+                v for v in entry["versions"] if is_bogus_version(entry["name"], v)
+            )
             if bogus:
                 result.append({**entry, "versions": bogus})
         return result
 
-    def _new_version(
-        self, document: dict, old: str, client_factory
-    ) -> str | None:
+    def _new_version(self, document: dict, old: str, client_factory) -> str | None:
         """The label ingestion would give this edition today, or ``None`` to leave it."""
         name = document["name"]
         if year := extract_version_from_name(name):
@@ -161,7 +161,9 @@ class VersionRepairService:
                     except ValueError as exc:
                         # Most often the new label is already another edition of this name.
                         outcome.update(status="conflict", error=str(exc))
-                    except Exception as exc:  # noqa: BLE001 — one document must not stop the sweep
+                    except (
+                        Exception
+                    ) as exc:  # noqa: BLE001 — one document must not stop the sweep
                         outcome.update(status="failed", error=str(exc))
                     key = {
                         "repaired": "repaired",
