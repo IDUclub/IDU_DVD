@@ -328,6 +328,12 @@ already indexed nodes. Reprocess affected source files using the document reload
 reviewing the target document/editions and retaining the originals. A metadata/name backfill or
 a delta update is insufficient to guarantee replacement of damaged trees.
 
+`dvd-parser-6` keeps a document code wrapped onto the next line («СП\n17.13330», «ГОСТ\n12.4.026»)
+in the clause that names the document. Such a line is not a clause number: clause numbers have at
+most three digits per level, and a line ending in a designation prefix (`СП`, `ГОСТ`, `СанПиН`, `п.`,
+`№`, …) is always continued. Documents ingested earlier keep the cut fragments and the shifted
+clause numbers until they are reparsed (`POST /documents/reparse`), which needs the stored original.
+
 Regression: `pytest tests/unit/test_numbering_regression.py` exercises DOCX → logical parts →
 structure → hierarchy → real in-memory Qdrant search, with an adverse LLM double. It verifies that
 `52 / 3.3` returns the actual provision and its editorial note, excluding the reference inside 3.2.
