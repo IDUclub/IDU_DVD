@@ -15,6 +15,7 @@ from src.api_clients import ChatClient
 from src.common.config import Settings
 from src.dvd_service.modules.docx_reader import DocxReader
 from src.dvd_service.modules.range_partitioning import RangePartitioner
+from src.dvd_service.modules.reference_patterns import DESIGNATION_PREFIXES
 from src.dvd_service.modules.source_structure import SourceStructure
 from src.dvd_service.modules.windowing import (
     chat_window,
@@ -25,12 +26,17 @@ from src.dvd_service.modules.windowing import (
 
 log = structlog.get_logger(__name__)
 
-PARSER_VERSION = "dvd-parser-5"  # Preserve every structural node during final assembly
+PARSER_VERSION = (
+    "dvd-parser-6"  # Keep designation codes wrapped onto a new line in their clause
+)
 
 SKIP_CATEGORIES = {"Header", "Footer", "PageBreak"}
 
+# Clause numbers have up to three digits per level (as SourceStructure.NUMBER). A longer
+# group is a designation code wrapped onto a new line: "СП\n59.13330 и СП 136.13330."
+CLAUSE_NUMBER = r"\d{1,3}(?:\.\d{1,3})*"
 LIST_MARKER = re.compile(
-    r"^\s*(\d+(?:\.\d+)*[.)]?|\w[.)]|[IVXLCDM]+[.)]|[-*•·–—‣◦])\s+\S", re.U
+    rf"^\s*({CLAUSE_NUMBER}[.)]?|\w[.)]|[IVXLCDM]+[.)]|[-*•·–—‣◦])\s+\S", re.U
 )
 # Count the introduction, all item text/markers and the spaces used by _merge_blocks.
 STRUCTURAL_GROUP_MAX_CHARS = 512
@@ -38,7 +44,7 @@ TERMINALS = (".", "!", "?", ";", ":", "…", "。", "！", "？", "»", '"', ")"
 OPEN_START = ("[", "(", "«", '"')
 # A new line can start a list item; an inline number may be a reference or date.
 MARKER_INLINE = re.compile(
-    r"\n[ \t]*(?=(?:\d+(?:\.\d+)*[.)]?|[а-яёa-z][.)]|[IVXLCDM]+[.)]|[-*•·–—‣◦])\s)",
+    rf"\n[ \t]*(?=(?:{CLAUSE_NUMBER}[.)]?|[а-яёa-z][.)]|[IVXLCDM]+[.)]|[-*•·–—‣◦])\s)",
     re.I | re.U,
 )
 RU_ABBR = {
@@ -68,7 +74,16 @@ RU_ABBR = {
 SENT_BOUND = re.compile(r'[.!?…]\s+(?=[«"(\[]?[A-ZА-ЯЁ0-9])')
 # A part with its OWN number must not merge into the previous one (Stage-1.5 guard); dashes/bullets excluded.
 NUMBERED_HEAD = re.compile(
-    r"^\s*(\d+(?:\.\d+)+[.)]?|\d+[.)]|[IVXLCDM]+[.)]|[а-яёa-z][.)])\s+\S", re.I | re.U
+    rf"^\s*(\d{{1,3}}(?:\.\d{{1,3}})+[.)]?|\d{{1,3}}[.)]|[IVXLCDM]+[.)]|[а-яёa-z][.)])\s+\S",
+    re.I | re.U,
+)
+# A line ending in a document prefix is continued by that document's code on the next
+# line, even when the code looks like a clause number: "ГОСТ\n12.4.026 Знаки".
+DESIGNATION_TAIL = re.compile(
+    r"(?:^|[\s(«\"])(?:"
+    + "|".join(p.replace(" ", r"\s+") for p in (*DESIGNATION_PREFIXES, "ГН"))
+    + r"|№|N|п\.|пп\.)\s*$",
+    re.U,
 )
 
 
@@ -78,6 +93,11 @@ def starts_new_marker(text: str) -> bool:
 
 def is_numbered_head(text: str) -> bool:
     return bool(NUMBERED_HEAD.match(text.strip()))
+
+
+def continues_designation(prev: str, cur: str) -> bool:
+    """``cur`` carries on the document designation that ``prev`` ends with."""
+    return bool(DESIGNATION_TAIL.search(prev)) and cur.lstrip()[:1].isdigit()
 
 
 def _first_alpha_lower(text: str) -> bool:
@@ -283,8 +303,20 @@ class DocumentParser:
             out.append(tail)
         return out or [text]
 
+    @staticmethod
+    def _line_segments(text: str) -> list[str]:
+        """Split at lines that start a marker, not at a wrapped designation code."""
+        segments, start = [], 0
+        for m in MARKER_INLINE.finditer(text):
+            if continues_designation(text[start : m.start()], text[m.end() :]):
+                continue
+            segments.append(text[start : m.start()])
+            start = m.end()
+        segments.append(text[start:])
+        return [s.strip() for s in segments if s.strip()]
+
     def _split_block(self, text: str) -> list[str]:
-        segments = [s.strip() for s in MARKER_INLINE.split(text) if s.strip()]
+        segments = self._line_segments(text)
         if not self.settings.split_sentences or SourceStructure.starts_part(text):
             return segments
         out: list[str] = []
@@ -452,6 +484,19 @@ class DocumentParser:
                 cursor = pos + len(piece)
         if units:
             units[0]["char_start"] = 0
+        # A code wrapped into the next paragraph stays in the unit that names its document.
+        joined = units[:1]
+        for unit in units[1:]:
+            prev = joined[-1]
+            if prev["category"] != "Table" and unit["category"] != "Table":
+                prev_text = source_text[prev["char_start"] : unit["char_start"]]
+                if continues_designation(prev_text, source_text[unit["char_start"] :]):
+                    prev["src_ids"] = sorted({*prev["src_ids"], *unit["src_ids"]})
+                    continue
+            joined.append(unit)
+        units = joined
+        for i, unit in enumerate(units):
+            unit["id"] = i
         for i, unit in enumerate(units):
             unit["char_end"] = (
                 units[i + 1]["char_start"] if i + 1 < len(units) else len(source_text)
@@ -522,6 +567,10 @@ class DocumentParser:
             llm_dec = reconcile(decisions)
         final = ["new"]
         for i in range(1, n):
+            if continues_designation(blocks[i - 1]["text"], blocks[i]["text"]):
+                # Source structure is misread here: the "number" is a document code.
+                final.append("continuation")
+                continue
             final.append(
                 structural_boundaries.get(
                     i, heur[i] if heur[i] != "uncertain" else llm_dec.get(i, "new")

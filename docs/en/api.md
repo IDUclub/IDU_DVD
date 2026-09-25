@@ -104,7 +104,8 @@ Form fields:
 - `name` — document name/designation to override LLM detection (optional). The name keys the
   version registry and the update/delete endpoints, so setting it explicitly is recommended;
 - `version` — a version string to override auto-detection (optional). Without it, the trailing
-  standalone 4-digit group of the name is used when present (`СП 2.13130.2020` → `2020`),
+  standalone year (1900–2099) of the name is used when present (`СП 2.13130.2020` → `2020`; a
+  document number such as `3648` in `СП 2.4.3648-20` is not a year),
   otherwise the version is LLM-detected;
 - `doc_type` — document class (`document` / `regulation` / `article` / `book` / `web` / …) (optional);
 - `corpus` — logical corpus/namespace the document belongs to (optional);
@@ -165,7 +166,7 @@ equality.
 
 Both versions of the document live in the same structure (same `doc_id`); filtering search or
 `GET /documents` by either version returns a complete document. The version comes from the
-`version` form field, else the trailing 4-digit group of the name, else LLM detection; if the
+`version` form field, else the trailing year (1900–2099) of the name, else LLM detection; if the
 resulting string already exists for this name, it gets a content-hash suffix (`… (ред. a1b2c3)`).
 
 Unknown name — `404`; exact text duplicate — `400`; otherwise `202` + a job id (see
@@ -220,7 +221,7 @@ document — same collection, same payload schema, registered in the registry �
 The body is a JSON **array** of documents (a single document is an array of one). Only `name`
 (document) and `text` (fragment) are required; everything else has a default. Fragments are stored
 in array order — `order` is the array position and neighbours are linked (`prev_id`/`next_id`) so
-the search context assembler works out of the box. `version` defaults to the trailing 4-digit group
+the search context assembler works out of the box. `version` defaults to the trailing year (1900–2099)
 of the name (e.g. `СП 2.13130.2020` → `2020`), else `"1"`. `embedding_provider` is reserved for
 choosing the vectorizer later; if given it must match the configured provider (otherwise the
 document's job fails).
@@ -486,6 +487,7 @@ so a document that reliably kills the process cannot take the service down on ev
 | `POST` | `/documents/jobs/{job_id}/retry` | put a dead-lettered job back on the queue |
 | `POST` | `/documents/{name}/reindex` | re-run the pipeline over the stored original, no upload |
 | `POST` | `/documents/reparse` | reparse all shared-library documents and editions |
+| `POST` | `/documents/version-repair` | relabel editions stored by the old version heuristic (`dry_run` by default) |
 
 `POST /documents/reparse` requires admin access and no request body. In the panel, use
 **Documents → Reparse all documents**. Table filters do not restrict the batch. The `202`
@@ -497,6 +499,18 @@ retained; fragments, manual fragment edits, tags, and vectors are rebuilt. The o
 index is replaced after parsing and embedding succeed. The Qdrant replacement is not atomic;
 write failures are recovered by retrying from the retained original. Monitor progress in the
 processing queue; pending work survives service restarts.
+
+`POST /documents/version-repair?dry_run=true|false` (admin) relabels shared-library editions that
+only the old heuristic could have produced: a document number read as a year (`СП 2.4.3648-20`
+stored as `3648`) or `unknown`. The new label is what ingestion gives today — a year from the
+name, else the LLM head pass, else (for a number) the designation itself; an `unknown` edition is
+kept when the head pass still finds nothing. Payloads, the version registry and the document
+summary change together, without `manual_edited_at`; a label that already exists as another
+edition is reported as `conflict` and left alone. The response lists every edition with
+`old_version`, `new_version` and `status` (`planned`, `repaired`, `unchanged`, `conflict`,
+`failed`). The same repair runs once after every startup (`DVD_VERSION_REPAIR_ON_STARTUP`); it is
+idempotent. No Kafka event is sent: NormGraph refreshes the labels on its next reconcile
+(`POST /sync/reconcile` or restart) without re-extracting restrictions.
 
 The panel refreshes jobs every 2.5 seconds: running documents appear first, followed by
 waiting documents in queue order with their positions. All active documents are shown,
@@ -670,6 +684,29 @@ Filters accepted by `POST /search*`, `GET /documents` and `GET /library/document
 | `document_level` | exact level match |
 | `territory_ids` | a territory **and everything under it**, plus the higher-level documents **in force on it** — one OR over the stored ancestor chain |
 | `tagging_status` | `pending` lists the documents still awaiting automatic tagging |
+
+### Scenario territory
+
+A request that names a `scenario_id` — `POST /search*`, `/search/structure|names|filtered`, the
+`search_*` MCP tools, `GET /documents`, `GET /documents/available`, `GET /library/documents`,
+`GET /scopes` and the `list_documents` / `get_document_scopes` MCP tools — sees only the part of
+the **shared** corpus in force where the scenario is. The project's own documents are never
+narrowed.
+
+The territories come from the Urban API: scenario → project → region, then the project boundary
+(`/projects/{id}/territory`) is intersected with the tree one level at a time
+(`/territory/{id}/intersecting_territories`) down to the deepest territories it touches —
+«город Светогорск», not the whole Выборгский район. The filter then works like `territory_ids`
+with those territories: their own documents, everything inside them and every level above
+(district, region, Russia). Documents with no territory yet (tagging pending) always pass.
+
+- A regional project covers its whole region; without a boundary, or when the Urban API fails
+  part-way, the region is used; if the scenario itself cannot be looked up, nothing is filtered.
+  An unknown scenario is `404`.
+- Explicit `territory_ids` replace the scenario's territories.
+- A named document (`name`, `document_names`, `doc_id`) is found wherever it applies.
+- `scenario_territory_filter=false` (body field or query parameter) switches it off for one
+  request, `DVD_SCENARIO_TERRITORY_FILTER=false` for the service.
 
 Setting a territory manually: `territory_id` as a form field on `POST`/`PATCH`/`PUT /documents` and
 `/user-documents`, as a field of the direct-ingestion DTO, or via `PATCH
@@ -879,6 +916,7 @@ All tools are synchronous and share the same `Dependencies` singleton as the HTT
 
 `search_*` also accept `parent_id` — search only inside one node (e.g. within a table you already found) instead of across the corpus.
 Every `search_*` tool and `list_documents` also accept `document_level` and `territory_ids`; call `get_document_scopes` first — it is the only place those ids come from.
+With `scenario_id`, `search_*`, `list_documents` and `get_document_scopes` narrow the shared corpus to the scenario's territories (see *Scenario territory*); `scenario_territory_filter=false` turns that off.
 | `find_document` | resolve documents by lookup key / external id (`key`) |
 | `get_tags` | all unique tags in the collection, sorted alphabetically — no parameters |
 | `get_document_scopes` | levels and territories the collection actually holds, with document counts — where an agent gets `territory_ids` |

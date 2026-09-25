@@ -98,8 +98,9 @@ jobs:
         ports:
           - 11434:11434
       minio:
-        # quay.io mirror, not Docker Hub: sidesteps Docker Hub's anonymous pull rate limit.
-        image: quay.io/minio/minio:latest
+        # MinIO no longer publishes public images (quay.io and Docker Hub answer 401);
+        # Chainguard builds the same server from source, entrypoint minio.
+        image: chainguard/minio:latest
         env:
           MINIO_ROOT_USER: minioadmin
           MINIO_ROOT_PASSWORD: minioadmin

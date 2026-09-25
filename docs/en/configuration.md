@@ -164,6 +164,7 @@ another `/api`. This applies to catalogue queries and health checks as well.
 | `DVD_TAGGING_BACKFILL_DELAY` | `30` | seconds after startup before the first backfill sweep |
 | `DVD_TAGGING_BACKFILL_INTERVAL` | `3600` | seconds between sweeps; `0` disables the timer |
 | `DVD_TAGGING_MAX_ATTEMPTS` | `5` | automatic attempts per document before it is left to a human |
+| `DVD_VERSION_REPAIR_ON_STARTUP` | `true` | relabel editions stored by the old version heuristic once after startup (see `POST /documents/version-repair`) |
 
 The sweep deliberately runs *after* startup rather than during it (it makes LLM and HTTP calls),
 and the timer matters as much as the startup run: without it, a document that arrived during an
@@ -243,6 +244,9 @@ the ingestion path apart; deletion of a directly-ingested document still emits t
 |----------|---------|-------------|
 | `DVD_SEARCH_LIMIT` | `10` | default number of results |
 | `DVD_MAX_CONTEXT_HEIGHT` | `6` | cap on context width (neighbours before and after) |
+| `DVD_SCENARIO_TERRITORY_FILTER` | `true` | a request with `scenario_id` sees only the shared documents in force where the scenario is (see *Scenario territory* in `api.md`) |
+| `DVD_SCENARIO_TERRITORY_CACHE_TTL` | `3600` | seconds a scenario's resolved territories are kept (a fallback only 60 s) |
+| `DVD_SCENARIO_TERRITORY_MAX_REQUESTS` | `100` | Urban API intersection lookups per scenario; when spent, the descent stops at the current level |
 
 ### Reference linking
 

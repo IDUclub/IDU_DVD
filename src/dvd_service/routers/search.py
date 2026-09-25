@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 
 from src.api_clients import ScenarioNotFound, UrbanApiError
@@ -21,6 +21,11 @@ from src.dvd_service.dto import (
 from src.dvd_service.dto.fragment_search import (
     FragmentSearchRequest,
     FragmentSearchResponse,
+)
+from src.dvd_service.routers._scenario_scope import (
+    SCENARIO_FILTER_DESCRIPTION,
+    SCENARIO_ID_DESCRIPTION,
+    scenario_condition,
 )
 from src.dvd_service.services.dvd_service import SearchService, TagsService
 from src.dvd_service.services.fragment_search import FragmentSearchService
@@ -133,13 +138,24 @@ async def get_tags(tags_svc: TagsService = Depends(Dependencies.get_tags)):
 
 
 @router.get("/scopes", response_model=ScopesResponse)
-async def get_scopes(tags_svc: TagsService = Depends(Dependencies.get_tags)):
+async def get_scopes(
+    scenario_id: str | None = Query(None, description=SCENARIO_ID_DESCRIPTION),
+    scenario_territory_filter: bool = Query(
+        True, description=SCENARIO_FILTER_DESCRIPTION
+    ),
+    tags_svc: TagsService = Depends(Dependencies.get_tags),
+    user_id: str | None = Depends(get_effective_user_id),
+):
     """Document levels and territories actually present in the collection, with counts.
 
     What a filter control (or an agent) should offer: territories with no documents behind
-    them would only produce empty result sets.
+    them would only produce empty result sets. ``scenario_id`` limits it to the documents in
+    force where the scenario is.
     """
-    return await run_in_threadpool(tags_svc.get_scopes)
+    condition = await scenario_condition(
+        scenario_id, user_id, None, scenario_territory_filter
+    )
+    return await run_in_threadpool(tags_svc.get_scopes, condition)
 
 
 def _require_user_index_scope(req: SearchRequest) -> SearchRequest:

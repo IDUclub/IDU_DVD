@@ -520,3 +520,36 @@ def test_table_survives_final_assembly(parser):
     table, subclause = clause["children"]
     assert table["html"] == "<table>данные</table>"
     assert subclause["numbering"] == "1.1"
+
+
+def test_designation_code_on_the_next_line_stays_in_its_clause(parser, fake_ollama):
+    # СП 257.1325800.2020: Word wraps a code after its prefix; the wrapped part looks
+    # like a clause number but continues the requirement that names the document.
+    blocks = raw(
+        "6.1.11 Эксплуатируемые кровли гостиниц следует проектировать с учетом СП\n"
+        "17.13330 и СП 160.1325800.",
+        "Высоту помещений номеров следует принимать в соответствии с СП\n"
+        "54.13330.2016 (пункт 5.8).",
+        "При проектировании стоянок автомобилей следует соблюдать СП",
+        "113.13330. Расчетную потребность мест определяют заданием.",
+        "Место для курения обозначают знаками согласно ГОСТ",
+        "12.4.026 и оборудуют урнами.",
+        "6.1.12 Пассажирские лифты предусматривают в соответствии с СП 118.13330.",
+    )
+    parts = parser.to_logical_parts(blocks, fake_ollama)
+    source, _ = parser.source_index(blocks)
+    assert "".join(p["source_text"] for p in parts) == source
+    assert [" ".join(p["text"].split()) for p in parts] == [
+        "6.1.11 Эксплуатируемые кровли гостиниц следует проектировать с учетом СП "
+        "17.13330 и СП 160.1325800.",
+        "Высоту помещений номеров следует принимать в соответствии с СП "
+        "54.13330.2016 (пункт 5.8).",
+        # The fixture splits sentences; only the code must join its document prefix.
+        "При проектировании стоянок автомобилей следует соблюдать СП 113.13330.",
+        "Расчетную потребность мест определяют заданием.",
+        "Место для курения обозначают знаками согласно ГОСТ 12.4.026 и оборудуют урнами.",
+        "6.1.12 Пассажирские лифты предусматривают в соответствии с СП 118.13330.",
+    ]
+    assert parts[2]["src_ids"] == [2, 3] and parts[4]["src_ids"] == [4, 5]
+    StructureTagger(parser.settings).tag(parts, fake_ollama)
+    assert [p["numbering"] for p in parts] == ["6.1.11", "", "", "", "", "6.1.12"]

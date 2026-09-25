@@ -35,6 +35,7 @@ from src.common.db.minio_client import DocumentStorage
 from src.common.db.qdrant_client import (
     QdrantRepository,
     ScopedQdrantRepository,
+    scenario_scope_condition,
     scope_conditions,
     shared_only_condition,
     user_scope_conditions,
@@ -1453,6 +1454,43 @@ class IngestionService:
         return result
 
 
+def scenario_territory_condition(
+    territory: TerritoryResolver | None,
+    scenario_id: str | int | None,
+    user_id: str | None,
+) -> Filter | None:
+    """The shared-corpus condition for a scenario's territories, or ``None`` for none.
+
+    ``None`` also when the filter is switched off or nothing is known about where the
+    scenario is — the shared corpus is then searched as before.
+    """
+    if scenario_id is None or str(scenario_id).strip() == "" or territory is None:
+        return None
+    if not user_id:
+        raise ValueError("scenario_id requires an authenticated user")
+    scope = territory.scenario_scope(scenario_id, user_id)
+    if scope is None:
+        return None
+    return scenario_scope_condition(scope.territory_ids, scope.ancestor_ids)
+
+
+def scenario_listing_condition(
+    territory: TerritoryResolver | None,
+    scenario_id: str | int | None,
+    user_id: str | None,
+    *,
+    territory_ids: list[int] | None = None,
+    enabled: bool = True,
+) -> Filter | None:
+    """``scenario_territory_condition`` for a shared-corpus listing.
+
+    Explicit ``territory_ids`` say where to look instead, exactly as in search.
+    """
+    if not enabled or territory_ids:
+        return None
+    return scenario_territory_condition(territory, scenario_id, user_id)
+
+
 def territory_ancestors(
     territory: TerritoryResolver | None, territory_ids: list[int] | None
 ) -> list[int] | None:
@@ -1582,16 +1620,37 @@ class SearchService:
                 must=user_scope_conditions(req.user_id, [str(project_id)])
             )
             if req.include_shared:
-                return Filter(
-                    must=must,
-                    should=[Filter(must=[shared_only_condition()]), user_scope],
-                )
+                shared = [shared_only_condition()]
+                if territory := self._scenario_territory(req):
+                    # The project's own documents are already scoped; only the shared
+                    # corpus is narrowed to where the scenario is.
+                    shared.append(territory)
+                return Filter(must=must, should=[Filter(must=shared), user_scope])
             return Filter(must=must + user_scope.must)
 
         # Default: exclude user-scoped documents so unscoped callers see no behavior
         # change now that user indices share this collection.
         must.append(shared_only_condition())
         return Filter(must=must)
+
+    def _scenario_territory(self, req: SearchRequest) -> Filter | None:
+        """The scenario's territory condition, unless the request overrides it.
+
+        Explicit ``territory_ids`` say where to look instead; a named document is shown
+        wherever it applies, so the user never loses the document they asked for.
+        """
+        if (
+            not req.scenario_id
+            or not req.scenario_territory_filter
+            or req.territory_ids
+            or req.name
+            or req.document_names
+            or req.doc_id
+        ):
+            return None
+        return scenario_territory_condition(
+            self.territory, req.scenario_id, req.user_id
+        )
 
     def _expand_context(self, payload: dict, height: int) -> str:
         """Append `height` fragments before and after along the prev_id/next_id chain."""
@@ -1719,6 +1778,7 @@ class DocumentsService:
         territory_ids: list[int] | None = None,
         tagging_status: str | None = None,
         ancestor_ids: list[int] | None = None,
+        scenario_condition: Filter | None = None,
     ) -> Filter | None:
         must = []
         if name:
@@ -1739,6 +1799,8 @@ class DocumentsService:
         else:
             # Default: exclude user-scoped documents — same backward-compat fix as search.
             must.append(shared_only_condition())
+            if scenario_condition is not None:
+                must.append(scenario_condition)
         return Filter(must=must)
 
     def list_documents(
@@ -1755,6 +1817,7 @@ class DocumentsService:
         document_level: str | None = None,
         territory_ids: list[int] | None = None,
         tagging_status: str | None = None,
+        scenario_condition: Filter | None = None,
     ) -> DocumentListResponse:
         """Aggregated, per-document view, optionally narrowed by the given filters.
 
@@ -1763,6 +1826,7 @@ class DocumentsService:
         applied after aggregation, since upload time is a per-document fact, not an indexed
         per-fragment field. ``user_id``/``project_ids`` scope the listing to one or more project
         document indices; both default to the shared/regular document corpus.
+        ``scenario_condition`` (see ``scenario_listing_condition``) narrows the shared corpus.
         """
         payloads = self.qdrant.scroll_payloads(
             self._build_filter(
@@ -1776,6 +1840,7 @@ class DocumentsService:
                 territory_ids,
                 tagging_status,
                 territory_ancestors(self.territory, territory_ids),
+                scenario_condition,
             )
         )
 
@@ -1927,6 +1992,7 @@ class LibraryService:
         document_level: str | None = None,
         territory_ids: list[int] | None = None,
         tagging_status: str | None = None,
+        scenario_condition: Filter | None = None,
     ) -> DocumentList:
         """Every document, or only those matching the administrative-scope filters.
 
@@ -1941,6 +2007,8 @@ class LibraryService:
             territory_ancestors(self.territory, territory_ids),
         )
         conditions.append(shared_only_condition())
+        if scenario_condition is not None:
+            conditions.append(scenario_condition)
         payloads = self.qdrant.scroll_payloads(Filter(must=conditions))
         counts: dict[str, int] = {}
         first: dict[str, dict] = {}
@@ -1961,6 +2029,7 @@ class LibraryService:
         territory_ids: list[int] | None = None,
         user_id: str | None = None,
         project_ids: list[str] | None = None,
+        scenario_condition: Filter | None = None,
     ) -> AvailableDocumentListResponse:
         """List fully indexed documents in the shared corpus or one user project.
 
@@ -1984,6 +2053,8 @@ class LibraryService:
             conditions.extend(user_scope_conditions(user_id, project_ids or []))
         else:
             conditions.append(shared_only_condition())
+            if scenario_condition is not None:
+                conditions.append(scenario_condition)
 
         payload_by_doc: dict[str, dict] = {}
         payload_by_version: dict[tuple[str, str], dict] = {}
@@ -2206,9 +2277,13 @@ class DocumentEditorService:
         return old, new, related
 
     def _rename_version(
-        self, old: str, new: str, points: list[dict], edited_at: str
+        self, old: str, new: str, points: list[dict], edited_at: str | None
     ) -> tuple[set[str], set[str]]:
-        """Rewrite version labels in batches, preserving other editions and all vectors."""
+        """Rewrite version labels in batches, preserving other editions and all vectors.
+
+        ``edited_at`` stamps ``manual_edited_at``; ``None`` marks a system correction, which
+        must not look like a human decision.
+        """
         groups: dict[str, tuple[dict, list[str]]] = {}
         changed_ids: set[str] = set()
         fields = {"version"}
@@ -2228,7 +2303,8 @@ class DocumentEditorService:
             if not changes:
                 continue
             fields.update(changes)
-            changes["manual_edited_at"] = edited_at
+            if edited_at is not None:
+                changes["manual_edited_at"] = edited_at
             key = json.dumps(changes, sort_keys=True)
             groups.setdefault(key, (changes, []))[1].append(point["id"])
             changed_ids.add(point["id"])
@@ -2237,7 +2313,14 @@ class DocumentEditorService:
         self.registry.rename_version(points[0]["name"], old, new)
         return changed_ids, fields
 
-    def update_document(self, doc_id: str, updates: dict) -> DocumentUpdateResponse:
+    def update_document(
+        self, doc_id: str, updates: dict, *, manual: bool = True
+    ) -> DocumentUpdateResponse:
+        """Apply edits to every fragment and the Redis summary of one document.
+
+        ``manual=False`` is for system corrections (the version repair): the same writes,
+        without the ``manual_edited_at`` stamp.
+        """
         points = self.qdrant.list_by_doc(doc_id)
         if not points:
             raise KeyError("document not found")
@@ -2262,14 +2345,15 @@ class DocumentEditorService:
             changes["lookup_keys"] = build_lookup_keys(
                 first.get("name", ""), external_ids
             )
-        edited_at = datetime.now(timezone.utc).isoformat()
+        edited_at = datetime.now(timezone.utc).isoformat() if manual else None
         changed_ids: set[str] = set()
         fields = set(changes)
         if rename is not None:
             changed_ids, version_fields = self._rename_version(*rename, edited_at)
             fields.update(version_fields)
         if changes:
-            changes["manual_edited_at"] = edited_at
+            if edited_at is not None:
+                changes["manual_edited_at"] = edited_at
             self.qdrant.set_document_payload(doc_id, changes)
             changed_ids.update(p["id"] for p in points)
 
@@ -2377,13 +2461,17 @@ class TagsService:
         sorted_tags = sorted(tags)
         return TagsResponse(count=len(sorted_tags), tags=sorted_tags)
 
-    def get_scopes(self) -> ScopesResponse:
+    def get_scopes(self, scenario_condition: Filter | None = None) -> ScopesResponse:
         """Levels and territories the shared corpus actually uses, with document counts.
 
         Same full scroll as ``get_tags`` — distinct payload values have no cheaper source
         here, and the two are used the same way (populate a filter control before filtering).
+        ``scenario_condition`` limits it to the part of the corpus in force in a scenario.
         """
-        payloads = self.qdrant.scroll_payloads(Filter(must=[shared_only_condition()]))
+        conditions = [shared_only_condition()]
+        if scenario_condition is not None:
+            conditions.append(scenario_condition)
+        payloads = self.qdrant.scroll_payloads(Filter(must=conditions))
         levels: set[str] = set()
         territories: dict[int, dict] = {}
         pending: set[str] = set()

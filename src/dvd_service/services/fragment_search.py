@@ -112,6 +112,10 @@ class FragmentSearchService:
                 "types": None,
                 "parent_id": None,
                 "tags": None,
+                # A named document is shown wherever it applies (the names are matched
+                # below, after the scope filter, so the flag must be settled here).
+                "scenario_territory_filter": req.scenario_territory_filter
+                and not (req.name or req.document_names),
             }
         )
         query_filter = self.search_service._build_filter(scope, None)

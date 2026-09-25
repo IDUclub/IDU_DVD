@@ -52,6 +52,20 @@ async def _tagging_backfill_loop(deps) -> None:
         await asyncio.sleep(settings.tagging_backfill_interval)
 
 
+async def _version_repair_once(deps) -> None:
+    """Relabel editions written by the old version heuristic, once, shortly after startup.
+
+    Background for the same reason as the tagging sweep: it may ask the LLM for a document
+    head, and startup must not wait on it.
+    """
+    log = structlog.get_logger("version-repair")
+    await asyncio.sleep(deps.settings.tagging_backfill_delay)
+    try:
+        await run_in_threadpool(deps.version_repair.run)
+    except Exception as exc:  # noqa: BLE001 — a failed repair must not affect serving
+        log.warning("version_repair_failed", error=str(exc))
+
+
 def _start_ingest_workers(deps) -> list[asyncio.Task]:
     """Start the pool that drains the ingestion queue.
 
@@ -87,12 +101,19 @@ async def lifespan(app: FastAPI):
         # Kafka outbox publisher (no-op when DVD_KAFKA_BOOTSTRAP_SERVERS is not set)
         await deps.publisher.start()
         backfill_task = asyncio.create_task(_tagging_backfill_loop(deps))
+        repair_task = (
+            asyncio.create_task(_version_repair_once(deps))
+            if deps.settings.version_repair_on_startup
+            else None
+        )
         ingest_tasks = _start_ingest_workers(deps)
         try:
             async with mcp_app.lifespan(app):
                 yield
         finally:
             backfill_task.cancel()
+            if repair_task is not None:
+                repair_task.cancel()
             # A worker cancelled mid-document leaves its job on the in-flight list, where the
             # next start finds it and requeues it — deliberately not awaited to a clean stop.
             for task in ingest_tasks:

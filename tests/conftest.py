@@ -249,11 +249,13 @@ class FakeQdrantRepo:
             return val in m.any
         return False
 
-    def scroll_payloads(self, query_filter=None, batch=256):
+    def scroll_payloads(self, query_filter=None, batch=256, fields=None):
         payloads = [pl for _vec, pl in self.points.values()]
-        if query_filter is None:
-            return payloads
-        return [pl for pl in payloads if self._matches(pl, query_filter)]
+        if query_filter is not None:
+            payloads = [pl for pl in payloads if self._matches(pl, query_filter)]
+        if fields:
+            payloads = [{k: pl[k] for k in fields if k in pl} for pl in payloads]
+        return payloads
 
     def count(self, query_filter=None) -> int:
         return len(self.scroll_payloads(query_filter))

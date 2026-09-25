@@ -134,6 +134,23 @@ def scope_conditions(
     return conditions
 
 
+def scenario_scope_condition(
+    territory_ids: Sequence[int], ancestor_ids: Sequence[int]
+) -> Filter:
+    """Shared-corpus documents that apply to a scenario's territories.
+
+    The usual territory filter (see ``scope_conditions``) plus the documents that carry no
+    territory yet — tagging still pending or never resolved. Such a document cannot be shown
+    to belong elsewhere, and dropping it could hide a federal norm whose tagging failed.
+    """
+    return Filter(
+        should=[
+            *scope_conditions(territory_ids=territory_ids, ancestor_ids=ancestor_ids),
+            IsEmptyCondition(is_empty=PayloadField(key="territory_path")),
+        ]
+    )
+
+
 class QdrantRepository:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -207,9 +224,16 @@ class QdrantRepository:
         ).points
 
     def scroll_payloads(
-        self, query_filter: Filter | None = None, batch: int = 256
+        self,
+        query_filter: Filter | None = None,
+        batch: int = 256,
+        fields: Sequence[str] | None = None,
     ) -> list[dict]:
-        """All payloads matching ``query_filter`` (paginated scroll until exhausted)."""
+        """All payloads matching ``query_filter`` (paginated scroll until exhausted).
+
+        ``fields`` limits each payload to those keys — a corpus-wide sweep that needs a few
+        identity fields should not pull every fragment's text and table HTML.
+        """
         out: list[dict] = []
         offset = None
         while True:
@@ -218,7 +242,7 @@ class QdrantRepository:
                 scroll_filter=query_filter,
                 limit=batch,
                 offset=offset,
-                with_payload=True,
+                with_payload=list(fields) if fields else True,
             )
             out.extend((r.payload or {}) for r in recs)
             if offset is None:

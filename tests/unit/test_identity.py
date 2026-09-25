@@ -1,6 +1,6 @@
 """Unit tests for src/dvd_service/modules/identity — key derivation helpers.
 
-Focused on ``extract_version_from_name`` (the trailing-4-digit version heuristic used by the
+Focused on ``extract_version_from_name`` (the trailing-year version heuristic used by the
 upload/update endpoints); the other helpers are exercised through the service tests.
 """
 
@@ -23,9 +23,15 @@ class TestExtractVersionFromName:
             ("", None),
             ("12345", None),  # longer digit runs never match partially
             ("1999", "1999"),
+            # a document number is not an edition year
+            ("СП 2.4.3648-20", None),
+            ("СП 2.4.2.4283-26", None),
+            ("СанПиН 1.2.3685-21", None),
+            ("СП 2.4.3648-20, ред. 2022", "2022"),
+            ("Постановление от 4 декабря 2017 г. N 525", "2017"),
         ],
     )
-    def test_extracts_last_standalone_4_digit_group(self, name, expected):
+    def test_extracts_last_standalone_year(self, name, expected):
         assert extract_version_from_name(name) == expected
 
     def test_none_like_input(self):

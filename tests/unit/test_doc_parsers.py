@@ -13,6 +13,7 @@ from src.api_clients import LlmError
 from src.dvd_service.modules.doc_parsers import (
     STRUCTURAL_GROUP_MAX_CHARS,
     DocumentParser,
+    continues_designation,
     is_numbered_head,
     starts_new_marker,
 )
@@ -33,6 +34,39 @@ class TestMarkerDetection:
         assert is_numbered_head("а) перечисление") is True
         assert is_numbered_head("1 без разделителя") is False
         assert is_numbered_head("обычный текст") is False
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "17.13330 и СП 160.1325800.",
+            "113.13330. Расчетную потребность мест определяют заданием.",
+            "54.13330.2016 (пункт 5.8), остальных помещений",
+            "2016 году введены изменения",
+        ],
+    )
+    def test_designation_code_is_not_a_clause_number(self, text):
+        assert starts_new_marker(text) is False
+        assert is_numbered_head(text) is False
+
+    def test_clause_numbers_keep_three_digits_per_level(self):
+        assert starts_new_marker("6.1.11 Эксплуатируемые кровли") is True
+        assert is_numbered_head("100.1 Пункт") is True
+
+    @pytest.mark.parametrize(
+        "prev, cur, expected",
+        [
+            ("согласно ГОСТ", "12.4.026 Знаки", True),
+            ("в соответствии с ГОСТ Р", "21.1101", True),
+            ("по СанПиН", "2.2.1/2.1.1.1200", True),
+            ("требованиями\nСП", "113.13330.", True),
+            ("указанных в п.", "5.8 настоящего", True),
+            ("Требования к зданиям.", "6.1.2 Объемно", False),
+            ("проектировать в СП", "Раздел 5", False),
+            ("ТИСП", "1.1 Пункт", False),
+        ],
+    )
+    def test_continues_designation(self, prev, cur, expected):
+        assert continues_designation(prev, cur) is expected
 
 
 class TestHeuristicBoundary:
@@ -317,6 +351,26 @@ class TestStructuralGrouping:
                 text,
                 "1.2. Ещё подпункт.",
             ]
+
+
+class TestDesignationLineBreaks:
+    def test_wrapped_code_is_not_split_from_its_line(self, settings):
+        text = "6.1.11 Кровли проектируют с учетом ГОСТ\n12.4.026 и СП 17.13330.\n1.2 Пункт"
+        assert DocumentParser(settings)._line_segments(text) == [
+            "6.1.11 Кровли проектируют с учетом ГОСТ\n12.4.026 и СП 17.13330.",
+            "1.2 Пункт",
+        ]
+
+    def test_wrapped_code_paragraph_continues_despite_structure(self, settings):
+        raw = TestStructuralGrouping.raw(
+            ["Место обозначают знаками согласно ГОСТ", "12.4.026 и оборудуют урнами."]
+        )
+        parser = DocumentParser(settings)
+        blocks = parser._split_into_segments(raw)
+        assert parser._assemble_boundaries(blocks, client=None) == [
+            "new",
+            "continuation",
+        ]
 
 
 class TestLlmOutage:
