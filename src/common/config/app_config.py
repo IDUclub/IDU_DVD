@@ -116,6 +116,9 @@ class Settings(BaseSettings):
     # --- Qdrant ---
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str | None = None
+    # Seconds per Qdrant request. The client's own default is 5 s, which a single read of
+    # every fragment of a large document (Градостроительный кодекс) exceeds on prod.
+    qdrant_timeout: int = 30
     qdrant_collection: str = "documents"  # base name (see collection_namespacing)
     # Advisory fallback only: the real dimension is probed from the active vectorizer at
     # startup (see ``probe_embedding_dim`` / ``init_dependencies``) and this value is
