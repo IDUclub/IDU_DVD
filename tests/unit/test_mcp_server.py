@@ -24,6 +24,7 @@ from src.dvd_service.dto import (
     UserIndexInfo,
     UserIndexListResponse,
 )
+from src.dvd_service.modules.territory import ScenarioScopeUnavailable
 
 
 class FakeSearch:
@@ -431,3 +432,42 @@ class TestScopeFilterForwarding:
         _set_singleton_with_documents(fake)
         server.list_documents(document_level="federal", territory_ids=[12639])
         assert fake.scope_calls[-1] == ("federal", [12639], None)
+
+
+class FailingTerritory:
+    def scenario_scope(self, scenario_id, user_id, *, strict=False):
+        if strict:
+            raise ScenarioScopeUnavailable(
+                f"cannot resolve the territory of scenario {scenario_id}: "
+                "Urban API HTTP 403: /v1/scenarios/916"
+            )
+        return None
+
+
+class TestScenarioListings:
+    def _set(self, documents=None, tags=None) -> None:
+        fields = {n: object() for n in Dependencies._FIELDS}
+        fields["territory"] = FailingTerritory()
+        fields["documents"] = documents or FakeDocuments()
+        fields["tags"] = tags or FakeTags()
+        Dependencies().set(**fields)
+
+    def test_list_documents_fails_instead_of_listing_everything(self):
+        documents = FakeDocuments()
+        self._set(documents=documents)
+        with pytest.raises(ToolError, match="scenario 916.*HTTP 403"):
+            server.list_documents(scenario_id="916", user_id="u1")
+        assert documents.calls == []
+
+    def test_scopes_fail_instead_of_counting_everything(self):
+        self._set()
+        with pytest.raises(ToolError, match="scenario 916"):
+            server.get_document_scopes(scenario_id="916", user_id="u1")
+
+    def test_the_filter_can_still_be_switched_off(self):
+        documents = FakeDocuments()
+        self._set(documents=documents)
+        server.list_documents(
+            scenario_id="916", scenario_territory_filter=False, user_id="u1"
+        )
+        assert documents.scenario_conditions == [None]

@@ -1458,17 +1458,20 @@ def scenario_territory_condition(
     territory: TerritoryResolver | None,
     scenario_id: str | int | None,
     user_id: str | None,
+    *,
+    strict: bool = False,
 ) -> Filter | None:
     """The shared-corpus condition for a scenario's territories, or ``None`` for none.
 
     ``None`` also when the filter is switched off or nothing is known about where the
-    scenario is — the shared corpus is then searched as before.
+    scenario is — the shared corpus is then searched as before. ``strict`` raises
+    ``ScenarioScopeUnavailable`` for the latter.
     """
     if scenario_id is None or str(scenario_id).strip() == "" or territory is None:
         return None
     if not user_id:
         raise ValueError("scenario_id requires an authenticated user")
-    scope = territory.scenario_scope(scenario_id, user_id)
+    scope = territory.scenario_scope(scenario_id, user_id, strict=strict)
     if scope is None:
         return None
     return scenario_scope_condition(scope.territory_ids, scope.ancestor_ids)
@@ -1484,11 +1487,14 @@ def scenario_listing_condition(
 ) -> Filter | None:
     """``scenario_territory_condition`` for a shared-corpus listing.
 
-    Explicit ``territory_ids`` say where to look instead, exactly as in search.
+    Explicit ``territory_ids`` say where to look instead, exactly as in search. Unlike a
+    search, a listing claims that what it returns is in force where the scenario is: when
+    that place is unknown it raises ``ScenarioScopeUnavailable`` rather than listing the
+    whole corpus.
     """
     if not enabled or territory_ids:
         return None
-    return scenario_territory_condition(territory, scenario_id, user_id)
+    return scenario_territory_condition(territory, scenario_id, user_id, strict=True)
 
 
 def territory_ancestors(
