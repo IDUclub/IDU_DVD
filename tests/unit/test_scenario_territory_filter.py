@@ -29,6 +29,7 @@ from src.dvd_service.dto.fragment_search import FragmentSearchRequest
 from src.dvd_service.modules.territory import (
     SCENARIO_SOURCE_GEOMETRY,
     SCENARIO_SOURCE_REGION,
+    ScenarioScopeUnavailable,
     TerritoryResolver,
 )
 from src.dvd_service.services.dvd_service import (
@@ -127,6 +128,28 @@ def _client_with(handler) -> UrbanApiClient:
     client = UrbanApiClient(base="http://urban-api.test/api")
     client._client = httpx.Client(transport=httpx.MockTransport(handler))
     return client
+
+
+def test_urban_api_requests_carry_no_user_header():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path.endswith("/territory"):
+            return httpx.Response(200, json={"geometry": BOUNDARY})
+        if "/scenarios/" in request.url.path:
+            return httpx.Response(
+                200, json={"project": {"project_id": 604, "region": {"id": 1}}}
+            )
+        return httpx.Response(200, json={"project_id": 604, "is_regional": False})
+
+    client = _client_with(handler)
+    client.scenario_project(772, "u1")
+    client.project(604, "u1")
+    client.project_geometry(604, "u1")
+
+    assert len(seen) == 3
+    assert all("x-user-id" not in request.headers for request in seen)
 
 
 def test_scenario_lookup_also_reports_the_projects_region():
@@ -237,6 +260,46 @@ def test_a_scenario_lookup_outage_leaves_the_corpus_unfiltered():
     urban = FakeUrbanApi()
     urban.broken_at = "scenario"
     assert TerritoryResolver(urban).scenario_scope("772", "u1") is None
+
+
+def test_a_strict_scope_refuses_to_leave_the_corpus_unfiltered():
+    urban = FakeUrbanApi()
+    urban.broken_at = "scenario"
+    resolver = TerritoryResolver(urban)
+
+    with pytest.raises(ScenarioScopeUnavailable, match="connection refused"):
+        resolver.scenario_scope("772", "u1", strict=True)
+    calls = len(urban.calls)
+    # The degraded answer is cached: a strict caller still gets the error, not the cache.
+    with pytest.raises(ScenarioScopeUnavailable, match="connection refused"):
+        resolver.scenario_scope("772", "u1", strict=True)
+    assert len(urban.calls) == calls
+    assert resolver.scenario_scope("772", "u1") is None
+
+
+def test_a_strict_scope_refuses_a_project_without_a_region():
+    class NoRegion(FakeUrbanApi):
+        def scenario_project(self, scenario_id, user_id) -> ScenarioProject:
+            self._call(f"scenario:{scenario_id}")
+            return ScenarioProject(project_id="604", region_id=None)
+
+    resolver = TerritoryResolver(NoRegion())
+    with pytest.raises(ScenarioScopeUnavailable, match="project 604 has no region"):
+        resolver.scenario_scope("772", "u1", strict=True)
+
+
+def test_a_strict_scope_accepts_the_region_fallback():
+    urban = FakeUrbanApi()
+    urban.broken_at = "geometry"
+    scope = TerritoryResolver(urban).scenario_scope("772", "u1", strict=True)
+    assert scope.territory_ids == (LENOBLAST,)
+
+
+def test_a_strict_scope_respects_the_switched_off_setting(scenario_settings):
+    scenario_settings.scenario_territory_filter = False
+    urban = FakeUrbanApi()
+    urban.broken_at = "scenario"
+    assert TerritoryResolver(urban).scenario_scope("772", "u1", strict=True) is None
 
 
 def test_an_unknown_scenario_is_an_error_not_an_outage():
@@ -433,3 +496,16 @@ def test_listings_and_scopes_are_narrowed_to_the_scenario(corpus):
     assert scenario_listing_condition(resolver, None, None) is None
     with pytest.raises(ValueError):
         scenario_listing_condition(resolver, "772", None)
+
+
+def test_a_listing_fails_when_the_scenario_cannot_be_placed():
+    urban = FakeUrbanApi()
+    urban.broken_at = "scenario"
+    resolver = TerritoryResolver(urban)
+
+    with pytest.raises(ScenarioScopeUnavailable) as raised:
+        scenario_listing_condition(resolver, "772", "u1")
+    # Routers and MCP tools already map UrbanApiError to 502 / ToolError.
+    assert isinstance(raised.value, UrbanApiError)
+    assert scenario_listing_condition(resolver, "772", "u1", enabled=False) is None
+    assert scenario_listing_condition(resolver, "772", "u1", territory_ids=[2]) is None

@@ -87,6 +87,10 @@ class ScenarioScope:
     source: str
 
 
+class ScenarioScopeUnavailable(UrbanApiError):
+    """Nothing is known about where a scenario is, so it cannot narrow a listing."""
+
+
 # Accept a match only when it is both good enough on its own and clearly better than the
 # runner-up: two candidates that score alike are exactly the ambiguity we refuse to guess at.
 _MIN_RATIO = 0.72
@@ -194,7 +198,7 @@ class TerritoryResolver:
     def __init__(self, urban: UrbanApiClient) -> None:
         self.urban = urban
         self._scenario_cache: dict[
-            tuple[str, str], tuple[float, ScenarioScope | None]
+            tuple[str, str], tuple[float, ScenarioScope | None, str | None]
         ] = {}
         self._scenario_lock = threading.Lock()
 
@@ -285,7 +289,7 @@ class TerritoryResolver:
     # --- scenario scope -------------------------------------------------------------------
 
     def scenario_scope(
-        self, scenario_id: str | int, user_id: str
+        self, scenario_id: str | int, user_id: str, *, strict: bool = False
     ) -> ScenarioScope | None:
         """The territories a scenario covers, or ``None`` when nothing narrows the corpus.
 
@@ -297,7 +301,9 @@ class TerritoryResolver:
 
         A scenario that does not exist (``ScenarioNotFound``) or a malformed id raises: that
         is the caller's mistake, not an outage. When the scenario itself cannot be looked up,
-        there is no scope; a degraded answer is cached only briefly.
+        there is no scope; a degraded answer is cached only briefly. A search then runs over
+        the whole shared corpus, but a listing of what is in force there would be wrong:
+        ``strict`` raises ``ScenarioScopeUnavailable`` instead of returning ``None``.
         """
         if not settings.scenario_territory_filter:
             return None
@@ -305,7 +311,8 @@ class TerritoryResolver:
         with self._scenario_lock:
             cached = self._scenario_cache.get(key)
         if cached is not None and cached[0] > time.time():
-            return cached[1]
+            return self._strict(scenario_id, cached[1], cached[2], strict)
+        reason = None
         try:
             project = self.urban.scenario_project(scenario_id, user_id)
         except ScenarioNotFound:
@@ -314,12 +321,14 @@ class TerritoryResolver:
             log.warning(
                 "scenario_scope_degraded", scenario_id=str(scenario_id), error=str(exc)
             )
-            project, scope, complete = None, None, False
+            project, scope, complete, reason = None, None, False, str(exc)
         else:
             scope, complete = self._scenario_scope(project, user_id)
+            if scope is None:
+                reason = f"project {project.project_id} has no region"
         ttl = settings.scenario_territory_cache_ttl if complete else _DEGRADED_SCOPE_TTL
         with self._scenario_lock:
-            self._scenario_cache[key] = (time.time() + ttl, scope)
+            self._scenario_cache[key] = (time.time() + ttl, scope, reason)
         log.info(
             "scenario_scope_resolved",
             scenario_id=str(scenario_id),
@@ -328,6 +337,19 @@ class TerritoryResolver:
             source=scope.source if scope else None,
             complete=complete,
         )
+        return self._strict(scenario_id, scope, reason, strict)
+
+    @staticmethod
+    def _strict(
+        scenario_id: str | int,
+        scope: ScenarioScope | None,
+        reason: str | None,
+        strict: bool,
+    ) -> ScenarioScope | None:
+        if scope is None and strict:
+            raise ScenarioScopeUnavailable(
+                f"cannot resolve the territory of scenario {scenario_id}: {reason}"
+            )
         return scope
 
     def _scenario_scope(
