@@ -701,8 +701,12 @@ with those territories: their own documents, everything inside them and every le
 (district, region, Russia). Documents with no territory yet (tagging pending) always pass.
 
 - A regional project covers its whole region; without a boundary, or when the Urban API fails
-  part-way, the region is used; if the scenario itself cannot be looked up, nothing is filtered.
-  An unknown scenario is `404`.
+  part-way, the region is used. An unknown scenario is `404`.
+- If the scenario itself cannot be looked up (the Urban API refuses or is down) or its project
+  has no region, a search runs over the whole shared corpus, but a listing — `GET /documents`,
+  `GET /documents/available`, `GET /library/documents`, `GET /scopes`, MCP `list_documents` /
+  `get_document_scopes` — fails with `502` (a `ToolError` over MCP) instead of presenting every
+  document as in force there.
 - Explicit `territory_ids` replace the scenario's territories.
 - A named document (`name`, `document_names`, `doc_id`) is found wherever it applies.
 - `scenario_territory_filter=false` (body field or query parameter) switches it off for one

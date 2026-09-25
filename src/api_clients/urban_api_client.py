@@ -200,11 +200,8 @@ class UrbanApiClient:
         params: dict | None = None,
         *,
         not_found: type[UrbanApiError] = TerritoryNotFound,
-        user_id: str | None = None,
     ):
-        return self._request(
-            "GET", path, params=params, not_found=not_found, user_id=user_id
-        )
+        return self._request("GET", path, params=params, not_found=not_found)
 
     def _request(
         self,
@@ -214,14 +211,13 @@ class UrbanApiClient:
         *,
         body=None,
         not_found: type[UrbanApiError] = TerritoryNotFound,
-        user_id: str | None = None,
     ):
         last_error: Exception | None = None
         for attempt in range(_MAX_RETRIES):
             try:
-                headers = {"X-User-Id": user_id} if user_id else None
+                # Only the service token: the Urban API does not take X-User-Id.
                 response = self._client.request(
-                    method, self.base + path, params=params, json=body, headers=headers
+                    method, self.base + path, params=params, json=body
                 )
             except httpx.HTTPError as exc:
                 last_error = exc
@@ -291,11 +287,7 @@ class UrbanApiClient:
         if cached is not None:
             return cached
         try:
-            data = self._get(
-                f"/v1/scenarios/{int(sid)}",
-                not_found=ScenarioNotFound,
-                user_id=user_id,
-            )
+            data = self._get(f"/v1/scenarios/{int(sid)}", not_found=ScenarioNotFound)
         except httpx.HTTPStatusError as exc:
             raise UrbanApiError(
                 f"Urban API denied scenario {sid}: HTTP {exc.response.status_code}"
@@ -315,11 +307,7 @@ class UrbanApiClient:
 
     def project(self, project_id: str | int, user_id: str) -> dict:
         """One project's attributes (``is_regional``, ``territory``, …); not cached."""
-        return self._get(
-            f"/v1/projects/{int(project_id)}",
-            not_found=ProjectNotFound,
-            user_id=user_id,
-        )
+        return self._get(f"/v1/projects/{int(project_id)}", not_found=ProjectNotFound)
 
     def project_geometry(self, project_id: str | int, user_id: str) -> dict | None:
         """The project boundary (GeoJSON geometry, EPSG:4326), or ``None`` without one.
@@ -328,9 +316,7 @@ class UrbanApiClient:
         """
         try:
             data = self._get(
-                f"/v1/projects/{int(project_id)}/territory",
-                not_found=ProjectNotFound,
-                user_id=user_id,
+                f"/v1/projects/{int(project_id)}/territory", not_found=ProjectNotFound
             )
         except ProjectNotFound:
             return None
