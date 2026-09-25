@@ -130,6 +130,28 @@ def _client_with(handler) -> UrbanApiClient:
     return client
 
 
+def test_urban_api_requests_carry_no_user_header():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path.endswith("/territory"):
+            return httpx.Response(200, json={"geometry": BOUNDARY})
+        if "/scenarios/" in request.url.path:
+            return httpx.Response(
+                200, json={"project": {"project_id": 604, "region": {"id": 1}}}
+            )
+        return httpx.Response(200, json={"project_id": 604, "is_regional": False})
+
+    client = _client_with(handler)
+    client.scenario_project(772, "u1")
+    client.project(604, "u1")
+    client.project_geometry(604, "u1")
+
+    assert len(seen) == 3
+    assert all("x-user-id" not in request.headers for request in seen)
+
+
 def test_scenario_lookup_also_reports_the_projects_region():
     client = _client_with(
         lambda request: httpx.Response(
