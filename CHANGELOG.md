@@ -1,3 +1,9 @@
+## v0.18.1 (2026-09-25)
+
+### Fix
+
+- give Qdrant requests 30 s instead of the client's 5 s default (#102)
+
 ## v0.18.0 (2026-09-23)
 
 ### Feat
