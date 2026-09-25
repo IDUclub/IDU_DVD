@@ -50,6 +50,7 @@ _RESTART_REQUIRED_FIELDS: frozenset[str] = frozenset(
     {
         "qdrant_url",
         "qdrant_api_key",
+        "qdrant_timeout",
         "qdrant_collection",
         "vector_size",
         "collection_namespacing",

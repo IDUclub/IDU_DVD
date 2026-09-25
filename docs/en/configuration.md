@@ -94,6 +94,7 @@ into that new space (embeddings of different models are not comparable).
 |----------|---------|-------------|
 | `DVD_QDRANT_URL` | `http://localhost:6333` | Qdrant address |
 | `DVD_QDRANT_API_KEY` | empty | API key (if required) |
+| `DVD_QDRANT_TIMEOUT` | `30` | seconds per Qdrant request; reading every fragment of a large document takes longer than the client's own 5 s default |
 | `DVD_QDRANT_COLLECTION` | `documents` | **base** collection name (see Collection namespacing) |
 | `DVD_VECTOR_SIZE` | `2048` | **advisory fallback only** — the real dimension is probed from the active vectorizer at startup and this value is overwritten to match; used verbatim only if the vectorizer is unreachable at boot (giga = 2048, bge-m3 = 1024) |
 | `DVD_EMBED_BATCH` | `32` | batch size during vectorization |

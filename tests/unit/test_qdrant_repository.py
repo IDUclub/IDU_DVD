@@ -29,6 +29,15 @@ def repo_and_client(settings):
         yield repo, client
 
 
+@pytest.mark.parametrize("timeout", [None, 45])
+def test_the_client_waits_longer_than_its_own_5_second_default(settings, timeout):
+    if timeout is not None:
+        settings = settings.model_copy(update={"qdrant_timeout": timeout})
+    with patch("src.common.db.qdrant_client.QdrantClient") as Client:
+        QdrantRepository(settings)
+    assert Client.call_args.kwargs["timeout"] == (timeout or 30)
+
+
 def test_bulk_metadata_update_preserves_vectors_and_waits_for_completion(
     repo_and_client,
 ):

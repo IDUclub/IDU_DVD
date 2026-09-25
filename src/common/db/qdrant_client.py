@@ -156,7 +156,9 @@ class QdrantRepository:
         self.settings = settings
         self.collection = settings.effective_collection
         self.client = QdrantClient(
-            url=settings.qdrant_url, api_key=settings.qdrant_api_key
+            url=settings.qdrant_url,
+            api_key=settings.qdrant_api_key,
+            timeout=settings.qdrant_timeout,
         )
 
     def __repr__(self) -> str:
