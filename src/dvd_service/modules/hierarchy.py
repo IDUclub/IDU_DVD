@@ -13,6 +13,12 @@ import structlog
 log = structlog.get_logger(__name__)
 
 
+def _address_prefixes(number: str) -> list[str]:
+    """Proper prefixes of a decimal address, nearest first: 6.5.17 -> [6.5, 6]."""
+    parts = number.split(".")
+    return [".".join(parts[:i]) for i in range(len(parts) - 1, 0, -1)]
+
+
 class HierarchyBuilder:
     def __repr__(self) -> str:
         return f"{type(self).__name__}()"
@@ -91,6 +97,7 @@ class HierarchyBuilder:
             )
         stack = [nodes[0]]
         source_headings = []
+        by_number: dict[str, dict] = {}  # latest decimal clause per address (semantic)
         node_by_id = {n["_id"]: n for n in nodes}
         for n in nodes[1:]:
             top = stack[-1]
@@ -207,6 +214,16 @@ class HierarchyBuilder:
                             )
                         )
                     ]
+                    if not candidates and not item and numeric:
+                        # An unnumbered heading-like part (a flattened table row the
+                        # model took for a title) reset the stack: find the parent by
+                        # its address instead of losing it to the section heading. A
+                        # top-level address is the section itself: the heading stays.
+                        candidates = [
+                            by_number[prefix]
+                            for prefix in _address_prefixes(number)
+                            if "." in prefix and prefix in by_number
+                        ][:1]
                     parent = candidates[-1] if candidates else heading
                 elif n["type"] in {"paragraph", "note", "list_item", "table"}:
                     parent = next(
@@ -242,6 +259,13 @@ class HierarchyBuilder:
             n["parent"] = parent["_id"]
             n["depth"] = parent["depth"] + 1
             stack.append(n)
+            if (
+                semantic
+                and n["type"] in {"clause", "subclause"}
+                and n["source_delimiter"] != ")"
+                and n["numbering"].rstrip(".").replace(".", "").isdigit()
+            ):
+                by_number[n["numbering"].rstrip(".")] = n
 
         children = {}
         for n in nodes:

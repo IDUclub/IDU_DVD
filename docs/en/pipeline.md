@@ -68,6 +68,33 @@ Containers remain in the tree and library; semantic search returns content nodes
 not counted against the 512-character content limit or its source span. Search hits and library
 fragments expose `search_text` as well.
 
+**Documents converted from PDF.** When the extracted text carries a *running header* — a document
+designation followed by a page number («СП 42.13330.2026 85») repeated at least five times —
+`SourceLayout` re-cuts the units before the LLM sees them, because such a conversion follows the
+page layout: one paragraph can hold the tail of a clause, a section heading and the next clauses,
+and the header often sits right in front of a clause number.
+
+- Each running header joins the unit before it. It stays in `source_text` (the exact coverage of
+  the source is unchanged) but is removed from the fragment `text`, which also joins letter-spaced
+  words («Т а б л и ц а» → «Таблица»).
+- The column head a multi-page table repeats under the running header («Объекты1) Нормативная
+  потребность1) …») is treated as part of the header when at least two page tops share 40+
+  characters of it, so it does not land in the middle of a row. A repeat that opens with an
+  appendix heading, a caption or a clause address is structure and is kept.
+- A range abbreviation («св. 30 до 170») does not end a sentence.
+- Clause addresses inside a paragraph become unit starts only when they belong to the document's
+  *address run*: the longest chain of addresses where each follows the previous one (a first
+  child `6.1.1`, the next number at some level, up to two lost numbers tolerated). References
+  («согласно 6.1.11»), table-of-contents entries and codes in flattened tables form short chains
+  of their own and do not cut anything. Table captions («Таблица 6.8 –») and notes also start units.
+- A leading decimal number that is not in the run (a note item «2 При определении …», a code) is
+  not an address; a top-level number in the run opens a section, titled when the unit is only the
+  heading.
+- The hierarchy finds a clause's parent by its address when an unnumbered heading-like part (a
+  table row the model took for a title) has reset the stack.
+
+Documents without running headers are cut exactly as before.
+
 Fidelity is relative to extracted normalized source text, not DOCX bytes or page layout. The parser
 version suffix is `-semantic1-ranges`. Range-mode updates rebuild a complete revision and embeddings:
 source-block reuse could retain obsolete grouping or parent context. Legacy `boundaries` updates

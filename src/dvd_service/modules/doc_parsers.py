@@ -5,6 +5,7 @@ Also: content_hash (for deduplication) and preservation of table HTML.
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import os
 import re
@@ -16,6 +17,7 @@ from src.common.config import Settings
 from src.dvd_service.modules.docx_reader import DocxReader
 from src.dvd_service.modules.range_partitioning import RangePartitioner
 from src.dvd_service.modules.reference_patterns import DESIGNATION_PREFIXES
+from src.dvd_service.modules.source_layout import SourceLayout
 from src.dvd_service.modules.source_structure import SourceStructure
 from src.dvd_service.modules.windowing import (
     chat_window,
@@ -70,6 +72,12 @@ RU_ABBR = {
     "ул",
     "пр",
     "напр",
+    # Norm tables: «св. 30 до 170 включительно – 80 м2 на 1 место св. 170 …».
+    "св",
+    "кв",
+    "прим",
+    "разд",
+    "гл",
 }
 SENT_BOUND = re.compile(r'[.!?…]\s+(?=[«"(\[]?[A-ZА-ЯЁ0-9])')
 # A part with its OWN number must not merge into the previous one (Stage-1.5 guard); dashes/bullets excluded.
@@ -482,6 +490,9 @@ class DocumentParser:
                     }
                 )
                 cursor = pos + len(piece)
+        layout = SourceLayout(source_text)
+        if layout.headers:
+            units = self._relayout_units(raw, spans, units, layout)
         if units:
             units[0]["char_start"] = 0
         # A code wrapped into the next paragraph stays in the unit that names its document.
@@ -502,7 +513,65 @@ class DocumentParser:
                 units[i + 1]["char_start"] if i + 1 < len(units) else len(source_text)
             )
             unit["text"] = source_text[unit["char_start"] : unit["char_end"]]
+            if layout.headers and unit["category"] != "Table":
+                unit["clean_text"] = layout.strip_headers(
+                    unit["char_start"], unit["char_end"]
+                )
         return source_text, units
+
+    @staticmethod
+    def _relayout_units(raw, spans, units, layout: SourceLayout):
+        """Re-cut the units of a PDF conversion along clauses instead of page paragraphs.
+
+        A running header joins the unit before it (it stays in the exact source, the fragment
+        text drops it), so the clause behind it starts its own unit; clause starts and captions
+        inside a paragraph become unit starts. Tables are never cut.
+        """
+        block_starts = [s["start"] for s in spans]
+        tables = [
+            (spans[i]["start"], spans[i]["end"])
+            for i, b in enumerate(raw)
+            if b["category"] == "Table"
+        ]
+
+        def in_table(pos):
+            return any(a <= pos < b for a, b in tables)
+
+        starts = {u["char_start"] for u in units}
+        for a, b in layout.headers:
+            if in_table(a):
+                continue
+            starts -= {s for s in starts if a <= s < b and s != 0}
+            if b < len(layout.text):
+                starts.add(b)
+        known = set(block_starts)
+        addresses = {
+            pos: number
+            for pos, number in layout.clause_addresses(known)
+            if not in_table(pos)
+        }
+        starts.update(addresses)
+        starts.update(p for p in layout.caption_starts(known) if not in_table(p))
+        ordered = sorted(starts)
+        out = []
+        for i, start in enumerate(ordered):
+            end = ordered[i + 1] if i + 1 < len(ordered) else len(layout.text)
+            first = bisect.bisect_right(block_starts, start) - 1
+            last = bisect.bisect_left(block_starts, end) - 1
+            block = raw[first]
+            out.append(
+                {
+                    "id": len(out),
+                    "src_ids": list(range(first, max(first, last) + 1)),
+                    "category": block["category"],
+                    "html": block.get("html") if start == block_starts[first] else None,
+                    "char_start": start,
+                    # The clause address this unit opens, from the document-wide address
+                    # run; None means any leading number is a note/list label or a code.
+                    "layout_number": addresses.get(start),
+                }
+            )
+        return out
 
     def prepare_range_units(self, source_text, units):
         """Preserve numbered leaves until their types and parentage are known."""
