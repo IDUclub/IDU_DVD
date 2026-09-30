@@ -68,6 +68,33 @@ Containers remain in the tree and library; semantic search returns content nodes
 not counted against the 512-character content limit or its source span. Search hits and library
 fragments expose `search_text` as well.
 
+**Documents converted from PDF.** When the extracted text carries a *running header* — a document
+designation followed by a page number («СП 42.13330.2026 85») repeated at least five times —
+`SourceLayout` re-cuts the units before the LLM sees them, because such a conversion follows the
+page layout: one paragraph can hold the tail of a clause, a section heading and the next clauses,
+and the header often sits right in front of a clause number.
+
+- Each running header joins the unit before it. It stays in `source_text` (the exact coverage of
+  the source is unchanged) but is removed from the fragment `text`, which also joins letter-spaced
+  words («Т а б л и ц а» → «Таблица»).
+- The column head a multi-page table repeats under the running header («Объекты1) Нормативная
+  потребность1) …») is treated as part of the header when at least two page tops share 40+
+  characters of it, so it does not land in the middle of a row. A repeat that opens with an
+  appendix heading, a caption or a clause address is structure and is kept.
+- A range abbreviation («св. 30 до 170») does not end a sentence.
+- Clause addresses inside a paragraph become unit starts only when they belong to the document's
+  *address run*: the longest chain of addresses where each follows the previous one (a first
+  child `6.1.1`, the next number at some level, up to two lost numbers tolerated). References
+  («согласно 6.1.11»), table-of-contents entries and codes in flattened tables form short chains
+  of their own and do not cut anything. Table captions («Таблица 6.8 –») and notes also start units.
+- A leading decimal number that is not in the run (a note item «2 При определении …», a code) is
+  not an address; a top-level number in the run opens a section, titled when the unit is only the
+  heading.
+- The hierarchy finds a clause's parent by its address when an unnumbered heading-like part (a
+  table row the model took for a title) has reset the stack.
+
+Documents without running headers are cut exactly as before.
+
 Fidelity is relative to extracted normalized source text, not DOCX bytes or page layout. The parser
 version suffix is `-semantic1-ranges`. Range-mode updates rebuild a complete revision and embeddings:
 source-block reuse could retain obsolete grouping or parent context. Legacy `boundaries` updates
@@ -275,6 +302,48 @@ The regex seed (`reference_patterns.py`) and the durable learned-pattern collect
 the substrate for the optional self-improvement step gated by `ref_pattern_learning` (off by
 default): the LLM generalizes new extraction patterns into the base over time.
 
+## Stage 6.5. Fragment relations
+
+Enabled by `enable_relations` (default on). Runs after vectorization, before indexing.
+
+Structure says where a fragment sits; a **relation** says which other fragments its meaning needs.
+A relation is directed: `source` depends on `target` with a `weight` in 0..1 (to understand or apply
+the source you have to read the target) and a `kind` — `completes` (the rest of its sentence, the
+items after its lead-in), `condition`, `exception`, `refines` (values, details), `table_ref`,
+`definition`, `same_topic`. Both directions of a pair are scored separately: a lead-in «следует
+учитывать:» depends on its items much more than an item depends on it.
+
+Scoring every pair is quadratic (SP 42 has ~1.5M pairs), so `RelationCandidates` proposes pairs
+first (~13.5k for SP 42):
+
+- **structure** — parent/child, grandparent/grandchild, siblings (all pairs in groups up to
+  `relation_sibling_full`, a ±`relation_sibling_window` window in larger ones), and neighbours in
+  reading order that break a phrase between them — a table flattened by a PDF conversion is cut
+  mid-row («… мест: св.» / «30 до 170 включительно – 80 м2 на 1 место»);
+- **in-document references** — «согласно 6.1.11», «таблица 6.8»;
+- **embedding neighbours** — the `relation_knn_k` most similar fragments of the same document
+  (cosine ≥ `relation_knn_min_cosine`), which is what finds a condition or a table far away from
+  the clause it constrains. The vectors are the ones just computed for indexing.
+
+A scorer (`relation_scorer`) then weighs both directions of each pair. `heuristic` (the default)
+applies structure rules in-process: a lead-in and its items, an unnumbered continuation and its
+clause, a broken phrase and a reference depend on each other. `cross_encoder` sends the pairs to the
+relation-scorer service — a cross-encoder fine-tuned on LLM-labelled relations — and keeps, per
+direction, the stronger of its probability and the rules; on questions labelled independently of
+any scorer it added only ~5 pp of complete answers over the rules, so it is optional. `llm` asks the
+configured LLM, one anchor with up to `relation_llm_group` partners per call. Directions weaker than
+`relation_min_store_weight` are dropped.
+
+Relations are stored in their own Qdrant collection (`{collection}__relations`, payload only,
+deterministic id per directed pair), not in the fragment payload: a clause can depend on dozens of
+others, and rescoring must not rewrite points that carry vectors. Their lifecycle follows the
+fragments: deleting a document or a version removes the edges of the removed fragments; an edge whose
+fragment is gone is skipped when read. A scorer failure never fails the ingest — the document is
+indexed without relations.
+
+Relations are served in search (see `api.md`: `related`, `related_to`) and by
+`GET /library/documents/{doc_id}/relations`, which NormGraph mirrors as `DEPENDS_ON` edges.
+
 ## Deduplication
 
 Before queuing the job, the upload handler extracts the text and computes `content_hash`. If such a
@@ -305,6 +374,10 @@ The `prev_id` and `next_id` fields define the document's reading order. On searc
 `context_height` parameter specifies how many fragments before and after the match to attach: the
 service walks the `prev`/`next` chain for the given number of steps and assembles the expanded text.
 This allows obtaining either a pinpoint fragment or a wider context around it.
+
+Neighbours are positional; relations are semantic. With `related=true` (the default) a search also
+returns, as separate citable hits, the fragments its hits strongly depend on — the list items of a
+lead-in, the condition stated in a sibling, the table a clause points at — however far away they are.
 
 ## Windows and reconciliation
 

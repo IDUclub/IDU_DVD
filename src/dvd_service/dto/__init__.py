@@ -25,6 +25,11 @@ from src.dvd_service.dto.document import (  # noqa: F401
 )
 from src.dvd_service.dto.node_payload import NodePayload  # noqa: F401
 from src.dvd_service.dto.reference import DocumentRef  # noqa: F401
+from src.dvd_service.dto.relation import (  # noqa: F401
+    DocumentRelations,
+    FragmentRelation,
+    RelatedRef,
+)
 from src.dvd_service.dto.scope import AdministrativeScope  # noqa: F401
 from src.dvd_service.dto.search import (  # noqa: F401
     ScopesResponse,
@@ -58,6 +63,9 @@ __all__ = [
     "DirectFragmentIn",
     "DirectJobResult",
     "DocumentRef",
+    "DocumentRelations",
+    "FragmentRelation",
+    "RelatedRef",
     "DocumentInfo",
     "DocumentListResponse",
     "DocumentSummary",

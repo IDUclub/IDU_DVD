@@ -25,6 +25,7 @@ from src.common.db.redis_client import (
     RedisClient,
     UserIndexRegistry,
 )
+from src.common.db.relation_repository import RelationRepository
 from src.common.logger import configure_logging
 from src.dependencies.dependencies import Dependencies
 from src.dvd_service.ingest_queue import IngestQueue
@@ -175,6 +176,8 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
 
     qdrant = QdrantRepository(s)
     qdrant.ensure_collection()
+    relations = RelationRepository(s, client=qdrant.client)
+    relations.ensure_collection()
     if s.enable_reference_linking:
         qdrant.ensure_pattern_collection()
     redis = RedisClient(s)
@@ -232,13 +235,19 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         s,
         outbox=outbox if publisher.enabled else None,
         territory=territory,
+        relations=relations,
     )
     search = SearchService(
-        qdrant, s, user_index_registry, territory=territory, urban_api=urban_api
+        qdrant,
+        s,
+        user_index_registry,
+        territory=territory,
+        urban_api=urban_api,
+        relations=relations,
     )
     documents = DocumentsService(qdrant, territory=territory)
     editor = DocumentEditorService(qdrant, registry, s, territory=territory)
-    library = LibraryService(qdrant, registry, territory=territory)
+    library = LibraryService(qdrant, registry, territory=territory, relations=relations)
     tags = TagsService(qdrant)
     tagging_backfill = TaggingBackfillService(
         qdrant, registry, territory, version_detector, jobs, s

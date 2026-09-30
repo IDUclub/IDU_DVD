@@ -573,6 +573,7 @@ API — `502`, а документ вне текущей пары `(user_id, pro
 | `tags` | list[str] | null | фильтр по тегам (любой из) |
 | `limit` | int | 10 | число результатов |
 | `context_height` | int | 0 | сколько фрагментов до и после подклеить |
+| `related` | bool | true | дополнительно вернуть фрагменты, от которых найденные сильно зависят (см. «Связанные фрагменты») |
 
 Ответ (`SearchResponse`):
 
@@ -624,6 +625,28 @@ API — `502`, а документ вне текущей пары `(user_id, pro
 payload: `title`, `version_id`, `doc_type`, `corpus`, `lang`, `external_ids`, `order`, `metadata`
 и спан источника (`source_uri`, `char_start`, `char_end`, `page_start`, `page_end`, `span_id`) —
 чтобы вызывающий мог сослаться на точное место в источнике для каждого хита.
+
+### Связанные фрагменты
+
+С `related=true` после найденных хитов идут фрагменты, от которых они зависят с весом не ниже
+`DVD_RELATION_CONTEXT_MIN_WEIGHT` (см. «Этап 6.5» в `pipeline.md`): элементы перечня после
+найденной вводной фразы, условие в соседнем пункте, таблица, на которую ссылается пункт. Каждый
+приходит обычным хитом со своим адресом и спаном источника — его можно процитировать отдельно — и
+дополнительно:
+
+| Поле | Описание |
+|------|----------|
+| `related_to` | id найденного хита, который подтянул этот фрагмент (у найденных хитов — null) |
+| `relation_weight` | 0..1, насколько тот хит зависит от этого фрагмента |
+| `relation_kind` | `completes` / `condition` / `exception` / `refines` / `table_ref` / `definition` / `same_topic` |
+
+Найденные хиты перечисляют свои исходящие связи в `related: [{id, weight, kind}]`, сильные первыми.
+Связанные хиты идут после найденных; их `score` — score подтянувшего хита, умноженный на вес.
+Добавляется не больше `DVD_RELATION_CONTEXT_MAX` на хит и `DVD_RELATION_CONTEXT_MAX_TOTAL` на
+ответ; фрагмент, уже бывший среди хитов, не повторяется. `count` их учитывает.
+
+Структурный поиск (`POST /search/fragments`) не меняет постраничные `hits` и возвращает связанные
+фрагменты текущей страницы в `related_fragments`.
 
 Примеры:
 
@@ -832,6 +855,28 @@ curl "http://localhost:8000/library/lookup?key=СП%2019.13330.2019"
 ```
 curl "http://localhost:8000/library/documents/9f63..."
 ```
+
+### GET /library/documents/{doc_id}/relations
+
+Направленные смысловые зависимости между фрагментами документа (всех его версий — у них общий
+`doc_id`); `min_weight` (0..1, по умолчанию 0) отсекает более слабые. `404`, если документа нет;
+пустой список, если он загружен до появления связей или связи выключены.
+
+```json
+{
+  "doc_id": "9f63...",
+  "count": 2,
+  "relations": [
+    {"source_id": "a1b2...", "target_id": "c3d4...", "doc_id": "9f63...", "weight": 0.97,
+     "kind": "completes", "confidence": 0.97, "method": "cross_encoder",
+     "candidate_sources": ["parent_child"]}
+  ]
+}
+```
+
+`source_id` зависит от `target_id`: чтобы понять или применить source, нужно прочитать target.
+`candidate_sources` — почему пара оценивалась (`parent_child`, `grandparent`, `sibling`,
+`ref_table`, `ref_clause`, `knn`).
 
 ## Система
 

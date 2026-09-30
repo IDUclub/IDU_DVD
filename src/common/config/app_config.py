@@ -188,6 +188,33 @@ class Settings(BaseSettings):
         "ref_patterns"  # Qdrant collection for learned patterns
     )
 
+    # --- Fragment relations (directed semantic dependencies inside one document) ---
+    # Scored at ingest over cheap candidate pairs (structure, in-document references, embedding
+    # neighbours — never all pairs) and stored in their own collection next to the fragments.
+    enable_relations: bool = True
+    # heuristic — structure rules: lead-ins and their items, continuations, phrases broken
+    #   between fragments, in-document references (CPU, no calls). On questions labelled
+    #   independently of any scorer they gave most of the retrieval gain;
+    # cross_encoder — the relation-scorer service at relation_scorer_url (GPU), combined with
+    #   the rules per direction; it added ~5 pp of complete answers over the rules on a
+    #   document it was not trained on. Without a URL: heuristic;
+    # llm — the configured LLM judges groups of pairs (slow on long documents).
+    relation_scorer: Literal["heuristic", "cross_encoder", "llm"] = "heuristic"
+    relation_scorer_url: str = ""  # /v1 root of the relation-scorer service
+    relation_scorer_timeout: float = 300.0
+    relation_llm_group: int = 8  # candidate partners judged per LLM call
+    relation_knn_k: int = 8  # embedding neighbours proposed per fragment
+    relation_knn_min_cosine: float = 0.55
+    relation_sibling_full: int = 12  # sibling groups up to this size: all pairs
+    relation_sibling_window: int = 3  # larger groups: neighbours within +-window
+    relation_min_store_weight: float = 0.3  # weaker directions are not stored
+    # Search/context: a hit pulls in the fragments it depends on at least this strongly.
+    # With the rules on SP 19 (not used for tuning) complete answers to questions needing
+    # related fragments rose from 22% to 35% for ~1.3 extra fragments per response.
+    relation_context_min_weight: float = 0.5
+    relation_context_max: int = 6  # related fragments attached per hit
+    relation_context_max_total: int = 10  # related fragments added to one response
+
     # --- Parser pipeline (ported from notebooks/parser.ipynb) ---
     partition_strategy: str = "hi_res"  # 'fast' — for text formats without OCR
     languages: list[str] = ["rus", "eng"]
@@ -420,6 +447,11 @@ class Settings(BaseSettings):
             f"{self.qdrant_collection}__{_slug(self.embedding_model_name)}"
             f"_{self.vector_size}"
         )
+
+    @property
+    def relation_collection(self) -> str:
+        """Qdrant collection of fragment relations, paired with the fragment collection."""
+        return f"{self.effective_collection}__relations"
 
     @property
     def registry_prefix(self) -> str:

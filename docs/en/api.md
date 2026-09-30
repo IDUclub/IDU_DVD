@@ -563,6 +563,7 @@ Request body (`SearchRequest`):
 | `tags` | list[str] | null | filter by tags (any of) |
 | `limit` | int | 10 | number of results |
 | `context_height` | int | 0 | how many fragments before and after to attach |
+| `related` | bool | true | also return the fragments the hits strongly depend on (see *Related fragments*) |
 
 Response (`SearchResponse`):
 
@@ -614,6 +615,27 @@ Besides the fields shown above, each hit also carries the general-purpose identi
 fields from the payload: `title`, `version_id`, `doc_type`, `corpus`, `lang`, `external_ids`,
 `order`, `metadata`, and the source span (`source_uri`, `char_start`, `char_end`, `page_start`,
 `page_end`, `span_id`) — so a caller can cite the exact source location of every hit.
+
+### Related fragments
+
+With `related=true` the matched hits are followed by the fragments they depend on at least
+`DVD_RELATION_CONTEXT_MIN_WEIGHT` (see *Stage 6.5* in `pipeline.md`): the list items after a
+matched lead-in, the condition stated in a sibling clause, the table a clause points at. Each comes
+back as an ordinary hit with its own address and source span, so it can be quoted on its own, plus:
+
+| Field | Description |
+|-------|-------------|
+| `related_to` | id of the matched hit that pulled this fragment in (null on matched hits) |
+| `relation_weight` | 0..1, how strongly that hit depends on this fragment |
+| `relation_kind` | `completes` / `condition` / `exception` / `refines` / `table_ref` / `definition` / `same_topic` |
+
+Matched hits list their outgoing relations in `related: [{id, weight, kind}]`, strongest first.
+Related hits come after the matched ones; their `score` is the pulling hit's score times the
+weight. At most `DVD_RELATION_CONTEXT_MAX` per hit and `DVD_RELATION_CONTEXT_MAX_TOTAL` per
+response are added; a fragment already among the hits is not repeated. `count` includes them.
+
+Structural retrieval (`POST /search/fragments`) keeps its paginated `hits` untouched and returns
+the related fragments of the current page in `related_fragments`.
 
 Examples:
 
@@ -825,6 +847,28 @@ documents/clauses — same shape as in search hits), `text` and `table_html`.
 ```
 curl "http://localhost:8000/library/documents/9f63..."
 ```
+
+### GET /library/documents/{doc_id}/relations
+
+Directed semantic dependencies between the document's fragments (all its versions — they share
+the `doc_id`), `min_weight` (0..1, default 0) drops weaker ones. `404` if the document does not
+exist; an empty list if it was ingested before relations were built or they are switched off.
+
+```json
+{
+  "doc_id": "9f63...",
+  "count": 2,
+  "relations": [
+    {"source_id": "a1b2...", "target_id": "c3d4...", "doc_id": "9f63...", "weight": 0.97,
+     "kind": "completes", "confidence": 0.97, "method": "cross_encoder",
+     "candidate_sources": ["parent_child"]}
+  ]
+}
+```
+
+`source_id` depends on `target_id`: reading the target is needed to understand or apply the
+source. `candidate_sources` says why the pair was scored (`parent_child`, `grandparent`,
+`sibling`, `ref_table`, `ref_clause`, `knn`).
 
 ## System
 

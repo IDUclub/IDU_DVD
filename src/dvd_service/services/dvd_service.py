@@ -41,6 +41,7 @@ from src.common.db.qdrant_client import (
     user_scope_conditions,
 )
 from src.common.db.redis_client import DocumentRegistry, JobStore, UserIndexRegistry
+from src.common.db.relation_repository import RelationRepository
 from src.dvd_service.dto import (
     AdministrativeScope,
     AvailableDocumentInfo,
@@ -51,10 +52,12 @@ from src.dvd_service.dto import (
     DocumentInfo,
     DocumentList,
     DocumentListResponse,
+    DocumentRelations,
     DocumentSummary,
     DocumentUpdateResponse,
     NodeDetail,
     NodePayload,
+    RelatedRef,
     ScopesResponse,
     SearchHit,
     SearchRequest,
@@ -74,6 +77,7 @@ from src.dvd_service.modules.identity import (
 )
 from src.dvd_service.modules.progress import Progress
 from src.dvd_service.modules.references import ReferenceExtractor, ReferenceResolver
+from src.dvd_service.modules.relations import RelationBuilder, create_relation_scorer
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import DocumentHead, VersionDetector
 from src.dvd_service.modules.territory import (
@@ -88,7 +92,7 @@ log = structlog.get_logger(__name__)
 # Number of stages the ingest pipeline reports progress through (see ``ingest``); surfaced as
 # ``stage_index``/``stage_total`` on the job status. Type-tagging now also emits fragment tags,
 # so there is no separate tagging stage.
-PIPELINE_STAGES = 7
+PIPELINE_STAGES = 8
 PIPELINE_STAGE_WEIGHTS = {
     "structure-markup": 25,
     "type-tagging": 20,
@@ -96,6 +100,7 @@ PIPELINE_STAGE_WEIGHTS = {
     "identity": 6,
     "references": 12,
     "embeddings": 23,
+    "relations": 10,
     "indexing": 8,
 }
 
@@ -155,8 +160,12 @@ class IngestionService:
         settings: Settings,
         outbox: EventOutbox | None = None,
         territory: TerritoryResolver | None = None,
+        relations: RelationRepository | None = None,
     ) -> None:
         self.parser = parser
+        # Absent in hand-wired tests and scoped user indices: no relations are built.
+        self.relations = relations
+        self.relation_builder = RelationBuilder(settings)
         self.structure = structure
         self.hierarchy = hierarchy
         self.version_detector = version_detector
@@ -411,6 +420,47 @@ class IngestionService:
             "span_id": make_span_id(doc_id, char_start, char_end),
         }
 
+    def _build_relations(
+        self,
+        doc_id: str,
+        nodes: list[dict],
+        vectors: list[list[float]],
+        client: ChatClient | None,
+    ) -> list:
+        """Directed dependencies between this document's fragments (empty when disabled).
+
+        Relations enrich retrieval; they never block it, so a scorer failure indexes the
+        document without them and logs why.
+        """
+        if self.relations is None or not self.settings.enable_relations:
+            return []
+        try:
+            scorer = create_relation_scorer(self.settings, client)
+            return self.relation_builder.build(doc_id, nodes, vectors, scorer)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("relations_failed", doc_id=doc_id, error=str(exc))
+            return []
+
+    def _store_relations(self, relations: list) -> None:
+        if self.relations is not None and relations:
+            try:
+                self.relations.upsert(relations)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("relations_store_failed", error=str(exc))
+
+    def _drop_relations(
+        self, *, doc_ids=(), fragment_ids: list[str] | None = None
+    ) -> None:
+        if self.relations is None:
+            return
+        try:
+            for did in doc_ids:
+                self.relations.delete_by_doc(did)
+            if fragment_ids:
+                self.relations.delete_by_fragments(fragment_ids)
+        except Exception as exc:  # noqa: BLE001 — orphans are skipped at read time
+            log.warning("relations_delete_failed", error=str(exc))
+
     def _build_points(
         self,
         nodes: list[dict],
@@ -583,6 +633,10 @@ class IngestionService:
             )
             progress.complete_stage()
 
+            progress.stage("relations")
+            relations = self._build_relations(doc_id, nodes, vectors, client)
+            progress.complete_stage()
+
             # --- general-purpose identity + provenance (shared by all consumers) ---
             _, spans = self.parser.source_index(raw)
             external_ids = external_ids or {}
@@ -639,6 +693,7 @@ class IngestionService:
                 except KeyError:
                     pass
             count = self.qdrant.upsert(points)
+            self._store_relations(relations)
 
             # For already-loaded versions, refresh their list of other versions (including the new one)
             all_versions = set(other_versions) | {version}
@@ -891,6 +946,12 @@ class IngestionService:
                 else []
             )
             progress.complete_stage()
+            # In ranges mode a revision reuses nothing, so these are all of its fragments. In
+            # boundaries mode reused fragments keep the relations of the version they came
+            # from and only the changed ones are scored against each other.
+            progress.stage("relations")
+            relations = self._build_relations(doc_id, new_nodes, vectors, client)
+            progress.complete_stage()
             _, spans = self.parser.source_index(raw)
             external_ids = external_ids or {}
             uploaded_at = datetime.now(timezone.utc).isoformat()
@@ -935,6 +996,7 @@ class IngestionService:
                 ancestor_nodes=[p for p in base_points if p["id"] in reused_ids],
             )
             count = self.qdrant.upsert(points)
+            self._store_relations(relations)
 
             all_versions = set(other_versions) | {version}
             for v in other_versions:
@@ -1333,6 +1395,7 @@ class IngestionService:
         removed = {}
         if doc_id:
             removed["points_removed"] = self.qdrant.delete_by_doc(doc_id)
+            self._drop_relations(doc_ids=[doc_id])
             self.registry.unregister_document(doc_id)
         if name and version:
             try:
@@ -1371,6 +1434,7 @@ class IngestionService:
                 p["source_object_key"] for p in existing if p.get("source_object_key")
             }
             self.qdrant.delete_by_name(name)
+            self._drop_relations(doc_ids=sorted(doc_ids))
             self.registry.remove_hashes(name)
             for did in doc_ids:
                 self.registry.unregister_document(did)
@@ -1416,6 +1480,7 @@ class IngestionService:
             if remaining_tags:
                 tag_groups.setdefault(tuple(remaining_tags), []).append(p["id"])
         self.qdrant.delete_points(to_delete)
+        self._drop_relations(fragment_ids=to_delete)
         for tags, ids in tag_groups.items():
             self.qdrant.set_versions(ids, list(tags))
 
@@ -1518,12 +1583,14 @@ class SearchService:
         user_index_registry: UserIndexRegistry,
         territory: TerritoryResolver | None = None,
         urban_api: UrbanApiClient | None = None,
+        relations: RelationRepository | None = None,
     ) -> None:
         self.qdrant = qdrant
         self.settings = settings
         self.user_index_registry = user_index_registry
         self.territory = territory
         self.urban_api = urban_api
+        self.relations = relations
 
     def __repr__(self) -> str:
         return (
@@ -1694,65 +1761,124 @@ class SearchService:
         ]
         points = self.qdrant.search(vector, search_filter, limit)
 
-        hits = []
-        for p in points:
-            pl = p.payload or {}
-            context = (
-                self._expand_context(pl, req.context_height)
-                if req.context_height
-                else None
+        hits = [
+            self._hit(
+                str(p.id),
+                p.payload or {},
+                p.score,
+                (
+                    self._expand_context(p.payload or {}, req.context_height)
+                    if req.context_height
+                    else None
+                ),
             )
-            hits.append(
-                SearchHit(
-                    id=str(p.id),
-                    search_text=pl.get("search_text"),
-                    fragment_name=pl.get("fragment_name"),
-                    fragment_name_path=pl.get("fragment_name_path", []) or [],
-                    structure_path=pl.get("structure_path", []) or [],
-                    score=p.score,
-                    doc_id=pl.get("doc_id", ""),
-                    name=pl.get("name", ""),
-                    title=pl.get("title"),
-                    version=pl.get("version", ""),
-                    versions=pl.get("versions", []) or [],
-                    version_id=pl.get("version_id"),
-                    other_versions=pl.get("other_versions", []) or [],
-                    doc_type=pl.get("doc_type", "document"),
-                    corpus=pl.get("corpus", "default"),
-                    lang=pl.get("lang"),
-                    external_ids=pl.get("external_ids", {}) or {},
-                    user_id=pl.get("user_id"),
-                    project_id=pl.get("project_id"),
-                    scenario_id=pl.get("scenario_id"),
-                    kind=pl.get("kind", "text"),
-                    type=pl.get("type", ""),
-                    block=pl.get("block", "main"),
-                    numbering=pl.get("numbering", ""),
-                    breadcrumb=pl.get("breadcrumb", ""),
-                    depth=pl.get("depth", 0) or 0,
-                    order=pl.get("order", 0) or 0,
-                    parent_id=pl.get("parent_id"),
-                    prev_id=pl.get("prev_id"),
-                    next_id=pl.get("next_id"),
-                    source_uri=pl.get("source_uri"),
-                    source_file_url=build_source_url(
-                        pl, pl.get("name", ""), pl.get("version", "")
-                    ),
-                    char_start=pl.get("char_start"),
-                    char_end=pl.get("char_end"),
-                    page_start=pl.get("page_start"),
-                    page_end=pl.get("page_end"),
-                    span_id=pl.get("span_id"),
-                    tags=pl.get("tags", []) or [],
-                    metadata=pl.get("metadata", {}) or {},
-                    references=pl.get("references", []) or [],
-                    text=pl.get("text", ""),
-                    context=context,
-                    table_html=pl.get("table_html"),
-                    **AdministrativeScope.fields_from(pl),
-                )
-            )
+            for p in points
+        ]
+        if req.related:
+            hits = self.attach_related(hits)
         return SearchResponse(count=len(hits), hits=hits)
+
+    @staticmethod
+    def _hit(
+        point_id: str, pl: dict, score: float, context: str | None = None
+    ) -> SearchHit:
+        return SearchHit(
+            id=point_id,
+            search_text=pl.get("search_text"),
+            fragment_name=pl.get("fragment_name"),
+            fragment_name_path=pl.get("fragment_name_path", []) or [],
+            structure_path=pl.get("structure_path", []) or [],
+            score=score,
+            doc_id=pl.get("doc_id", ""),
+            name=pl.get("name", ""),
+            title=pl.get("title"),
+            version=pl.get("version", ""),
+            versions=pl.get("versions", []) or [],
+            version_id=pl.get("version_id"),
+            other_versions=pl.get("other_versions", []) or [],
+            doc_type=pl.get("doc_type", "document"),
+            corpus=pl.get("corpus", "default"),
+            lang=pl.get("lang"),
+            external_ids=pl.get("external_ids", {}) or {},
+            user_id=pl.get("user_id"),
+            project_id=pl.get("project_id"),
+            scenario_id=pl.get("scenario_id"),
+            kind=pl.get("kind", "text"),
+            type=pl.get("type", ""),
+            block=pl.get("block", "main"),
+            numbering=pl.get("numbering", ""),
+            breadcrumb=pl.get("breadcrumb", ""),
+            depth=pl.get("depth", 0) or 0,
+            order=pl.get("order", 0) or 0,
+            parent_id=pl.get("parent_id"),
+            prev_id=pl.get("prev_id"),
+            next_id=pl.get("next_id"),
+            source_uri=pl.get("source_uri"),
+            source_file_url=build_source_url(
+                pl, pl.get("name", ""), pl.get("version", "")
+            ),
+            char_start=pl.get("char_start"),
+            char_end=pl.get("char_end"),
+            page_start=pl.get("page_start"),
+            page_end=pl.get("page_end"),
+            span_id=pl.get("span_id"),
+            tags=pl.get("tags", []) or [],
+            metadata=pl.get("metadata", {}) or {},
+            references=pl.get("references", []) or [],
+            text=pl.get("text", ""),
+            context=context,
+            table_html=pl.get("table_html"),
+            **AdministrativeScope.fields_from(pl),
+        )
+
+    def attach_related(self, hits: list[SearchHit]) -> list[SearchHit]:
+        """Add the fragments the hits strongly depend on, each as its own citable hit.
+
+        A consumer quoting sources needs every fragment with its own address, so a related
+        clause, list item or table comes back as a hit (``related_to`` names the matched hit
+        that pulled it in), never glued into another hit's text. Each matched hit also lists
+        its relations in ``related``. Only edges at or above ``relation_context_min_weight``
+        count; at most ``relation_context_max`` per hit and ``relation_context_max_total``
+        in all. Relations stay inside one document, so they cannot leave the caller's scope.
+        """
+        s = self.settings
+        if self.relations is None or not s.enable_relations or not hits:
+            return hits
+        try:
+            edges = self.relations.outgoing(
+                [h.id for h in hits], s.relation_context_min_weight
+            )
+        except Exception as exc:  # noqa: BLE001 — relations enrich, never break search
+            log.warning("relations_read_failed", error=str(exc))
+            return hits
+        by_source: dict[str, list] = {}
+        for e in edges:
+            by_source.setdefault(e.source_id, []).append(e)
+        seen = {h.id for h in hits}
+        wanted: list[tuple[SearchHit, object]] = []
+        for hit in hits:
+            mine = by_source.get(hit.id, [])[: s.relation_context_max]
+            hit.related = [
+                RelatedRef(id=e.target_id, weight=e.weight, kind=e.kind) for e in mine
+            ]
+            for e in mine:
+                if e.target_id not in seen:
+                    seen.add(e.target_id)
+                    wanted.append((hit, e))
+        wanted.sort(key=lambda he: -(he[0].score * he[1].weight))
+        wanted = wanted[: s.relation_context_max_total]
+        payloads = self.qdrant.retrieve([e.target_id for _, e in wanted])
+        extra = []
+        for hit, e in wanted:
+            pl = payloads.get(e.target_id)
+            if not pl:
+                continue  # an orphan edge of a deleted fragment
+            related = self._hit(e.target_id, pl, round(hit.score * e.weight, 6))
+            related.related_to = hit.id
+            related.relation_weight = e.weight
+            related.relation_kind = e.kind
+            extra.append(related)
+        return hits + extra
 
 
 class DocumentsService:
@@ -1938,15 +2064,34 @@ class LibraryService:
         qdrant: QdrantRepository,
         registry: DocumentRegistry,
         territory: TerritoryResolver | None = None,
+        relations: RelationRepository | None = None,
     ) -> None:
         self.qdrant = qdrant
         self.registry = registry
         self.territory = territory
+        self.relations = relations
 
     def __repr__(self) -> str:
         return (
             f"{type(self).__name__}(qdrant={type(self.qdrant).__name__}, "
             f"registry={type(self.registry).__name__})"
+        )
+
+    def get_relations(
+        self, doc_id: str, min_weight: float = 0.0
+    ) -> DocumentRelations | None:
+        """Every stored relation between fragments of ``doc_id`` (all its versions).
+
+        ``None`` when the document does not exist; an empty list when it exists but has no
+        relations (ingested before they were built, or relations are switched off).
+        """
+        if not self.qdrant.count(
+            Filter(must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))])
+        ):
+            return None
+        relations = self.relations.by_doc(doc_id, min_weight) if self.relations else []
+        return DocumentRelations(
+            doc_id=doc_id, count=len(relations), relations=relations
         )
 
     @staticmethod

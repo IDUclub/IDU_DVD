@@ -54,6 +54,9 @@ class FragmentSearchResponse(BaseModel):
     ambiguous: bool = False
     candidates: list[dict] = Field(default_factory=list)
     candidates_complete: bool = True
+    # Fragments this page's hits strongly depend on, outside the paginated result (so
+    # count/total/cursor keep describing the structural match). ``related_to`` names the hit.
+    related_fragments: list[SearchHit] = Field(default_factory=list)
 
 
 class NameBackfillRequest(BaseModel):

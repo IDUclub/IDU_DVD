@@ -486,7 +486,18 @@ class FragmentSearchService:
                 ),
             )
             hits.append(FragmentMatch(**payload))
+        page_ids = {h.id for h in hits}
+        related = (
+            [
+                h
+                for h in self.search_service.attach_related(hits)[len(hits) :]
+                if h.id not in page_ids
+            ]
+            if req.related
+            else []
+        )
         return FragmentSearchResponse(
+            related_fragments=related,
             count=len(hits),
             total=len(selected),
             match_count=len(roots),
