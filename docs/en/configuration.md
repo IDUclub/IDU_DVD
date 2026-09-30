@@ -257,6 +257,27 @@ the ingestion path apart; deletion of a directly-ingested document still emits t
 | `DVD_REF_PATTERN_LEARNING` | `false` | let the LLM grow the regex pattern base (self-improvement) |
 | `DVD_REF_PATTERN_COLLECTION` | `ref_patterns` | Qdrant collection for learned patterns |
 
+### Fragment relations
+
+Directed semantic dependencies between the fragments of one document (see *Stage 6.5* in
+`pipeline.md`). Stored in their own Qdrant collection `{fragment collection}__relations`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DVD_ENABLE_RELATIONS` | `true` | build relations at ingest and use them in search |
+| `DVD_RELATION_SCORER` | `heuristic` | `heuristic`: structure rules, no model calls (CPU). `cross_encoder`: the relation-scorer service (GPU), combined per direction with the rules (the stronger wins); without `DVD_RELATION_SCORER_URL` it falls back to `heuristic`. `llm`: the configured LLM judges groups of pairs (slow) |
+| `DVD_RELATION_SCORER_URL` | — | `/v1` root of the relation-scorer service (`POST /relations/score`) |
+| `DVD_RELATION_SCORER_TIMEOUT` | `300` | seconds per scorer request |
+| `DVD_RELATION_LLM_GROUP` | `8` | candidate partners judged per LLM call (`llm` scorer) |
+| `DVD_RELATION_KNN_K` | `8` | embedding neighbours proposed per fragment |
+| `DVD_RELATION_KNN_MIN_COSINE` | `0.55` | minimum similarity of an embedding neighbour |
+| `DVD_RELATION_SIBLING_FULL` | `12` | sibling groups up to this size are paired in full |
+| `DVD_RELATION_SIBLING_WINDOW` | `3` | larger sibling groups: neighbours within ±window |
+| `DVD_RELATION_MIN_STORE_WEIGHT` | `0.3` | weaker directions are not stored |
+| `DVD_RELATION_CONTEXT_MIN_WEIGHT` | `0.5` | a search hit pulls in the fragments it depends on at least this strongly |
+| `DVD_RELATION_CONTEXT_MAX` | `6` | related fragments attached per hit |
+| `DVD_RELATION_CONTEXT_MAX_TOTAL` | `10` | related fragments added to one response |
+
 ### Pipeline
 
 | Variable | Default | Description |
