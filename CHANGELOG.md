@@ -1,3 +1,9 @@
+## v0.18.3 (2026-10-02)
+
+[fix/version-status-token](https://github.com/IDUclub/IDU_DVD/pull/106) (#106)
+
+- ci: set the passing version status with VERSION_STATUS_TOKEN so the merge starts the dev release
+
 ## v0.18.2 (2026-10-02)
 
 [chore/versioning-policy](https://github.com/IDUclub/IDU_DVD/pull/105) (#105)
