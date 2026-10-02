@@ -1,3 +1,10 @@
+## v0.18.2 (2026-10-02)
+
+[chore/versioning-policy](https://github.com/IDUclub/IDU_DVD/pull/105) (#105)
+
+- ci: bump the version on every merge into dev; releases only tag it
+- ci: bump the version in the PR branch when auto-merge is enabled
+
 ## v0.18.1 (2026-09-25)
 
 ### Fix
