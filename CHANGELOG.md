@@ -1,3 +1,22 @@
+## v0.18.1 (2026-09-25)
+
+### Fix
+
+- give Qdrant requests 30 s instead of the client's 5 s default (#102)
+
+## v0.18.0 (2026-09-23)
+
+### Feat
+
+- add admin logo upload and transparent branding (#95)
+
+## v0.17.3 (2026-09-22)
+
+### Fix
+
+- renew admin session tokens through auth helper (#94)
+- respect configured Urban API roots behind load balancers (#87)
+
 ## v0.17.2 (2026-09-21)
 
 ### Fix
