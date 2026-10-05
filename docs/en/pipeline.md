@@ -396,7 +396,11 @@ Every `amends` link queues a `consolidate` job for the amended document:
    retyped: the model points at the act's own blocks, and each passage is taken whole between
    « and » (balanced, so quoted names inside it survive). Words the model quotes must occur in the
    act. Appendices with maps, boundary descriptions and coordinates are not text changes. The
-   operations are cached on the link, so a rebuild does not ask the LLM again.
+   item's own words then correct the model's reading, which varies from run to run: an item that
+   adds («дополнить», not «изложить в … редакции») is an `insert`, one about boundary descriptions,
+   coordinates or the zoning map is dropped, and missing new content is the first passage quoted
+   after the item. The operations are cached on the link (with `EXTRACTOR_VERSION`), so a rebuild
+   does not ask the LLM again.
 3. **Application** — deterministic, act by act in date order (`effective_date`, else the date in
    the act's heading). A path resolves heading by heading; a table of contents is told apart from
    the real section by its size; nested numbering is tracked, so "part 1 / item 5" lands after

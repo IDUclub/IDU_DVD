@@ -1,3 +1,9 @@
+## v0.21.1 (2026-10-05)
+
+[fix/amendment-wording](https://github.com/IDUclub/IDU_DVD/pull/111) (#111)
+
+- fix: correct amendment operations by the act's own wording
+
 ## v0.21.0 (2026-10-05)
 
 [feat/explanation-links](https://github.com/IDUclub/IDU_DVD/pull/110) (#110)
