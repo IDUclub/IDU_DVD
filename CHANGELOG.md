@@ -1,3 +1,9 @@
+## v0.19.1 (2026-10-05)
+
+[fix/integration-fake-on-page](https://github.com/IDUclub/IDU_DVD/pull/108) (#108)
+
+- test: accept the OCR progress callback in the integration fake parser
+
 ## v0.19.0 (2026-10-05)
 
 [feat/pdf-ocr](https://github.com/IDUclub/IDU_DVD/pull/107) (#107)
