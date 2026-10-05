@@ -192,7 +192,16 @@ class IngestWorker:
         storage = self._storage_for(entry)
         path = self._materialize(entry, storage)
         try:
-            raw = self.parser.extract_raw(path)
+            raw = self.parser.extract_raw(
+                path,
+                on_page=lambda done, total: self.jobs.update(
+                    job_id,
+                    status="processing",
+                    stage="ocr",
+                    phase=f"{done}/{total} стр.",
+                    task_progress=int(100 * done / total),
+                ),
+            )
             meta = dict(entry.get("meta") or {})
             common = dict(
                 version_override=entry.get("version"),

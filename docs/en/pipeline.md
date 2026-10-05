@@ -26,6 +26,18 @@ hash is used for deduplication.
 
 For `.docx`, the heavy unstructured backends (torch, OCR) are not engaged.
 
+**PDF.** `PdfReader` reads a PDF page by page. A page whose text layer has at least
+`DVD_OCR_MIN_TEXT_CHARS` characters is taken as is, one block per line. Any other page is a scan:
+it is rendered at `DVD_OCR_DPI` and sent to the OCR service (`DotsOcrClient`, dots.ocr behind an
+OpenAI-compatible vLLM, one page per request, `DVD_OCR_CONCURRENCY` in parallel). Its layout
+elements become blocks: titles and section headers → `Title`, list items → `ListItem`, text,
+captions, footnotes and formulas → `NarrativeText`, tables keep their HTML (`Table`); running
+headers, footers and pictures are dropped. Every block carries its `page` and `bbox`. Recognized
+pages are cached under `DVD_OCR_CACHE_DIR` by the file hash, so a retried job does not OCR again;
+the job shows the `ocr` stage with page progress. A scanned PDF is not recognized in the upload
+request: its duplicate check uses the hash of the file bytes. Without `DVD_OCR_BASE_URL` a PDF
+with scanned pages is refused with `422`; a PDF with a text layer is still read.
+
 ## Alternative Stage 1: validated ID ranges
 
 `DVD_LOGICAL_PARTITION_MODE=ranges` selects the experimental source-preserving path. The default

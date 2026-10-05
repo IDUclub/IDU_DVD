@@ -200,7 +200,7 @@ class TestRequeueDead:
 # Worker
 # --------------------------------------------------------------------------------------
 class FakeParser:
-    def extract_raw(self, path):
+    def extract_raw(self, path, on_page=None):
         return [{"text": Path(path).name, "category": "NarrativeText", "html": None}]
 
 

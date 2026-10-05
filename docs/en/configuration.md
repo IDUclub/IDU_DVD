@@ -306,7 +306,16 @@ Directed semantic dependencies between the fragments of one document (see *Stage
 | `DVD_INGEST_MAX_ATTEMPTS` | `3` | processing attempts before a job is dead-lettered. Every restart mid-processing costs one attempt, which also caps how often a document that reliably kills the process can take the service down with it on boot |
 | `DVD_INGEST_PAYLOAD_PREFIX` | `queue` | MinIO key prefix for direct-ingestion payloads parked while queued |
 | `DVD_UPLOAD_DIR` | `./_uploads` | directory for temporary upload files |
-| `DVD_ALLOWED_EXTENSIONS` | `[".docx",".txt",".md",".html",".htm"]` | allowed extensions (OCR-free formats handled by `unstructured`; scanned PDF/OCR is deferred — add `".pdf"` once the heavy backends are provisioned) |
+| `DVD_ALLOWED_EXTENSIONS` | `[".docx",".pdf",".txt",".md",".html",".htm"]` | allowed extensions; a PDF is read through its text layer, scanned pages through OCR |
+| `DVD_OCR_BASE_URL` | `""` | OCR service (dots.ocr on vLLM, OpenAI-compatible); empty = OCR off, scanned PDFs refused |
+| `DVD_OCR_MODEL` | `""` | model name; empty = the first model the server lists |
+| `DVD_OCR_API_KEY` | — | Bearer key of the OCR server |
+| `DVD_OCR_TIMEOUT` | `300` | seconds per page request |
+| `DVD_OCR_MAX_RETRIES` | `3` | attempts per page on 5xx / transport errors (4xx fails at once) |
+| `DVD_OCR_CONCURRENCY` | `1` | parallel page requests; the contour server handles about one page at a time |
+| `DVD_OCR_DPI` | `200` | render resolution of a scanned page |
+| `DVD_OCR_MIN_TEXT_CHARS` | `30` | a page with a shorter text layer is treated as a scan |
+| `DVD_OCR_CACHE_DIR` | `./_uploads/ocr_cache` | recognized pages per file hash; a retried job reads them back |
 
 ### Document identity defaults
 

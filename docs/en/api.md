@@ -121,8 +121,9 @@ filter, and cite without re-parsing. `external_ids` / `metadata` must be JSON ob
 
 Behaviour:
 
-- Accepted formats are governed by `DVD_ALLOWED_EXTENSIONS` (default `.docx`, `.txt`, `.md`, `.html`,
-  `.htm` — OCR-free formats handled by `unstructured`). Any other format — `415`.
+- Accepted formats are governed by `DVD_ALLOWED_EXTENSIONS` (default `.docx`, `.pdf`, `.txt`, `.md`,
+  `.html`, `.htm`). Scanned PDF pages are recognized by OCR in the worker; without
+  `DVD_OCR_BASE_URL` such a PDF is refused with `422`. Any other format — `415`.
 - A file whose text fully matches an already-loaded one is rejected — `400`. The match comes from
   the Redis registry, which is trusted only while Qdrant still backs it: when a registered name has
   no points left (the collection was re-created, the Qdrant instance replaced), the entry is treated

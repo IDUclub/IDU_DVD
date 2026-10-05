@@ -51,6 +51,9 @@ class FakeParser:
     def content_hash(self, raw):
         return "hash-1"
 
+    def upload_hash(self, path):
+        return self.content_hash(self.extract_raw(path))
+
 
 class FakeRegistry:
     def __init__(self):
@@ -363,7 +366,7 @@ class TestUpload:
 
     def test_unsupported_extension_rejected(self, client):
         c, _ = client
-        resp = c.post("/documents", files={"file": ("scan.pdf", b"data")})
+        resp = c.post("/documents", files={"file": ("scan.djvu", b"data")})
         assert resp.status_code == 415
 
     def test_manual_name_and_version_forwarded(self, client):
@@ -438,7 +441,7 @@ class TestUpdateDocument:
     def test_unsupported_extension_rejected(self, client):
         c, _ = client
         resp = c.patch(
-            "/documents/Известный документ", files={"file": ("scan.pdf", b"data")}
+            "/documents/Известный документ", files={"file": ("scan.djvu", b"data")}
         )
         assert resp.status_code == 415
 

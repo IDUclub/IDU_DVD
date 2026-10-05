@@ -277,7 +277,7 @@ async def upload_document(
     ingestion queue and outlives both the client connection and the process.
     """
     job_id = str(uuid.uuid4())
-    path, _, content_hash = await _receive_file(file, settings, parser, job_id)
+    path, content_hash = await _receive_file(file, settings, parser, job_id)
     _reject_duplicate(registry, ingestion.qdrant, content_hash, path)
     try:
         source_key = await _park_source(storage, path, content_hash)
@@ -333,7 +333,7 @@ async def update_document(
     if not registry.has_name(name):
         raise HTTPException(404, f"Документ не найден: {name}")
     job_id = str(uuid.uuid4())
-    path, _, content_hash = await _receive_file(file, settings, parser, job_id)
+    path, content_hash = await _receive_file(file, settings, parser, job_id)
     _reject_duplicate(registry, ingestion.qdrant, content_hash, path)
     try:
         source_key = await _park_source(storage, path, content_hash)
@@ -380,7 +380,7 @@ async def reload_document(
     The original file is saved to MinIO before indexing starts (fail-closed).
     """
     job_id = str(uuid.uuid4())
-    path, _, content_hash = await _receive_file(file, settings, parser, job_id)
+    path, content_hash = await _receive_file(file, settings, parser, job_id)
     try:
         source_key = await _park_source(storage, path, content_hash)
     except Exception as exc:  # noqa: BLE001

@@ -121,8 +121,8 @@ async def document_meta(
 
 async def receive_file(
     file: UploadFile, settings: Settings, parser: DocumentParser, job_id: str
-) -> tuple[str, list[dict], str]:
-    """Validate the extension, persist the upload and pre-parse it: (path, raw, hash)."""
+) -> tuple[str, str]:
+    """Validate the extension, persist the upload and hash it: (path, content hash)."""
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in settings.allowed_extensions:
         raise HTTPException(
@@ -134,13 +134,14 @@ async def receive_file(
     path = os.path.join(settings.upload_dir, f"{job_id}_{file.filename}")
     with open(path, "wb") as f:
         shutil.copyfileobj(file.file, f)
-    # Cheap text extraction BEFORE the heavy LLM pass — also powers the duplicate check.
+    # Cheap text extraction BEFORE the heavy LLM pass — it powers the duplicate check. A
+    # scanned PDF is hashed by its bytes instead: OCR runs in the worker, not in the request.
     try:
-        raw = await run_in_threadpool(parser.extract_raw, path)
+        content_hash = await run_in_threadpool(parser.upload_hash, path)
     except Exception as exc:  # noqa: BLE001
         os.remove(path)
         raise HTTPException(422, f"Не удалось разобрать файл: {exc}")
-    return path, raw, parser.content_hash(raw)
+    return path, content_hash
 
 
 def duplicate_conflict(

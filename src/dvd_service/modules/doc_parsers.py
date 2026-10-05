@@ -15,6 +15,7 @@ import structlog
 from src.api_clients import ChatClient
 from src.common.config import Settings
 from src.dvd_service.modules.docx_reader import DocxReader
+from src.dvd_service.modules.pdf_reader import PdfReader, file_hash
 from src.dvd_service.modules.range_partitioning import RangePartitioner
 from src.dvd_service.modules.reference_patterns import DESIGNATION_PREFIXES
 from src.dvd_service.modules.source_layout import SourceLayout
@@ -169,9 +170,16 @@ SEMANTIC_MERGE_SYSTEM = (
 class DocumentParser:
     """Parses a document into logical parts (Stage 1 + 1.5)."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, ocr=None) -> None:
         self.settings = settings
         self.range_partitioner = RangePartitioner(settings, STRUCTURAL_GROUP_MAX_CHARS)
+        self.pdf = PdfReader(
+            ocr,
+            cache_dir=settings.ocr_cache_dir,
+            dpi=settings.ocr_dpi,
+            min_text_chars=settings.ocr_min_text_chars,
+            concurrency=settings.ocr_concurrency,
+        )
 
     @property
     def version(self) -> str:
@@ -190,9 +198,12 @@ class DocumentParser:
         )
 
     # --- extraction and hashing (for dedup before the heavy LLM pass) ---
-    def extract_raw(self, path: str) -> list[dict]:
-        if os.path.splitext(str(path))[1].lower() == ".docx":
+    def extract_raw(self, path: str, on_page=None) -> list[dict]:
+        ext = os.path.splitext(str(path))[1].lower()
+        if ext == ".docx":
             return DocxReader().read(path)
+        if ext == ".pdf":
+            return self.pdf.read(path, on_page=on_page)
         from unstructured.partition.auto import partition
 
         els = partition(
@@ -238,6 +249,23 @@ class DocumentParser:
             return [min(xs), min(ys), max(xs), max(ys)]
         except (TypeError, ValueError, IndexError):
             return None
+
+    def upload_hash(self, path: str) -> str:
+        """The duplicate-check hash of an upload, computed without the heavy work.
+
+        A scanned PDF is not recognized in the upload request (OCR takes minutes per dozen
+        pages): it is identified by its bytes, and the worker recognizes it later. Every
+        other file is identified by its extracted text, as before.
+        """
+        if os.path.splitext(str(path))[1].lower() == ".pdf":
+            scanned = self.pdf.scanned_pages(path)
+            if scanned and self.pdf.ocr is None:
+                raise ValueError(
+                    "PDF содержит сканированные страницы, а OCR не настроен (DVD_OCR_BASE_URL)"
+                )
+            if scanned:
+                return file_hash(path)
+        return self.content_hash(self.extract_raw(path))
 
     @staticmethod
     def content_hash(raw: list[dict]) -> str:
