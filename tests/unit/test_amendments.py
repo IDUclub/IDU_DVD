@@ -325,3 +325,34 @@ def test_extraction_drops_operations_read_off_quoted_text_or_appendices():
     assert ops[0]["item"] == "1.1"
     assert ops[0]["content_blocks"] == [3]  # ids outside the window are dropped
     assert "[3] <table>" in client.calls[0]
+
+
+def test_the_acts_own_words_correct_the_models_reading():
+    act = [
+        _p("Изменения в правила землепользования и застройки"),
+        _p("1.2. часть 2 дополнить текстом следующего содержания:"),
+        _p("«Зоны охраны объектов культурного наследия"),
+        _p("ОЗ.1 - Охранная зона (ОЗ (участок 1), ОЗ (участок 2))»."),
+        _p(
+            "2. Дополнить обязательное приложение к правилам «Сведения о границах "
+            "территориальных зон» описаниями местоположения границ территориальной зоны ОИ-1.15."
+        ),
+        _p("3. Часть 4 изложить в следующей редакции:"),
+        _p("«4. Новая часть.»"),
+    ]
+    adds = op(
+        item="1.2", item_block=1, scope=["Статья 19", "часть 2"], action="replace"
+    )
+    boundaries = op(item="2", item_block=4, action="append_words", text="описаниями")
+    restates = op(
+        item="3", item_block=5, scope=["Статья 19", "часть 4"], action="replace"
+    )
+    client = FakeClient([{"operations": [adds, boundaries, restates]}])
+
+    ops = extract_operations(act, client)
+
+    # «дополнить» is an insert, and its content is the passage quoted after the item
+    assert [(o["item"], o["action"], o["content_blocks"]) for o in ops] == [
+        ("1.2", "insert", [2]),
+        ("3", "replace", [6]),
+    ]

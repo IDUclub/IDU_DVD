@@ -37,7 +37,7 @@ from src.dvd_service.modules.windowing import make_windows
 log = structlog.get_logger(__name__)
 
 #: Bumped whenever extraction changes meaning, so cached operations are re-extracted.
-EXTRACTOR_VERSION = 1
+EXTRACTOR_VERSION = 2
 
 ACTIONS = ("replace_words", "append_words", "insert", "replace", "delete", "repeal")
 TARGETS = ("text", "item", "table", "rows")
@@ -923,5 +923,68 @@ def extract_operations(
         or not op["content_blocks"]
         or any(i in quoted for i in op["content_blocks"])
     ]
+    operations = _by_wording(operations, amendment)
     log.info("amendment_ops_extracted", operations=len(operations))
     return operations
+
+
+# The act's own words for what an item does; they win over the model's reading of them.
+_ADDS = re.compile(r"\bдополн", re.I)
+_RESTATES = re.compile(r"\bизлож\w*\b.{0,40}\bредакци", re.I)
+# Appendices that are not text: boundary descriptions with coordinates, the zoning map.
+_NOT_TEXT = re.compile(
+    r"описани\w*\s+местоположени\w*\s+границ|координат|"
+    r"карт\w*\s+градостроительного\s+зонирования",
+    re.I,
+)
+_QUOTED = re.compile(r"«[^«»]*»")
+
+
+def _unquoted(text: str) -> str:
+    """An item's own words: the names and new text it quotes taken out (nested ones too)."""
+    while True:
+        stripped = _QUOTED.sub(" ", text)
+        if stripped == text:
+            return text
+        text = stripped
+
+
+def _by_wording(operations: list[dict], amendment: list[dict]) -> list[dict]:
+    """Correct the operations by what each item says it does.
+
+    The model reads the same act differently from run to run: «часть 2 дополнить текстом
+    следующего содержания: «…»» came back as a ``replace`` with no content, and an item
+    adding boundary descriptions to the appendix «Сведения о границах территориальных
+    зон» as a text change. An item that adds (and does not restate) is an ``insert``; one
+    about boundary descriptions, coordinates or the zoning map changes no text; new
+    content missing from an ``insert``/``replace`` is the first passage quoted after the
+    item, before the next one.
+    """
+    found = passages(amendment)
+    heads = sorted(
+        {op["item_block"] for op in operations if op.get("item_block") is not None}
+    )
+    kept = []
+    for op in operations:
+        head = op.get("item_block")
+        if head is None or not 0 <= head < len(amendment):
+            kept.append(op)
+            continue
+        words = _unquoted(amendment[head]["text"])
+        if _NOT_TEXT.search(words):
+            log.info("amendment_op_not_text", item=op.get("item"), block=head)
+            continue
+        if (
+            op.get("action") == "replace"
+            and _ADDS.search(words)
+            and not _RESTATES.search(words)
+        ):
+            op["action"] = "insert"
+        if op.get("action") in ("insert", "replace") and not op.get("content_blocks"):
+            later = [h for h in heads if h > head]
+            limit = later[0] if later else len(amendment)
+            quoted = [a for a, _ in found if head <= a < limit]
+            if quoted:
+                op["content_blocks"] = [quoted[0]]
+        kept.append(op)
+    return kept
