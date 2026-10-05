@@ -1,3 +1,9 @@
+## v0.21.0 (2026-10-05)
+
+[feat/explanation-links](https://github.com/IDUclub/IDU_DVD/pull/110) (#110)
+
+- feat: serve and announce the document an act explains
+
 ## v0.20.0 (2026-10-05)
 
 [feat/amendments](https://github.com/IDUclub/IDU_DVD/pull/109) (#109)
