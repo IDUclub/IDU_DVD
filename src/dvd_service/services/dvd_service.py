@@ -2291,6 +2291,11 @@ class LibraryService:
             if rec
             else self._summary_from_payload(payloads[0], len(payloads))
         )
+        target = self.registry.amendment_target(summary.name)
+        if target:
+            link = self.registry.amendment(target, summary.name) or {}
+            kind = "explains" if link.get("kind") == "explains" else "amends"
+            summary = summary.model_copy(update={kind: target})
         fragments = [
             DocumentFragment(
                 **{k: pl.get(k) for k in DocumentFragment.model_fields if k in pl}
