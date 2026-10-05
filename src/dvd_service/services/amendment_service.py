@@ -39,6 +39,7 @@ import structlog
 
 from src.api_clients import ChatClient, create_llm
 from src.api_clients.llm_client import OpenAICompatibleClient
+from src.broker.events import DocumentUpdated
 from src.common.config import Settings
 from src.dvd_service.modules.amendments import (
     EXTRACTOR_VERSION,
@@ -323,6 +324,8 @@ class AmendmentService:
             self.enqueue(previous_target)
         if kind == "amends":
             record["job_id"] = self.enqueue(target)
+        if kind == "explains" or previous.get("kind") == "explains":
+            self._announce(name, origin.get("version"))
         return record
 
     def unlink(self, name: str) -> str | None:
@@ -334,7 +337,26 @@ class AmendmentService:
         self.registry.unlink_amendment(name)
         if record.get("kind") == "amends" and self.registry.has_name(target):
             self.enqueue(target)
+        if record.get("kind") == "explains" and self.registry.has_name(name):
+            self._announce(name)
         return target
+
+    def _announce(self, name: str, version: str | None = None) -> None:
+        """Tell consumers an explanation link of act ``name`` changed (its text did not).
+
+        An explanation changes no text, so no edition is built: the act itself is announced
+        as updated, and a consumer that reads its ``explains`` (NormGraph) relinks it. At
+        upload the link is made after the act's own event, so this one follows it.
+        """
+        outbox = getattr(self.ingestion, "outbox", None)
+        if outbox is None:
+            return
+        if version is None:
+            try:
+                version = self._origin(name).get("version")
+            except KeyError:
+                return
+        outbox.enqueue(DocumentUpdated(document_name=name, version=version or ""))
 
     def enqueue(self, target: str, *, reextract: bool = False) -> str:
         # The routers package imports the dependency container, which imports this module.

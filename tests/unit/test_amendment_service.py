@@ -278,3 +278,36 @@ def test_links_are_validated(stack):
     overview = service.overview(RULES)
     assert overview["amendments"][0]["kind"] == "explains"
     assert service.overview("Приказ № 170")["amends"]["target"] == RULES
+
+
+def _events(wired):
+    entries = []
+    while wired.outbox.size():
+        entries.append(wired.outbox.peek())
+        wired.outbox.commit()
+    return [(e["model"], e["payload"]["document_name"]) for e in entries]
+
+
+def test_an_explanation_link_is_served_and_announced(stack):
+    wired, service = stack.wired, stack.service
+    _events(wired)
+    service.link("Приказ № 170", RULES, "explains")
+    # the act's text did not change: it is announced so consumers relink it
+    assert _events(wired) == [("DocumentUpdated", "Приказ № 170")]
+    act = wired.library.get_document(stack.act["doc_id"])
+    assert (act.explains, act.amends) == (RULES, None)
+    rules = next(d for d in wired.library.list_documents().documents if d.name == RULES)
+    assert wired.library.get_document(rules.doc_id).explains is None
+
+    service.unlink("Приказ № 170")
+    assert _events(wired) == [("DocumentUpdated", "Приказ № 170")]
+    assert wired.library.get_document(stack.act["doc_id"]).explains is None
+
+
+def test_an_amending_link_is_served_without_an_announcement(stack):
+    wired, service = stack.wired, stack.service
+    _events(wired)
+    service.link("Приказ № 170", RULES)
+    assert _events(wired) == []  # the rebuilt edition is announced by its own update
+    act = wired.library.get_document(stack.act["doc_id"])
+    assert (act.amends, act.explains) == (RULES, None)

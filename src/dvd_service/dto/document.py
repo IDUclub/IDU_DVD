@@ -78,6 +78,10 @@ class DocumentSummary(AdministrativeScope):
     tags: list[str] = Field(default_factory=list)
     # proxied download link (this service, not a raw MinIO URL) — None if no source was stored
     source_file_url: str | None = None
+    # an act linked to the stored document it changes or clarifies (see AmendmentService);
+    # filled by ``GET /library/documents/{doc_id}``
+    amends: str | None = None
+    explains: str | None = None
 
 
 class DocumentFragment(BaseModel):

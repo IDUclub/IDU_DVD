@@ -381,7 +381,9 @@ An amending act ("О внесении изменений в Правила …")
 searchable on its own. It is also linked to the document it amends — through `amends` at upload
 (or `PUT /documents/{name}/amends` later), or by its title: an act whose heading says "о внесении
 изменений в …" is linked to the one stored document that heading names (no link when none or
-several fit). A clarification is linked with `explains`; it changes no text.
+several fit). A clarification is linked with `explains`; it changes no text. Linking or unlinking
+it announces the act as `DocumentUpdated` (its `/library` document names the target in
+`explains`), so a consumer such as NormGraph can relate the two.
 
 Every `amends` link queues a `consolidate` job for the amended document:
 
