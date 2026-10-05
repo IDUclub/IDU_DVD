@@ -879,7 +879,8 @@ Each fragment carries `id`, `order`, `kind`, `type`, `numbering`, `depth`, `brea
 `page_start`, `page_end`, `span_id`), `tags`, `metadata`, `references` (outgoing links to other
 documents/clauses — same shape as in search hits), `text`, `table_html` and `amended_by` (acts
 whose changes the fragment carries in a consolidated edition). Editions of a document share its
-`doc_id`; fragments of superseded editions are left out unless `?include_superseded=true`.
+`doc_id`; fragments of superseded editions are left out unless `?include_superseded=true`. An
+act linked to another document names it in `amends` or `explains` (otherwise both are `null`).
 
 ```json
 {

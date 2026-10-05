@@ -887,7 +887,8 @@ curl "http://localhost:8000/library/lookup?key=СП%2019.13330.2019"
 `parent_id`/`prev_id`/`next_id`, привязку к источнику (`char_start`, `char_end`, `page_start`,
 `page_end`, `span_id`), `tags`, `metadata`, `text`, `table_html` и `amended_by` (акты, изменения
 которых фрагмент несёт в собранной редакции). Редакции документа делят его `doc_id`; фрагменты
-заменённых редакций не возвращаются, если не указать `?include_superseded=true`.
+заменённых редакций не возвращаются, если не указать `?include_superseded=true`. Акт, связанный
+с другим документом, называет его в `amends` или `explains` (иначе оба `null`).
 
 ```json
 {
