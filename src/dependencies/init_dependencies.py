@@ -13,6 +13,7 @@ from minio import Minio
 
 from src.admin_service.branding import BrandingService
 from src.api_clients import AuthHelperClient, UrbanApiClient, probe_embedding_dim
+from src.api_clients.ocr_client import DotsOcrClient
 from src.broker.outbox import EventOutbox
 from src.broker.publisher import KafkaPublisher
 from src.common.auth import SyncServiceTokenAuth, build_service_auth
@@ -199,7 +200,19 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     user_document_storage = DocumentStorage(minio_client, s.minio_bucket_user_documents)
     user_document_storage.ensure_bucket()
 
-    parser = DocumentParser(s)
+    # Scanned PDF pages go to the OCR service; without one only text-layer PDFs are read.
+    ocr = (
+        DotsOcrClient(
+            s.ocr_base_url,
+            model=s.ocr_model,
+            api_key=s.ocr_api_key.get_secret_value() if s.ocr_api_key else None,
+            timeout=s.ocr_timeout,
+            max_retries=s.ocr_max_retries,
+        )
+        if s.ocr_base_url
+        else None
+    )
+    parser = DocumentParser(s, ocr=ocr)
     structure = StructureTagger(s)
     hierarchy = HierarchyBuilder()
     version_detector = VersionDetector()

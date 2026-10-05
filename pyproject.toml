@@ -1,6 +1,6 @@
 [project]
 name = "IDU_DVD"
-version = "0.18.3"
+version = "0.19.0"
 requires-python = "<3.14,>=3.11"
 dependencies = [
     "fastapi>=0.141.1",
@@ -12,6 +12,7 @@ dependencies = [
     "otteroad>=0.3.0",
     "pillow>=12.2.0",
     "pydantic-settings>=2.15.0",
+    "pypdfium2>=4.30",
     "python-multipart>=0.0.32",
     "qdrant-client>=1.19.0",
     "redis>=8.1.0",

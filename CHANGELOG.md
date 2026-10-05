@@ -1,3 +1,10 @@
+## v0.19.0 (2026-10-05)
+
+[feat/pdf-ocr](https://github.com/IDUclub/IDU_DVD/pull/107) (#107)
+
+- feat: read PDF uploads, recognizing scanned pages with OCR
+- fix: fit OCR requests into the model context
+
 ## v0.18.3 (2026-10-02)
 
 [fix/version-status-token](https://github.com/IDUclub/IDU_DVD/pull/106) (#106)

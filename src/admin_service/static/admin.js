@@ -217,6 +217,7 @@ function formatDate(value) {
 
 const stageLabels = {
   queued: "Ожидание в очереди",
+  ocr: "Распознавание сканов",
   preparing: "Подготовка документа",
   "structure-markup": "Разбор документа",
   "type-tagging": "Построение структуры и тегирование",

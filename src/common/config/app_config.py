@@ -257,9 +257,29 @@ class Settings(BaseSettings):
 
     # --- Upload ---
     upload_dir: str = "./_uploads"
-    # Lightweight, OCR-free formats handled by unstructured. Scanned PDF/OCR is deferred
-    # (heavy torch/poppler/tesseract backends); add ".pdf" once those are provisioned.
-    allowed_extensions: list[str] = [".docx", ".txt", ".md", ".html", ".htm"]
+    # A PDF is read page by page: its text layer where it has one, OCR for scanned pages.
+    allowed_extensions: list[str] = [".docx", ".pdf", ".txt", ".md", ".html", ".htm"]
+
+    # --- OCR (scanned PDF pages) ---
+    # dots.ocr served by vLLM: OpenAI-compatible /v1/chat/completions with a page image,
+    # one page per request. Empty URL turns OCR off: a PDF with scanned pages is then refused
+    # at upload, a PDF with a text layer is still read.
+    ocr_base_url: str = ""
+    ocr_model: str = ""  # empty → the first model the server lists
+    ocr_api_key: SecretStr | None = None
+    ocr_timeout: float = 300.0
+    ocr_max_retries: int = 3
+    # Parallel page requests. The contour server handles about one page at a time.
+    ocr_concurrency: int = 1
+    ocr_dpi: int = 200  # render resolution of a scanned page
+    # Upper bound on the rendered page size. The image and the answer share the model
+    # context (dots.mocr on the contour serves 8192 tokens, ~784 pixels per image token):
+    # an A3 sheet at 200 dpi alone overflows it, so larger pages are rendered smaller.
+    ocr_max_pixels: int = 3_500_000
+    # A page whose text layer is shorter than this is treated as a scan.
+    ocr_min_text_chars: int = 30
+    # Recognized pages are cached here per file hash, so a retried job does not OCR again.
+    ocr_cache_dir: str = "./_uploads/ocr_cache"
 
     # --- Document identity defaults (general-purpose corpus metadata) ---
     # Generic fallbacks for the cross-service payload fields when the uploader omits them.

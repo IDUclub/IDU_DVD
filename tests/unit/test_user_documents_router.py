@@ -30,6 +30,9 @@ class FakeParser:
     def content_hash(self, raw):
         return "hash-1"
 
+    def upload_hash(self, path):
+        return self.content_hash(self.extract_raw(path))
+
 
 class FakeJobs:
     def __init__(self):
@@ -315,7 +318,7 @@ class TestUploadDocument:
         c, _, _, _ = client
         resp = c.post(
             "/user-documents",
-            files={"file": ("scan.pdf", b"data")},
+            files={"file": ("scan.djvu", b"data")},
             data={"user_id": "u1", "scenario_id": "s1", "project_id": "p1"},
         )
         assert resp.status_code == 415
