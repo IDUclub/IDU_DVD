@@ -878,7 +878,8 @@ Each fragment carries `id`, `order`, `kind`, `type`, `numbering`, `depth`, `brea
 `parent_id`/`prev_id`/`next_id`/`child_ids`, the source grounding (`char_start`, `char_end`,
 `page_start`, `page_end`, `span_id`), `tags`, `metadata`, `references` (outgoing links to other
 documents/clauses — same shape as in search hits), `text`, `table_html` and `amended_by` (acts
-whose changes the fragment carries in a consolidated edition).
+whose changes the fragment carries in a consolidated edition). Editions of a document share its
+`doc_id`; fragments of superseded editions are left out unless `?include_superseded=true`.
 
 ```json
 {

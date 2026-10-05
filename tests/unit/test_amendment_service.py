@@ -207,6 +207,14 @@ def test_consolidation_builds_the_current_edition(stack):
     ]
     assert changed and all(pl["amended_by"] == ["Приказ № 170"] for pl in changed)
 
+    # The editions share the document id: a consumer rebuilding the document from the library
+    # sees the text in force once.
+    doc_id = changed[0]["doc_id"]
+    current = wired.library.get_document(doc_id).text
+    assert "20 метров" in current and "15 метров" not in current
+    everything = wired.library.get_document(doc_id, include_superseded=True).text
+    assert "20 метров" in everything and "15 метров" in everything
+
     act = wired.registry.amendment(RULES, "Приказ № 170")
     assert act["status"] == "applied"
     assert act["results"][0]["status"] == "applied"

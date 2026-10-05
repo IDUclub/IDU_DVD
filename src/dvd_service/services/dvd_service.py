@@ -2268,10 +2268,21 @@ class LibraryService:
         documents.sort(key=lambda document: (document.name, document.version))
         return AvailableDocumentListResponse(count=len(documents), documents=documents)
 
-    def get_document(self, doc_id: str) -> DocumentDetail | None:
+    def get_document(
+        self, doc_id: str, include_superseded: bool = False
+    ) -> DocumentDetail | None:
+        """A document with its fragments in reading order.
+
+        Editions of a document share its ``doc_id``. The fragments of editions replaced by a
+        consolidated one (``status=superseded``) are left out unless asked for, so a consumer
+        that rebuilds the document from its fragments sees the text in force once.
+        """
         payloads = self.qdrant.list_by_doc(doc_id)
         if not payloads:
             return None
+        if not include_superseded:
+            current = [pl for pl in payloads if pl.get("status") != "superseded"]
+            payloads = current or payloads
         payloads.sort(key=lambda pl: pl.get("order", 0) or 0)
 
         rec = self.registry.get_document(doc_id)
