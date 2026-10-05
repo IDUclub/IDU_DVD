@@ -1,10 +1,12 @@
 """PDF reading: text layer as is, scanned pages through OCR, cached per file."""
 
+import io
 import json
 
 import httpx
 import pypdfium2 as pdfium
 import pytest
+from PIL import Image
 
 from src.api_clients.ocr_client import DotsOcrClient, OcrError, parse_layout
 from src.common.config import Settings
@@ -22,6 +24,7 @@ PAGE = [
     {"bbox": [10, 10, 500, 40], "category": "Page-header", "text": "Приложение"},
     {"bbox": [10, 50, 500, 90], "category": "Title", "text": "## Изменения в правила"},
     {"bbox": [10, 100, 500, 140], "category": "Text", "text": "1. В статье **17.1**:"},
+    {"category": "Text", "text": "&lt;*&gt; - вид использования"},
     {
         "bbox": [10, 150, 500, 300],
         "category": "Table",
@@ -84,10 +87,17 @@ class FakeOcr:
 
 def test_layout_blocks_keep_text_tables_and_drop_page_furniture():
     blocks = layout_blocks(PAGE, 3)
-    assert [b["category"] for b in blocks] == ["Title", "NarrativeText", "Table"]
+    assert [b["category"] for b in blocks] == [
+        "Title",
+        "NarrativeText",
+        "NarrativeText",
+        "Table",
+    ]
     assert blocks[0]["text"] == "Изменения в правила"
     assert blocks[1]["text"] == "1. В статье 17.1:"
-    table = blocks[2]
+    assert blocks[2]["text"] == "<*> - вид использования"
+    assert blocks[2]["bbox"] is None
+    table = blocks[3]
     assert table["html"].startswith("<table>")
     assert table["text"] == "7.1.\nпредельное количество этажей\nэтаж\n2"
     assert all(b["page"] == 3 for b in blocks)
@@ -110,6 +120,11 @@ def test_parse_layout_accepts_fences_wrappers_and_plain_text():
         {"category": "Text", "text": "Статья 1. Текст"}
     ]
     assert parse_layout("") == []
+    # An answer cut off by the token limit keeps the elements that were complete.
+    cut = (
+        '[{"category": "Text", "text": "a"}, {"category": "Table", "text": "<table><tr>'
+    )
+    assert parse_layout(cut) == [{"category": "Text", "text": "a"}]
 
 
 def test_text_layer_pages_are_read_without_ocr(tmp_path):
@@ -130,7 +145,7 @@ def test_scanned_pages_go_to_ocr_in_page_order_and_are_cached(tmp_path):
     blocks = reader.read(
         path, on_page=lambda done, total: progress.append((done, total))
     )
-    assert [b["page"] for b in blocks] == [1, 2, 2, 2, 3, 3, 3]
+    assert [b["page"] for b in blocks] == [1, 2, 2, 2, 2, 3, 3, 3, 3]
     assert blocks[0]["text"] == TEXT
     assert ocr.calls == 2
     assert progress == [(1, 2), (2, 2)]
@@ -138,6 +153,15 @@ def test_scanned_pages_go_to_ocr_in_page_order_and_are_cached(tmp_path):
     again = PdfReader(FakeOcr(layout=[]), cache_dir=str(tmp_path / "cache"))
     assert again.read(path) == blocks
     assert again.ocr.calls == 0
+
+
+def test_large_pages_are_rendered_within_the_pixel_budget():
+    pdf = pdfium.PdfDocument.new()
+    pdf.new_page(1190, 842)  # A3 landscape: 3308 x 2339 at 200 dpi
+    png = PdfReader(FakeOcr(), dpi=200, max_pixels=1_000_000)._png(pdf[0])
+    width, height = Image.open(io.BytesIO(png)).size
+    assert width * height <= 1_000_000 * 1.01  # rendering rounds sides up
+    assert width > height
 
 
 def test_scans_without_ocr_are_refused(tmp_path):
@@ -189,6 +213,8 @@ def test_ocr_client_sends_the_page_and_reads_the_layout():
     assert _client(handler).layout(b"\x89PNG") == [{"category": "Text", "text": "a"}]
     assert seen["auth"] == "Bearer k"
     assert seen["body"]["model"] == "dots.ocr"
+    # The answer may take whatever context the image leaves: no fixed max_tokens.
+    assert "max_tokens" not in seen["body"]
     image = seen["body"]["messages"][0]["content"][0]["image_url"]["url"]
     assert image.startswith("data:image/png;base64,")
 

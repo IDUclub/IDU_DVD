@@ -177,6 +177,7 @@ class DocumentParser:
             ocr,
             cache_dir=settings.ocr_cache_dir,
             dpi=settings.ocr_dpi,
+            max_pixels=settings.ocr_max_pixels,
             min_text_chars=settings.ocr_min_text_chars,
             concurrency=settings.ocr_concurrency,
         )

@@ -66,7 +66,7 @@ def layout_blocks(elements: list[dict], page: int) -> list[dict]:
             if not text:
                 continue
         else:
-            text = _MARKDOWN.sub("", text).strip()
+            text = unescape(_MARKDOWN.sub("", text)).strip()
         bbox = el.get("bbox")
         blocks.append(
             {
@@ -89,12 +89,14 @@ class PdfReader:
         *,
         cache_dir: str | None = None,
         dpi: int = 200,
+        max_pixels: int = 3_500_000,
         min_text_chars: int = 30,
         concurrency: int = 1,
     ) -> None:
         self.ocr = ocr
         self.cache_dir = cache_dir
         self.scale = dpi / 72
+        self.max_pixels = max_pixels
         self.min_text_chars = min_text_chars
         self.concurrency = max(1, concurrency)
 
@@ -149,8 +151,10 @@ class PdfReader:
         return elements
 
     def _png(self, page) -> bytes:
+        width, height = page.get_size()
+        scale = min(self.scale, (self.max_pixels / (width * height)) ** 0.5)
         buffer = io.BytesIO()
-        page.render(scale=self.scale).to_pil().convert("RGB").save(buffer, format="PNG")
+        page.render(scale=scale).to_pil().convert("RGB").save(buffer, format="PNG")
         return buffer.getvalue()
 
     def read(self, path: str, on_page=None) -> list[dict]:

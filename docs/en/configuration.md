@@ -314,6 +314,7 @@ Directed semantic dependencies between the fragments of one document (see *Stage
 | `DVD_OCR_MAX_RETRIES` | `3` | attempts per page on 5xx / transport errors (4xx fails at once) |
 | `DVD_OCR_CONCURRENCY` | `1` | parallel page requests; the contour server handles about one page at a time |
 | `DVD_OCR_DPI` | `200` | render resolution of a scanned page |
+| `DVD_OCR_MAX_PIXELS` | `3500000` | upper bound on the rendered page; the image and the answer share the model context, so larger sheets (A3 and up) are rendered smaller |
 | `DVD_OCR_MIN_TEXT_CHARS` | `30` | a page with a shorter text layer is treated as a scan |
 | `DVD_OCR_CACHE_DIR` | `./_uploads/ocr_cache` | recognized pages per file hash; a retried job reads them back |
 

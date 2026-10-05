@@ -56,11 +56,27 @@ def parse_layout(answer: str) -> list[dict]:
     try:
         data = json.loads(body)
     except json.JSONDecodeError:
-        log.warning("ocr_layout_not_json", chars=len(body))
-        return [{"category": "Text", "text": body}]
+        data = _complete_elements(body)
+        if data is None:
+            log.warning("ocr_layout_not_json", chars=len(body))
+            return [{"category": "Text", "text": body}]
+        log.warning("ocr_layout_truncated", elements=len(data))
     if isinstance(data, dict):
         data = data.get("layout") or data.get("elements") or [data]
     return [el for el in data if isinstance(el, dict)]
+
+
+def _complete_elements(body: str) -> list | None:
+    """The complete elements of an array cut off mid-element (the answer ran out of tokens)."""
+    if not body.startswith("["):
+        return None
+    end = body.rfind("}")
+    while end > 0:
+        try:
+            return json.loads(body[: end + 1] + "]")
+        except json.JSONDecodeError:
+            end = body.rfind("}", 0, end)
+    return None
 
 
 class DotsOcrClient:
@@ -73,7 +89,7 @@ class DotsOcrClient:
         api_key: str | None = None,
         timeout: float = 300.0,
         max_retries: int = 3,
-        max_tokens: int = 16384,
+        max_tokens: int | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.base = base_url.rstrip("/")
@@ -110,7 +126,6 @@ class DotsOcrClient:
         body = {
             "model": self._model(),
             "temperature": 0.0,
-            "max_tokens": self.max_tokens,
             "messages": [
                 {
                     "role": "user",
@@ -121,6 +136,10 @@ class DotsOcrClient:
                 }
             ],
         }
+        # Without max_tokens vLLM lets the answer take whatever the context leaves after the
+        # image; a fixed value larger than that (dots.mocr serves 8192 tokens) is a 400.
+        if self.max_tokens:
+            body["max_tokens"] = self.max_tokens
         last: Exception | None = None
         for attempt in range(self.max_retries):
             try:

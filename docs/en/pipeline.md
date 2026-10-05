@@ -28,7 +28,7 @@ For `.docx`, the heavy unstructured backends (torch, OCR) are not engaged.
 
 **PDF.** `PdfReader` reads a PDF page by page. A page whose text layer has at least
 `DVD_OCR_MIN_TEXT_CHARS` characters is taken as is, one block per line. Any other page is a scan:
-it is rendered at `DVD_OCR_DPI` and sent to the OCR service (`DotsOcrClient`, dots.ocr behind an
+it is rendered at `DVD_OCR_DPI` (at most `DVD_OCR_MAX_PIXELS`) and sent to the OCR service (`DotsOcrClient`, dots.ocr behind an
 OpenAI-compatible vLLM, one page per request, `DVD_OCR_CONCURRENCY` in parallel). Its layout
 elements become blocks: titles and section headers → `Title`, list items → `ListItem`, text,
 captions, footnotes and formulas → `NarrativeText`, tables keep their HTML (`Table`); running

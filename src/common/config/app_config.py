@@ -272,6 +272,10 @@ class Settings(BaseSettings):
     # Parallel page requests. The contour server handles about one page at a time.
     ocr_concurrency: int = 1
     ocr_dpi: int = 200  # render resolution of a scanned page
+    # Upper bound on the rendered page size. The image and the answer share the model
+    # context (dots.mocr on the contour serves 8192 tokens, ~784 pixels per image token):
+    # an A3 sheet at 200 dpi alone overflows it, so larger pages are rendered smaller.
+    ocr_max_pixels: int = 3_500_000
     # A page whose text layer is shorter than this is treated as a scan.
     ocr_min_text_chars: int = 30
     # Recognized pages are cached here per file hash, so a retried job does not OCR again.
