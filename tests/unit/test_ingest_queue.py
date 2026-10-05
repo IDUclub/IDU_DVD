@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import structlog
@@ -557,3 +558,80 @@ def test_worker_logs_are_structured(worker, ingest_queue, fake_document_storage)
     with structlog.testing.capture_logs() as logs:
         worker(FakeIngestion())._process(ingest_queue.claim())
     assert [entry["event"] for entry in logs] == ["ingest_job_done"]
+
+
+class FakeAmendments:
+    def __init__(self, explode: Exception | None = None):
+        self.explode = explode
+        self.linked: list[tuple] = []
+        self.consolidated: list[tuple] = []
+
+    def after_ingest(self, result, raw, **kwargs):
+        self.linked.append((result["name"], kwargs))
+        if self.explode:
+            raise self.explode
+
+    def consolidate(self, name, **kwargs):
+        self.consolidated.append((name, kwargs))
+        kwargs["on_identity"](name, "2020 (ред. от 20.11.2023)")
+
+
+class TestAmendmentJobs:
+    def _worker(self, worker, ingestion, amendments):
+        runner = worker(ingestion)
+        runner.deps = SimpleNamespace(amendments=amendments)
+        return runner
+
+    def test_an_indexed_document_is_offered_for_linking_without_link_fields(
+        self, worker, ingest_queue, fake_document_storage
+    ):
+        fake_document_storage.upload("hash-a.docx", b"x")
+        meta = {"amends": "СП 1", "effective_date": "2023-11-20", "lang": "ru"}
+        ingest_queue.enqueue(_entry("a", meta=meta))
+        ingestion, amendments = FakeIngestion(), FakeAmendments()
+
+        self._worker(worker, ingestion, amendments)._process(ingest_queue.claim())
+
+        [(_, _, kwargs)] = ingestion.calls
+        assert "amends" not in kwargs and kwargs["lang"] == "ru"
+        assert amendments.linked == [
+            (
+                "СП 1",
+                {
+                    "content_hash": "hash-a",
+                    "effective_date": "2023-11-20",
+                    "amends": "СП 1",
+                    "explains": None,
+                },
+            )
+        ]
+
+    def test_a_failed_link_does_not_fail_the_indexed_document(
+        self, worker, ingest_queue, fake_document_storage
+    ):
+        fake_document_storage.upload("hash-a.docx", b"x")
+        ingest_queue.enqueue(_entry("a"))
+        amendments = FakeAmendments(explode=RuntimeError("redis down"))
+
+        self._worker(worker, FakeIngestion(), amendments)._process(ingest_queue.claim())
+
+        assert ingest_queue.inflight() == [] and ingest_queue.pending() == []
+
+    def test_consolidation_runs_and_is_undone_by_version_on_retry(
+        self, worker, ingest_queue
+    ):
+        ingest_queue.enqueue(
+            _entry("c", "consolidate", name="СП 1", reextract=True, attempts=1)
+        )
+        ingest_queue.set_checkpoint("c", name="СП 1", version="2020 (ред. 1)")
+        ingestion, amendments = FakeIngestion(), FakeAmendments()
+
+        self._worker(worker, ingestion, amendments)._process(ingest_queue.claim())
+
+        assert ingestion.discarded == [
+            {"doc_id": None, "name": "СП 1", "version": "2020 (ред. 1)"}
+        ]
+        [(name, kwargs)] = amendments.consolidated
+        assert name == "СП 1" and kwargs["reextract"] is True
+        assert ingest_queue.checkpoint("c") == {}  # committed
+        assert ingestion.calls == []

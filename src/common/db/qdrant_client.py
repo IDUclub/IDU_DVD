@@ -58,6 +58,7 @@ _PAYLOAD_INDEXES: dict[str, PayloadSchemaType] = {
     "territory_type_id": PayloadSchemaType.INTEGER,
     "territory_path": PayloadSchemaType.INTEGER,
     "tagging_status": PayloadSchemaType.KEYWORD,  # find documents awaiting the backfill
+    "status": PayloadSchemaType.KEYWORD,  # superseded editions are hidden by default
     # user-scoped document index (None for the shared/regular corpus)
     "user_id": PayloadSchemaType.KEYWORD,
     "project_id": PayloadSchemaType.KEYWORD,
@@ -415,6 +416,13 @@ class QdrantRepository:
                 self.collection, payload={"versions": versions}, points=list(point_ids)
             )
 
+    def set_status(self, point_ids: Sequence[str], status: str) -> None:
+        """Set the lifecycle ``status`` (``active`` / ``superseded``) of the given points."""
+        if point_ids:
+            self.client.set_payload(
+                self.collection, payload={"status": status}, points=list(point_ids)
+            )
+
     def delete_points(self, point_ids: Sequence[str]) -> None:
         if point_ids:
             self.client.delete(self.collection, points_selector=list(point_ids))
@@ -632,6 +640,9 @@ class ScopedQdrantRepository:
 
     def set_versions(self, point_ids: Sequence[str], versions: list[str]) -> None:
         self._inner.set_versions(point_ids, versions)
+
+    def set_status(self, point_ids: Sequence[str], status: str) -> None:
+        self._inner.set_status(point_ids, status)
 
     def delete_points(self, point_ids: Sequence[str]) -> None:
         self._inner.delete_points(point_ids)

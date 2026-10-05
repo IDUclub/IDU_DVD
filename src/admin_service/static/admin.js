@@ -201,6 +201,8 @@ function renderDocuments() {
     actions.append(open, update); row.append(actions); body.append(row);
   });
   $("#documents-empty").classList.toggle("hidden", docs.length > 0);
+  const names = $("#document-names");
+  if (names) names.replaceChildren(...[...new Set(state.documents.map((doc) => doc.name))].sort().map((name) => { const option = node("option"); option.value = name; return option; }));
 
   const recent = $("#recent-docs"); recent.replaceChildren();
   [...state.documents].sort((a, b) => String(b.uploaded_at).localeCompare(String(a.uploaded_at))).slice(0, 5).forEach((doc) => {
@@ -218,6 +220,7 @@ function formatDate(value) {
 const stageLabels = {
   queued: "Ожидание в очереди",
   ocr: "Распознавание сканов",
+  amendments: "Применение изменений",
   preparing: "Подготовка документа",
   "structure-markup": "Разбор документа",
   "type-tagging": "Построение структуры и тегирование",
@@ -259,7 +262,7 @@ function renderJob(job) {
   const overall = overallProgress(job); const task = taskProgress(job);
   const stage = stageLabels[job.stage] || job.stage || job.status;
   const edition = job.version_index ? `версия ${job.version_index} из ${job.version_total || 1}` : `версий: ${job.version_total || 1}`;
-  const operation = job.operation === "reparse" ? `Повторный парсинг · ${edition}` : job.operation || "upload";
+  const operation = job.operation === "reparse" ? `Повторный парсинг · ${edition}` : job.operation === "consolidate" ? "Сборка редакции" : job.operation || "upload";
   const left = node("div"); left.append(node("strong", "", job.name || job.filename || job.job_id), node("small", "", `${operation} · ${job.status}`));
   head.append(left, node("strong", "job-percent", `${overall}%`));
   const overallLabel = node("div", "progress-label"); overallLabel.append(node("span", "", "Общий прогресс"), node("span", "", `${overall}%`));
@@ -479,7 +482,8 @@ async function submitUpload(event) {
   const operation = $("#upload-operation").value; const name = $("#upload-name").value.trim(); const files = [...$("#upload-file").files];
   if (!files.length || (operation !== "upload" && !name)) { toast("Для обновления нужны файл и название документа", true); return; }
   if (operation !== "upload" && files.length !== 1) { toast("Для обновления можно выбрать только один файл", true); return; }
-  const fields = { name: operation === "upload" && files.length === 1 ? name : "", version: $("#upload-version").value.trim(), title: $("#upload-doc-title").value.trim(), doc_type: $("#upload-doc-type").value.trim(), corpus: $("#upload-corpus").value.trim(), lang: $("#upload-lang").value.trim() };
+  const fields = { name: operation === "upload" && files.length === 1 ? name : "", version: $("#upload-version").value.trim(), title: $("#upload-doc-title").value.trim(), doc_type: $("#upload-doc-type").value.trim(), corpus: $("#upload-corpus").value.trim(), lang: $("#upload-lang").value.trim(), effective_date: $("#upload-effective-date").value.trim(), amends: $("#upload-amends").value.trim(), explains: $("#upload-explains").value.trim() };
+  if (fields.amends && fields.explains) { toast("Акт либо изменяет документ, либо разъясняет его", true); return; }
   const territoryId = selectedTerritoryId("#upload-territory");
   if ($("#upload-territory").value.trim() && territoryId === null) { toast("Выберите территорию из подсказки", true); return; }
   const pathName = encodeURIComponent(name); const url = operation === "upload" ? "/documents" : `/documents/${pathName}`; const method = { upload: "POST", update: "PATCH", reload: "PUT" }[operation];
@@ -546,6 +550,83 @@ async function openDocument(doc) {
     );
     bindTerritoryLookup("#meta-territory", "#meta-territory-options");
     renderFragments(detail.fragments); $("#document-dialog").showModal();
+    await loadEditions(doc.name);
+  } catch (error) { toast(error.message, true); }
+}
+
+const ACT_STATUS = { pending: "ожидает сборки", applied: "применено", partial: "применено частично", failed: "не применено", no_text_changes: "текст не меняет", included: "учтено в исходной редакции", missing: "акт удалён", linked: "связано" };
+const ACT_KIND = { amends: "Изменение", explains: "Разъяснение" };
+
+function actItem(act, asTarget = false) {
+  const item = node("div", "compact-item act");
+  const kind = ACT_KIND[act.kind] || act.kind;
+  const head = node("div");
+  head.append(node("strong", "", asTarget ? `${kind} документа «${act.target}»` : `${kind}: ${act.name}`));
+  head.append(node("small", "muted", [act.effective_date ? `от ${act.effective_date}` : "", ACT_STATUS[act.status] || act.status, act.detected ? "связано по заголовку" : ""].filter(Boolean).join(" · ")));
+  item.append(head);
+  (act.results || []).forEach((result) => {
+    const where = (result.scope || []).join(" / ");
+    item.append(node("small", result.status === "applied" ? "muted" : "job-error-message", `${result.item ? `п. ${result.item}: ` : ""}${result.action}${where ? ` · ${where}` : ""}${result.reason ? ` — ${result.reason}` : ""}`));
+  });
+  return item;
+}
+
+function actionButton(text, onClick) {
+  const item = node("button", "button", text); item.type = "button"; item.addEventListener("click", onClick); return item;
+}
+
+function renderEditions(data) {
+  const panel = $("#editions-panel"); panel.replaceChildren();
+  const path = `/documents/${encodeURIComponent(data.name)}`;
+  if (data.amends) {
+    panel.append(node("h3", "", "Этот документ — правовой акт"), actItem(data.amends, true));
+    panel.append(actionButton("Отвязать", () => amendmentAction(`${path}/amends`, "DELETE", "Связь снята, документ будет пересобран")));
+  }
+  panel.append(node("h3", "", "Редакции"));
+  const editions = Object.entries(data.editions || {}).sort(([a], [b]) => b.localeCompare(a));
+  if (!editions.length) panel.append(node("p", "muted", "Редакции не собирались: документ используется в загруженном виде."));
+  editions.forEach(([version, edition]) => {
+    const item = node("div", "compact-item");
+    item.append(node("strong", "", `${version} · ${edition.status === "active" ? "действующая" : "заменена"}`));
+    const notes = [];
+    if (edition.consolidated) notes.push(`собрана из: ${(edition.amended_by || []).join(", ")}`);
+    if (edition.superseded_by) notes.push(`заменена редакцией ${edition.superseded_by}`);
+    item.append(node("small", "muted", notes.join(" · ") || "загруженная редакция"));
+    if (edition.review_required) item.append(node("span", "tag warning", "требует проверки"));
+    panel.append(item);
+  });
+  panel.append(node("h3", "", "Изменения и разъяснения"));
+  if (!(data.amendments || []).length) panel.append(node("p", "muted", "Связанных актов нет."));
+  (data.amendments || []).forEach((act) => panel.append(actItem(act)));
+  const actions = node("div", "form-actions");
+  actions.append(
+    actionButton("Пересобрать редакцию", () => amendmentAction(`${path}/consolidate`, "POST", "Сборка редакции поставлена в очередь")),
+    actionButton("Перечитать изменения", () => amendmentAction(`${path}/consolidate?reextract=true`, "POST", "Акты будут прочитаны заново")),
+  );
+  panel.append(actions);
+  const target = node("input"); target.id = "link-target"; target.setAttribute("list", "document-names"); target.placeholder = "Название документа";
+  const kind = node("select"); kind.id = "link-kind";
+  Object.entries({ amends: "изменяет", explains: "разъясняет" }).forEach(([value, text]) => { const option = node("option", "", text); option.value = value; kind.append(option); });
+  const kindLabel = node("label", "", "Этот акт"); kindLabel.append(kind);
+  const targetLabel = node("label", "", "Документ"); targetLabel.append(target);
+  const link = node("div", "two-col"); link.append(kindLabel, targetLabel);
+  panel.append(node("h3", "", "Связать как акт"), link, actionButton("Связать", () => {
+    const value = target.value.trim();
+    if (!value) { toast("Укажите документ", true); return undefined; }
+    return amendmentAction(`${path}/amends`, "PUT", "Акт связан с документом", { target: value, kind: kind.value });
+  }));
+}
+
+async function loadEditions(name) {
+  try { renderEditions(await request(`/documents/${encodeURIComponent(name)}/amendments`)); }
+  catch (error) { $("#editions-panel").replaceChildren(node("p", "muted", error.message)); }
+}
+
+async function amendmentAction(url, method, message, body) {
+  const options = body ? { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : { method };
+  try {
+    await request(url, options); toast(message);
+    await loadJobs(); if (state.current) await loadEditions(state.current.row.name);
   } catch (error) { toast(error.message, true); }
 }
 

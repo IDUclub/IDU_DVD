@@ -71,6 +71,10 @@ from the request body:
 | `GET /documents/available` | compact list of fully indexed shared documents |
 | `GET /user-documents/available` | compact list of fully indexed documents in a user project |
 | `PATCH /user-documents/{doc_id}/metadata` | update document-wide metadata in a user project |
+| `GET /documents/{name}/amendments` | acts that amend/explain a document, their reports, its editions |
+| `PUT /documents/{name}/amends` | link an act to the document it amends or explains |
+| `DELETE /documents/{name}/amends` | unlink an act (the document is rebuilt without it) |
+| `POST /documents/{name}/consolidate` | rebuild a document's current edition from its acts |
 | `GET /documents/{job_id}` | processing job status |
 | `GET /documents/jobs/active` | queued and currently processing jobs |
 | `GET /documents/jobs/recent` | recent jobs of every status (`?limit=20`, max 100) |
@@ -114,7 +118,10 @@ Form fields:
 - `source_uri` — source file path / URL (optional);
 - `effective_date` — effective date (optional);
 - `external_ids` — JSON object of caller-supplied ids, e.g. `{"code": "SP 19.13330.2019", "doi": "..."}` (optional);
-- `metadata` — JSON object of free-form domain attributes (optional).
+- `metadata` — JSON object of free-form domain attributes (optional);
+- `amends` / `explains` — name of a stored document this act amends / clarifies (optional,
+  one of them; unknown name — `422`). Without them an act titled "О внесении изменений в …"
+  is linked by its title (see [Amendments and editions](#amendments-and-editions)).
 
 All optional metadata is stored on every node of the document, so consumer services can join,
 filter, and cite without re-parsing. `external_ids` / `metadata` must be JSON objects (otherwise `422`).
@@ -281,6 +288,55 @@ curl -X PUT http://localhost:8000/documents/direct \
      -H "Content-Type: application/json" \
      -d '[{"name":"Регламент благоустройства","fragments":[{"text":"1 Общие положения (ред. 2)"}]}]'
 ```
+
+## Amendments and editions
+
+How acts saturate the document they change is described in the pipeline
+([Amendments and editions](pipeline.md#amendments-and-editions)).
+
+### GET /documents/{name}/amendments
+
+What amends or explains `name`, what `name` itself amends (when it is an act), and its editions:
+
+```json
+{
+  "name": "ПЗЗ МО «Город Гатчина»",
+  "amendments": [
+    {"name": "Приказ КГП ЛО № 170", "kind": "amends", "effective_date": "2023-11-20",
+     "detected": true, "status": "partial", "operations": 9,
+     "results": [{"item": "1.1.1", "action": "insert", "target": "rows",
+                  "scope": ["Статья 17.1", "Ж-2.15"], "status": "applied", "reason": ""}]}
+  ],
+  "amends": null,
+  "editions": {
+    "2019": {"status": "superseded", "consolidated": false,
+             "superseded_by": "2019 (ред. от 20.11.2023)"},
+    "2019 (ред. от 20.11.2023)": {"status": "active", "consolidated": true, "root": "2019",
+                                  "amended_by": ["Приказ КГП ЛО № 170"],
+                                  "review_required": true, "effective_date": "2023-11-20"}
+  }
+}
+```
+
+An act's `status`: `pending` (not built yet), `applied`, `partial` (some operations failed — see
+`results`), `failed`, `no_text_changes`, `included` (dated before the root edition), `missing`
+(the act was deleted), `linked` (a clarification). Unknown name — `404`.
+
+### PUT /documents/{name}/amends
+
+Link act `name` to a stored document (replacing an earlier link): `{"target": "...", "kind":
+"amends" | "explains"}`. An `amends` link queues a rebuild of the target (`job_id` in the
+response) — `202`. Unknown target — `404`; an act amending itself, or two documents amending each
+other — `422`.
+
+### DELETE /documents/{name}/amends
+
+Unlink act `name`; the document it amended is rebuilt without it. Not linked — `404`.
+
+### POST /documents/{name}/consolidate
+
+Rebuild the current edition of `name` from its root edition and linked acts (`202`, `job_id`).
+`?reextract=true` reads every act again instead of reusing its cached operations.
 
 ## GET /documents
 
@@ -562,6 +618,7 @@ Request body (`SearchRequest`):
 | `corpus` | str | null | filter by logical corpus/namespace |
 | `lang` | str | null | filter by language |
 | `tags` | list[str] | null | filter by tags (any of) |
+| `include_superseded` | bool | false | also search editions replaced by a consolidated one (a `version` filter reaches any edition anyway) |
 | `limit` | int | 10 | number of results |
 | `context_height` | int | 0 | how many fragments before and after to attach |
 | `related` | bool | true | also return the fragments the hits strongly depend on (see *Related fragments*) |
@@ -820,7 +877,8 @@ One document as `DocumentDetail` — the `DocumentSummary` fields above plus the
 Each fragment carries `id`, `order`, `kind`, `type`, `numbering`, `depth`, `breadcrumb`,
 `parent_id`/`prev_id`/`next_id`/`child_ids`, the source grounding (`char_start`, `char_end`,
 `page_start`, `page_end`, `span_id`), `tags`, `metadata`, `references` (outgoing links to other
-documents/clauses — same shape as in search hits), `text` and `table_html`.
+documents/clauses — same shape as in search hits), `text`, `table_html` and `amended_by` (acts
+whose changes the fragment carries in a consolidated edition).
 
 ```json
 {

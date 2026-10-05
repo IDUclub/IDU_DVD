@@ -6,6 +6,7 @@ import os
 import uuid
 from functools import partial
 from pathlib import Path
+from typing import Literal
 
 import structlog
 from fastapi import (
@@ -19,6 +20,7 @@ from fastapi import (
 )
 from fastapi.concurrency import run_in_threadpool
 from minio.error import S3Error
+from pydantic import BaseModel, Field
 
 from src.common.auth import (
     get_effective_user_id,
@@ -48,6 +50,7 @@ from src.dvd_service.routers._scenario_scope import (
     SCENARIO_ID_DESCRIPTION,
     scenario_condition,
 )
+from src.dvd_service.routers._upload_common import check_link as _check_link
 from src.dvd_service.routers._upload_common import document_meta as _document_meta
 from src.dvd_service.routers._upload_common import (
     download_response as _download_response,
@@ -60,6 +63,7 @@ from src.dvd_service.routers._upload_common import (
 from src.dvd_service.routers._upload_common import queued_job as _queued_job
 from src.dvd_service.routers._upload_common import receive_file as _receive_file
 from src.dvd_service.routers._upload_common import reject_duplicate as _reject_duplicate
+from src.dvd_service.services.amendment_service import AmendmentService
 from src.dvd_service.services.dvd_service import (
     DocumentsService,
     IngestionService,
@@ -275,7 +279,12 @@ async def upload_document(
 
     Indexing itself happens in a worker, not in this request: the job goes onto the durable
     ingestion queue and outlives both the client connection and the process.
+
+    ``amends`` / ``explains`` link the uploaded act to a stored document; without them an act
+    titled "О внесении изменений в …" is linked to the document its title names, when one
+    fits. An ``amends`` link rebuilds that document's current edition with the act applied.
     """
+    _check_link(meta, registry)
     job_id = str(uuid.uuid4())
     path, content_hash = await _receive_file(file, settings, parser, job_id)
     _reject_duplicate(registry, ingestion.qdrant, content_hash, path)
@@ -332,6 +341,7 @@ async def update_document(
     """
     if not registry.has_name(name):
         raise HTTPException(404, f"Документ не найден: {name}")
+    _check_link(meta, registry)
     job_id = str(uuid.uuid4())
     path, content_hash = await _receive_file(file, settings, parser, job_id)
     _reject_duplicate(registry, ingestion.qdrant, content_hash, path)
@@ -370,6 +380,7 @@ async def reload_document(
     meta: dict = Depends(_document_meta),
     settings: Settings = Depends(Dependencies.get_settings),
     parser: DocumentParser = Depends(Dependencies.get_parser),
+    registry: DocumentRegistry = Depends(Dependencies.get_registry),
     storage: DocumentStorage = Depends(Dependencies.get_document_storage),
     jobs: JobStore = Depends(Dependencies.get_jobs),
     queue: IngestQueue = Depends(Dependencies.get_ingest_queue),
@@ -379,6 +390,7 @@ async def reload_document(
     No duplicate rejection — re-uploading the same file is a legitimate way to rebuild the index.
     The original file is saved to MinIO before indexing starts (fail-closed).
     """
+    _check_link(meta, registry)
     job_id = str(uuid.uuid4())
     path, content_hash = await _receive_file(file, settings, parser, job_id)
     try:
@@ -412,17 +424,91 @@ async def delete_document(
         None, description="Удалить только эту версию; без параметра — все версии"
     ),
     ingestion: IngestionService = Depends(Dependencies.get_ingestion),
+    amendments: AmendmentService = Depends(Dependencies.get_amendments),
 ):
     """Delete a document from the store — entirely, or a single version.
 
     Deleting one version removes its exclusive fragments and only strips the version tag from
-    fragments shared with other versions.
+    fragments shared with other versions. Deleting an amending act entirely rebuilds the
+    document it amended without it.
     """
     try:
         result = await run_in_threadpool(ingestion.delete_document, name, version)
     except KeyError as exc:
         raise HTTPException(404, str(exc.args[0]) if exc.args else "не найдено")
+    if version is None and amendments is not None:
+        await run_in_threadpool(amendments.unlink, name)
     return DeleteResponse(**result)
+
+
+class AmendmentLinkIn(BaseModel):
+    target: str = Field(min_length=1, description="Stored document the act changes")
+    kind: Literal["amends", "explains"] = "amends"
+
+
+@router.get("/documents/{name}/amendments", dependencies=AUTHENTICATED)
+def document_amendments(
+    name: str,
+    registry: DocumentRegistry = Depends(Dependencies.get_registry),
+    amendments: AmendmentService = Depends(Dependencies.get_amendments),
+):
+    """Acts that amend or explain ``name``, the act ``name`` itself is, and its editions.
+
+    Each act carries the status of its last application (``applied``, ``partial``,
+    ``failed``, ``no_text_changes``, ``included`` in the root edition) and a report per
+    operation; each edition its status (``active`` / ``superseded``) and, for a consolidated
+    one, the acts that built it and whether it needs review.
+    """
+    if not registry.has_name(name) and not registry.amendment_target(name):
+        raise HTTPException(404, f"Документ не найден: {name}")
+    return amendments.overview(name)
+
+
+@router.put("/documents/{name}/amends", status_code=202, dependencies=ADMIN_ONLY)
+def link_amendment(
+    name: str,
+    body: AmendmentLinkIn,
+    amendments: AmendmentService = Depends(Dependencies.get_amendments),
+):
+    """Link act ``name`` to the document it amends or explains (replacing any earlier link).
+
+    An ``amends`` link queues a rebuild of the target's current edition (``job_id``).
+    """
+    try:
+        record = amendments.link(name, body.target, body.kind)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc.args[0]) if exc.args else "не найдено")
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    return {k: v for k, v in record.items() if k != "ops"}
+
+
+@router.delete("/documents/{name}/amends", dependencies=ADMIN_ONLY)
+def unlink_amendment(
+    name: str,
+    amendments: AmendmentService = Depends(Dependencies.get_amendments),
+):
+    """Unlink act ``name``; the document it amended is rebuilt without it."""
+    target = amendments.unlink(name)
+    if target is None:
+        raise HTTPException(404, f"Документ ничего не изменяет: {name}")
+    return {"name": name, "target": target}
+
+
+@router.post("/documents/{name}/consolidate", status_code=202, dependencies=ADMIN_ONLY)
+def consolidate_document(
+    name: str,
+    reextract: bool = Query(
+        False,
+        description="Read every linked act again instead of reusing its operations",
+    ),
+    registry: DocumentRegistry = Depends(Dependencies.get_registry),
+    amendments: AmendmentService = Depends(Dependencies.get_amendments),
+):
+    """Rebuild the current edition of ``name`` from its root edition and linked acts."""
+    if not registry.has_name(name):
+        raise HTTPException(404, f"Документ не найден: {name}")
+    return {"job_id": amendments.enqueue(name, reextract=reextract), "status": "queued"}
 
 
 @router.get(

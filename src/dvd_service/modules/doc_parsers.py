@@ -301,6 +301,7 @@ class DocumentParser:
                     "end": pos + len(t),
                     "page": b.get("page"),
                     "bbox": b.get("bbox"),
+                    "amended_by": b.get("amended_by") or [],
                 }
             )
             parts.append(t)
