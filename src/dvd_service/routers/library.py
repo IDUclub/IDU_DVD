@@ -112,10 +112,18 @@ async def find_documents(
 )
 async def get_document(
     doc_id: str,
+    include_superseded: bool = Query(
+        False,
+        description="Also return fragments of editions replaced by a consolidated one",
+    ),
     library: LibraryService = Depends(Dependencies.get_library),
 ):
-    """A document by id: assembled text + metadata + ordered fragments (with source grounding)."""
-    detail = await run_in_threadpool(library.get_document, doc_id)
+    """A document by id: assembled text + metadata + ordered fragments (with source grounding).
+
+    Fragments of superseded editions (replaced by one with its amendments applied) are left
+    out by default.
+    """
+    detail = await run_in_threadpool(library.get_document, doc_id, include_superseded)
     if detail is None:
         raise HTTPException(404, "document not found")
     return detail

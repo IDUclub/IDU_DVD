@@ -31,6 +31,7 @@ from src.dvd_service.modules.references import ReferenceExtractor, ReferenceReso
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import VersionDetector
 from src.dvd_service.modules.territory import TerritoryResolver
+from src.dvd_service.services.amendment_service import AmendmentService
 from src.dvd_service.services.dvd_service import (
     DocumentEditorService,
     DocumentsService,
@@ -89,6 +90,7 @@ class Dependencies:
         "user_index_registry",
         "user_index_service",
         "system",
+        "amendments",
     )
 
     _instance: "Dependencies | None" = None
@@ -126,6 +128,7 @@ class Dependencies:
     user_index_registry: UserIndexRegistry
     user_index_service: UserIndexService
     system: SystemController
+    amendments: AmendmentService | None
 
     def __new__(cls) -> "Dependencies":
         if cls._instance is None:
@@ -169,6 +172,7 @@ class Dependencies:
         user_index_registry: UserIndexRegistry,
         user_index_service: UserIndexService,
         system: SystemController,
+        amendments: AmendmentService | None = None,
     ) -> "Dependencies":
         """Set all dependencies once (called from ``init_dependencies``)."""
         self.settings = settings
@@ -204,6 +208,7 @@ class Dependencies:
         self.user_index_registry = user_index_registry
         self.user_index_service = user_index_service
         self.system = system
+        self.amendments = amendments
         return self
 
     # --- singleton access ---
@@ -345,6 +350,10 @@ class Dependencies:
     @classmethod
     def get_version_repair(cls) -> VersionRepairService:
         return cls.instance().version_repair
+
+    @classmethod
+    def get_amendments(cls) -> AmendmentService:
+        return cls.instance().amendments
 
     @classmethod
     def get_user_index_registry(cls) -> UserIndexRegistry:

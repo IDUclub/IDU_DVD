@@ -36,6 +36,10 @@ class SearchRequest(BaseModel):
         # federal documents that are in force there
     )
     tagging_status: str | None = None  # ok | pending (documents awaiting the backfill)
+    include_superseded: bool = (
+        False  # also search editions replaced by a consolidated one (asking for a
+        # ``version`` reaches any edition anyway)
+    )
     limit: int = 10
     context_height: int = 0  # how many neighbour fragments to attach before/after
     related: bool = True  # also return the fragments the hits depend on (as extra hits)

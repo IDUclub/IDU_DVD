@@ -48,6 +48,7 @@ pydantic-settings. Значения переопределяются перем�
 | `DVD_LLM_MAX_TOKENS` | `8192` | при `provider=openai`: бюджет ответа (аналог `DVD_OLLAMA_NUM_PREDICT`). Аналога `num_ctx` у OpenAI **нет** — размер контекста тот, с которым запущен сервер (`--max-model-len` в vLLM) |
 | `DVD_LLM_TIMEOUT` | `600.0` | при `provider=openai`: таймаут запроса, сек |
 | `DVD_LLM_REASONING_EFFORT` | не задано | Режим рассуждения OpenAI-совместимой модели; без настройки используется `low` для gpt-oss, для остальных поле не передаётся |
+| `DVD_AMENDMENT_REASONING_EFFORT` | `medium` | Режим рассуждения при чтении акта о внесении изменений в операции; на gpt-oss-20b `low` теряет разделы таблиц и адреса |
 
 В отличие от `DVD_EMBEDDINGS_PROVIDER`, перезапуск для них **не нужен**: клиент чата создаётся
 на каждую операцию, поэтому правка через `PUT /system/settings` подхватится следующей задачей

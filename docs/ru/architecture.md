@@ -74,8 +74,10 @@ Dependencies(
 | `src/dvd_service/modules/hierarchy.py` | `HierarchyBuilder` (этап 4 и развёртка узлов) |
 | `src/dvd_service/modules/tagging.py` | `Tagger`, `VersionDetector` |
 | `src/dvd_service/modules/territory.py` | `TerritoryResolver` — территория Urban API и уровень документа |
+| `src/dvd_service/modules/amendments.py` | `extract_operations` (LLM переводит акт в операции над текстом), `apply_operations` / `Applier` (детерминированное применение к исходным блокам) |
 | `src/dvd_service/modules/windowing.py` | `make_windows`, `reconcile` |
 | `src/dvd_service/services/dvd_service.py` | `IngestionService`, `SearchService`, `DocumentsService`, `LibraryService` |
+| `src/dvd_service/services/amendment_service.py` | `AmendmentService` — связывает акты с изменяемыми документами, собирает редакции |
 | `src/dvd_service/services/tagging_backfill.py` | `TaggingBackfillService` — дотегирование документов в статусе `pending` |
 | `src/dvd_service/modules/identity.py` | хелперы идентичности документа (`normalize_key`, `make_version_id`, `make_span_id`, `build_aliases`, `build_lookup_keys`) |
 | `src/dvd_service/dto/` | `NodePayload` (`node_payload.py`) и DTO запросов/ответов (`upload.py`, `search.py`, `document.py`, `reference.py`) |
@@ -187,7 +189,7 @@ ASGI-приложение MCP-сервера (`src/mcp_server/app.py`) монт�
 | `external_ids` | dict | переданные вызывающим id (`{code, doi, isbn, url, …}`) — хранятся как есть, не интерпретируются |
 | `aliases` | list[str] | человекочитаемые обозначения (имя + значения внешних id) |
 | `lookup_keys` | list[str] | ключи точного поиска (нормализованное имя + формы внешних id) |
-| `status` | str | `active` / `archived` |
+| `status` | str | `active` / `superseded` (ни одна действующая редакция не содержит фрагмент; скрыт из поиска по умолчанию) |
 | `document_level` | str | уровень действия: `federal` / `regional` / `municipal` — выводится из территории |
 | `territory_id` | int | территория Urban API, на которую распространяется документ (federal → «Россия», 12639) |
 | `territory_name` | str | название территории |
@@ -199,6 +201,7 @@ ASGI-приложение MCP-сервера (`src/mcp_server/app.py`) монт�
 | `tagging_attempts` / `tagging_error` | int / str | сколько было автоматических попыток и почему последняя не удалась |
 | `effective_date` | str | дата вступления в силу, если задана |
 | `supersedes` / `superseded_by` | list[str] | связи жизненного цикла версий (зарезервировано) |
+| `amended_by` | list[str] | акты, изменения которых несёт фрагмент (собранные редакции) |
 | `source` | str | имя исходного файла |
 | `source_uri` | str | путь/URL источника |
 | `char_start` / `char_end` | int | смещения в нормализованном тексте источника — спан фрагмента |
@@ -251,7 +254,10 @@ Payload-индексы создаются по полям `doc_id`, `name`, `ver
 - Redis: статусы задач (`dvd:job:{job_id}`, с TTL, без неймспейса) и скоупленный по коллекции реестр
   под `{registry_prefix}` (по умолчанию `dvd:{effective_collection}`): реестр хэшей (`…:hash:{hash}`),
   версий (`…:versions:{name}`), множество всех имён документов (`…:names`, для сопоставления ссылок)
-  и очереди отложенных ссылок (`…:pending_ref:{normalized_name}`).
+  и очереди отложенных ссылок (`…:pending_ref:{normalized_name}`); акты, связанные с документом
+  (`…:amendments:{name}` — с сохранёнными операциями и последним отчётом; `…:amends:{act}` — обратная
+  ссылка), и записи редакций (`…:editions:{name}`: статус, собрана ли, исходная, amended_by,
+  review_required).
 - Выученные паттерны ссылок хранятся в отдельной долговечной коллекции Qdrant (по умолчанию
   `ref_patterns`, dummy-векторы размерности 1 как key/value-хранилище) — они переживают сброс
   Redis; seed-паттерны закоммичены в `reference_patterns.py`.

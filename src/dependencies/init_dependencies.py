@@ -36,6 +36,7 @@ from src.dvd_service.modules.references import ReferenceExtractor, ReferenceReso
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import VersionDetector
 from src.dvd_service.modules.territory import TerritoryResolver
+from src.dvd_service.services.amendment_service import AmendmentService
 from src.dvd_service.services.dvd_service import (
     DocumentEditorService,
     DocumentsService,
@@ -308,6 +309,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         tags=tags,
         tagging_backfill=tagging_backfill,
         version_repair=version_repair,
+        amendments=AmendmentService(ingestion, ingest_queue, s),
         user_index_registry=user_index_registry,
         user_index_service=user_index_service,
         system=system,

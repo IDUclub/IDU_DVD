@@ -80,6 +80,33 @@ class FakeRegistry:
     def unregister_name(self, name):
         self.names.discard(name)
 
+    def amendment_target(self, name):
+        return None
+
+
+class FakeAmendments:
+    def __init__(self):
+        self.calls = []
+
+    def unlink(self, name):
+        self.calls.append(("unlink", name))
+        return "Известный документ" if name == "Приказ" else None
+
+    def link(self, name, target, kind="amends"):
+        self.calls.append(("link", name, target, kind))
+        if target == "нет такого":
+            raise KeyError(f"документ не найден: {target}")
+        if name == target:
+            raise ValueError("документ не может изменять сам себя")
+        return {"name": name, "target": target, "kind": kind, "ops": [], "job_id": "j"}
+
+    def enqueue(self, name, *, reextract=False):
+        self.calls.append(("enqueue", name, reextract))
+        return "job-1"
+
+    def overview(self, name):
+        return {"name": name, "amendments": [], "amends": None, "editions": {}}
+
 
 class FakeJobs:
     def __init__(self):
@@ -232,6 +259,7 @@ def client(tmp_path, fake_qdrant, fake_document_storage, ingest_queue):
         "documents": FakeDocuments(),
         "library": FakeLibrary(),
         "tags": FakeTags(),
+        "amendments": FakeAmendments(),
         "qdrant": fake_qdrant,
         "document_storage": fake_document_storage,
     }
@@ -252,6 +280,7 @@ def client(tmp_path, fake_qdrant, fake_document_storage, ingest_queue):
     app.dependency_overrides[Dependencies.get_documents] = lambda: fakes["documents"]
     app.dependency_overrides[Dependencies.get_library] = lambda: fakes["library"]
     app.dependency_overrides[Dependencies.get_tags] = lambda: fakes["tags"]
+    app.dependency_overrides[Dependencies.get_amendments] = lambda: fakes["amendments"]
     app.dependency_overrides[Dependencies.get_qdrant] = lambda: fakes["qdrant"]
     app.dependency_overrides[Dependencies.get_document_storage] = lambda: fakes[
         "document_storage"
@@ -486,6 +515,61 @@ class TestDeleteDocument:
     def test_unknown_name_returns_404(self, client):
         c, _ = client
         assert c.delete("/documents/нет такого").status_code == 404
+
+    def test_deleting_a_whole_document_unlinks_it_as_an_act(self, client):
+        c, fakes = client
+        c.delete("/documents/Известный документ")
+        c.delete("/documents/Известный документ", params={"version": "v2"})
+        assert fakes["amendments"].calls == [("unlink", "Известный документ")]
+
+
+class TestAmendments:
+    def test_upload_checks_the_linked_document(self, client):
+        c, _ = client
+        files = {"file": ("act.docx", b"x", "application/octet-stream")}
+        both = c.post(
+            "/documents",
+            files=files,
+            data={"amends": "Известный документ", "explains": "Известный документ"},
+        )
+        assert both.status_code == 422
+        unknown = c.post("/documents", files=files, data={"amends": "нет такого"})
+        assert unknown.status_code == 422
+        assert "не найден" in unknown.json()["detail"]
+
+    def test_link_unlink_overview_and_rebuild(self, client):
+        c, fakes = client
+        resp = c.put("/documents/Приказ/amends", json={"target": "Известный документ"})
+        assert resp.status_code == 202
+        assert "ops" not in resp.json()
+        assert (
+            c.put("/documents/Приказ/amends", json={"target": "нет такого"}).status_code
+            == 404
+        )
+        assert (
+            c.put("/documents/Приказ/amends", json={"target": "Приказ"}).status_code
+            == 422
+        )
+        assert (
+            c.put(
+                "/documents/Приказ/amends", json={"target": "x", "kind": "repeals"}
+            ).status_code
+            == 422
+        )
+        assert c.delete("/documents/Приказ/amends").json() == {
+            "name": "Приказ",
+            "target": "Известный документ",
+        }
+        assert c.delete("/documents/Другой/amends").status_code == 404
+        overview = c.get("/documents/Известный документ/amendments").json()
+        assert overview["editions"] == {}
+        assert c.get("/documents/нет такого/amendments").status_code == 404
+        rebuild = c.post(
+            "/documents/Известный документ/consolidate", params={"reextract": True}
+        )
+        assert rebuild.json() == {"job_id": "job-1", "status": "queued"}
+        assert ("enqueue", "Известный документ", True) in fakes["amendments"].calls
+        assert c.post("/documents/нет такого/consolidate").status_code == 404
 
 
 class TestDownloadSource:

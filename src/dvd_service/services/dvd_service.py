@@ -396,6 +396,7 @@ class IngestionService:
                 "page_end": None,
                 "bbox": None,
                 "span_id": None,
+                "amended_by": [],
             }
         char_start = min(spans[i]["start"] for i in ids)
         char_end = max(spans[i]["end"] for i in ids)
@@ -411,7 +412,12 @@ class IngestionService:
             char_start, char_end = start, end
         pages = [spans[i]["page"] for i in ids if spans[i]["page"] is not None]
         bbox = next((spans[i]["bbox"] for i in ids if spans[i]["bbox"]), None)
+        # Acts whose changes the source blocks carry (blocks of a consolidated edition).
+        amended_by = list(
+            dict.fromkeys(a for i in ids for a in spans[i].get("amended_by") or [])
+        )
         return {
+            "amended_by": amended_by,
             "char_start": char_start,
             "char_end": char_end,
             "page_start": min(pages) if pages else None,
@@ -1600,10 +1606,25 @@ class SearchService:
         )
 
     def _build_filter(self, req: SearchRequest, kind: str | None) -> Filter | None:
+        query_filter = self._scope_filter(req, kind)
+        if req.version or req.include_superseded:
+            return query_filter
+        # A superseded edition (replaced by one with its amendments applied) answers only
+        # when asked for by version: by default search reads the text in force.
+        return query_filter.model_copy(
+            update={
+                "must_not": [
+                    *(query_filter.must_not or []),
+                    FieldCondition(key="status", match=MatchValue(value="superseded")),
+                ]
+            }
+        )
+
+    def _scope_filter(self, req: SearchRequest, kind: str | None) -> Filter | None:
         if req.version:
             # Resolve presentation-only differences against authorized stored editions.
             # Keep the original values in Qdrant; this also works for legacy payloads.
-            base = self._build_filter(req.model_copy(update={"version": None}), kind)
+            base = self._scope_filter(req.model_copy(update={"version": None}), kind)
             key = lambda v: " ".join(unicodedata.normalize("NFKC", v).split())
             versions = {req.version}
             for node in self.qdrant.iter_points(base, ["version", "versions"]):
@@ -2247,10 +2268,21 @@ class LibraryService:
         documents.sort(key=lambda document: (document.name, document.version))
         return AvailableDocumentListResponse(count=len(documents), documents=documents)
 
-    def get_document(self, doc_id: str) -> DocumentDetail | None:
+    def get_document(
+        self, doc_id: str, include_superseded: bool = False
+    ) -> DocumentDetail | None:
+        """A document with its fragments in reading order.
+
+        Editions of a document share its ``doc_id``. The fragments of editions replaced by a
+        consolidated one (``status=superseded``) are left out unless asked for, so a consumer
+        that rebuilds the document from its fragments sees the text in force once.
+        """
         payloads = self.qdrant.list_by_doc(doc_id)
         if not payloads:
             return None
+        if not include_superseded:
+            current = [pl for pl in payloads if pl.get("status") != "superseded"]
+            payloads = current or payloads
         payloads.sort(key=lambda pl: pl.get("order", 0) or 0)
 
         rec = self.registry.get_document(doc_id)

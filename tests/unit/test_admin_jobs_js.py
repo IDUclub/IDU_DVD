@@ -14,6 +14,7 @@ import pytest
         "admin_metadata.test.cjs",
         "admin_auth.test.cjs",
         "admin_branding.test.cjs",
+        "admin_amendments.test.cjs",
     ],
 )
 def test_admin_javascript(script):

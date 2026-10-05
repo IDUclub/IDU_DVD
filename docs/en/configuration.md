@@ -48,6 +48,7 @@ deliver that, each through its own protocol — Ollama's `format`, OpenAI's
 | `DVD_LLM_MAX_TOKENS` | `8192` | `provider=openai`: response budget (the counterpart of `DVD_OLLAMA_NUM_PREDICT`). There is **no** OpenAI equivalent of `num_ctx` — the context window is whatever the server was started with (`--max-model-len` in vLLM) |
 | `DVD_LLM_TIMEOUT` | `600.0` | `provider=openai`: request timeout, seconds |
 | `DVD_LLM_REASONING_EFFORT` | unset | OpenAI-compatible reasoning effort override; unset selects `low` for gpt-oss and omits the field for other models |
+| `DVD_AMENDMENT_REASONING_EFFORT` | `medium` | reasoning effort for reading an amending act into edit operations; on gpt-oss-20b `low` loses table sections and addresses |
 
 Unlike `DVD_EMBEDDINGS_PROVIDER`, these are **not** restart-required: the chat client is built per
 operation, so a change through `PUT /system/settings` is picked up by the next ingest or backfill job.

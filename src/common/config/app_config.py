@@ -97,6 +97,9 @@ class Settings(BaseSettings):
     llm_timeout: float = 600.0
     # None selects low for gpt-oss and leaves other models at their server default.
     llm_reasoning_effort: str | None = None
+    # Reading an amending act into edit operations (addresses, table sections, quoted new
+    # text). On gpt-oss-20b "low" loses table sections and addresses that "medium" gets right.
+    amendment_reasoning_effort: str | None = "medium"
 
     # --- Embeddings provider (vectorizer) ---
     # "giga" — the GPU giga-vectorizer service (OpenAI-compatible /v1/embeddings,

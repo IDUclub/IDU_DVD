@@ -104,6 +104,8 @@ async def document_meta(
     territory_id: int | None = Form(
         None
     ),  # Urban API territory (level is derived from it)
+    amends: str | None = Form(None),  # stored document this act amends
+    explains: str | None = Form(None),  # stored document this act clarifies
 ) -> dict:
     """Optional per-document metadata form fields, shared by upload/update/reload."""
     return {
@@ -116,7 +118,19 @@ async def document_meta(
         "external_ids": parse_json_field("external_ids", external_ids),
         "metadata": parse_json_field("metadata", metadata),
         "territory_id": territory_id,
+        "amends": (amends or "").strip() or None,
+        "explains": (explains or "").strip() or None,
     }
+
+
+def check_link(meta: dict, registry: DocumentRegistry) -> None:
+    """``amends`` / ``explains`` name one stored document (an act is linked to it)."""
+    amends, explains = meta.get("amends"), meta.get("explains")
+    if amends and explains:
+        raise HTTPException(422, "Укажите что-то одно: amends или explains")
+    target = amends or explains
+    if target and not registry.has_name(target):
+        raise HTTPException(422, f"Изменяемый документ не найден: {target}")
 
 
 async def receive_file(

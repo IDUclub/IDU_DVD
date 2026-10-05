@@ -110,6 +110,8 @@ class DocumentFragment(BaseModel):
     references: list[DocumentRef] = Field(default_factory=list)
     text: str = ""
     table_html: str | None = None
+    # Acts whose changes the fragment carries (a consolidated edition's changed text).
+    amended_by: list[str] = Field(default_factory=list)
 
 
 class NodeDetail(DocumentFragment):

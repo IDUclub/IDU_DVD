@@ -1,3 +1,10 @@
+## v0.20.0 (2026-10-05)
+
+[feat/amendments](https://github.com/IDUclub/IDU_DVD/pull/109) (#109)
+
+- feat: amending acts saturate the document they change
+- fix: serve a document's current edition from the library
+
 ## v0.19.1 (2026-10-05)
 
 [fix/integration-fake-on-page](https://github.com/IDUclub/IDU_DVD/pull/108) (#108)

@@ -375,6 +375,47 @@ the logical document under which versions are tracked. On upload:
 - if the version string matched an existing one but the text differs, the version is made
   distinguishable by appending a short hash suffix.
 
+## Amendments and editions
+
+An amending act ("О внесении изменений в Правила …") is uploaded like any other document and stays
+searchable on its own. It is also linked to the document it amends — through `amends` at upload
+(or `PUT /documents/{name}/amends` later), or by its title: an act whose heading says "о внесении
+изменений в …" is linked to the one stored document that heading names (no link when none or
+several fit). A clarification is linked with `explains`; it changes no text.
+
+Every `amends` link queues a `consolidate` job for the amended document:
+
+1. **Root edition** — the newest edition that was uploaded rather than built. Its raw blocks are
+   re-read from the original once and kept in object storage (`raw/<hash>.json`), as are an act's.
+2. **Operations** — each linked act is read by the LLM (`DVD_AMENDMENT_REASONING_EFFORT`) into a
+   closed list of operations: where (a path of headings — "Статья 17.1" / "Ж-2.15" — plus a
+   table, a table section, table rows, a numbered item or part), what (`replace_words`,
+   `append_words`, `insert`, `replace`, `delete`, `repeal`) and with what. New text is never
+   retyped: the model points at the act's own blocks, and each passage is taken whole between
+   « and » (balanced, so quoted names inside it survive). Words the model quotes must occur in the
+   act. Appendices with maps, boundary descriptions and coordinates are not text changes. The
+   operations are cached on the link, so a rebuild does not ask the LLM again.
+3. **Application** — deterministic, act by act in date order (`effective_date`, else the date in
+   the act's heading). A path resolves heading by heading; a table of contents is told apart from
+   the real section by its size; nested numbering is tracked, so "part 1 / item 5" lands after
+   item 4 of part 1, not after the last "4." of the article. Table rows go into the named section
+   ("условно разрешенные виды"), numbered or coded rows by order (7.1 after 7, Ж-3.15.2 after
+   Ж-3.15). An operation whose place, section or quoted words are not found is not guessed at: it
+   is reported on its act (`failed`, with the reason) and the edition is marked for review, while
+   the other operations still apply. Only a zone code ("О-8.15") may be found without the article
+   the act wrongly named.
+4. **Edition** — the result goes through the ordinary delta update as version
+   `<root> (ред. от DD.MM.YYYY)`. Fragments built from changed blocks carry `amended_by`. The new
+   edition becomes `active`; every other edition becomes `superseded`, and fragments only
+   superseded editions share get `status=superseded`: default search reads the text in force,
+   `version` (or `include_superseded`) reaches the old one.
+
+An act that arrives out of order simply rebuilds from the root. An act that changes no text
+(maps only) is recorded as `no_text_changes`; an act dated before the root edition as
+`included`. Deleting or unlinking an act rebuilds the document without it. The acts, their
+operation reports and the editions are served by `GET /documents/{name}/amendments` and shown on
+the document's "Редакции" tab in the admin panel.
+
 ## Tables
 
 Tables are stored as separate entities: nodes with `kind=table` containing `table_html`. They are

@@ -180,6 +180,15 @@ class IngestWorker:
                 task_progress=100,
                 error=None,
             )
+        elif operation == "consolidate":
+            self._amendments().consolidate(
+                entry["name"],
+                job_id=entry["job_id"],
+                reextract=bool(entry.get("reextract")),
+                on_identity=lambda name, version: self.queue.set_checkpoint(
+                    entry["job_id"], name=name, version=version
+                ),
+            )
         elif operation in DIRECT:
             self._run_direct(entry, ingestion)
         else:
@@ -203,6 +212,7 @@ class IngestWorker:
                 ),
             )
             meta = dict(entry.get("meta") or {})
+            link = {key: meta.pop(key, None) for key in ("amends", "explains")}
             common = dict(
                 version_override=entry.get("version"),
                 job_id=job_id,
@@ -212,6 +222,7 @@ class IngestWorker:
                 ),
                 **meta,
             )
+            result = None
             if operation == "reparse":
                 ingestion.ingest(
                     path,
@@ -224,7 +235,7 @@ class IngestWorker:
                     **common,
                 )
             elif operation == "upload":
-                ingestion.ingest(
+                result = ingestion.ingest(
                     path,
                     raw,
                     entry["content_hash"],
@@ -233,15 +244,17 @@ class IngestWorker:
                     **common,
                 )
             elif operation == "update":
-                ingestion.update(
+                result = ingestion.update(
                     entry["name"], path, raw, entry["content_hash"], **common
                 )
             elif operation == "reload":
-                ingestion.reload(
+                result = ingestion.reload(
                     entry["name"], path, raw, entry["content_hash"], **common
                 )
             else:
                 raise ValueError(f"неизвестная операция очереди: {operation}")
+            if result and not (entry.get("scope") or {}).get("user_id"):
+                self._link_act(entry, result, raw, link, meta)
         finally:
             try:
                 os.remove(path)
@@ -266,6 +279,38 @@ class IngestWorker:
         storage.delete(payload_key)
 
     # --- helpers ---
+
+    def _amendments(self):
+        amendments = getattr(self.deps, "amendments", None)
+        if amendments is None:
+            raise RuntimeError("сборка редакций не настроена")
+        return amendments
+
+    def _link_act(self, entry: dict, result: dict, raw, link: dict, meta: dict) -> None:
+        """An indexed act about a stored document is linked to it (and a rebuild queued).
+
+        The document is already indexed: a failure to link is logged, not retried — the
+        link can be set through the API.
+        """
+        amendments = getattr(self.deps, "amendments", None)
+        if amendments is None:
+            return
+        try:
+            amendments.after_ingest(
+                result,
+                raw,
+                content_hash=entry["content_hash"],
+                effective_date=meta.get("effective_date"),
+                **link,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "amendment_link_failed",
+                worker=self.name,
+                job_id=entry.get("job_id"),
+                name=result.get("name"),
+                error=str(exc),
+            )
 
     def _ingestion_for(self, entry: dict) -> IngestionService:
         """The shared-corpus service, or a service scoped to the uploading user's index."""
@@ -320,10 +365,12 @@ class IngestWorker:
         if operation in SELF_WIPING:
             return
         checkpoint = self.queue.checkpoint(entry.get("job_id"))
+        # A consolidation writes its edition through a delta update.
+        by_version = operation in ("update", "consolidate")
         removed = ingestion.discard_attempt(
-            doc_id=entry.get("doc_id") if operation != "update" else None,
-            name=checkpoint.get("name") if operation == "update" else None,
-            version=checkpoint.get("version") if operation == "update" else None,
+            doc_id=entry.get("doc_id") if not by_version else None,
+            name=checkpoint.get("name") if by_version else None,
+            version=checkpoint.get("version") if by_version else None,
         )
         if removed:
             log.info(
