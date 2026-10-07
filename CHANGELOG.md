@@ -1,3 +1,9 @@
+## v0.21.2 (2026-10-07)
+
+[fix/autoformat-skip-ci](https://github.com/IDUclub/IDU_DVD/pull/112) (#112)
+
+- ci: let auto-merge bump the version after an auto-format commit
+
 ## v0.21.1 (2026-10-05)
 
 [fix/amendment-wording](https://github.com/IDUclub/IDU_DVD/pull/111) (#111)
