@@ -22,6 +22,9 @@ import structlog
 from src.common.config import Settings
 from src.dvd_service.ingest_worker import IngestWorker
 
+# 130 characters, 242 bytes of UTF-8 — past the 255-byte basename limit once a job id is added.
+LONG_FILENAME = ("Материалы по обоснованию расчетных показателей " * 3)[:125] + ".docx"
+
 
 def _entry(job_id: str, operation: str = "upload", **extra) -> dict:
     return {
@@ -329,6 +332,22 @@ class TestWorkerHappyPath:
         raw = ingestion.calls[0][1][1]
         assert raw[0]["text"].endswith("a.docx")
         assert list(tmp_path.iterdir()) == [], "the scratch copy is cleaned up"
+
+    def test_long_filename_stays_out_of_the_scratch_path(
+        self, worker, ingest_queue, fake_document_storage, tmp_path
+    ):
+        """130 Cyrillic characters: with a 36-character job id in front, over 255 bytes."""
+        filename = LONG_FILENAME
+        fake_document_storage.upload("hash-a.docx", b"docx bytes")
+        ingest_queue.enqueue(_entry("a", filename=filename))
+        ingestion = FakeIngestion()
+
+        worker(ingestion)._process(ingest_queue.claim())
+
+        [(_, (path, raw, _hash), kwargs)] = ingestion.calls
+        assert Path(path).name == "a.docx"
+        assert kwargs["source_name"] == filename
+        assert list(tmp_path.iterdir()) == []
 
     def test_update_and_reload_reach_their_own_methods(
         self, worker, ingest_queue, fake_document_storage

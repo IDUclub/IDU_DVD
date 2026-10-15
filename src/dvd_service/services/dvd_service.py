@@ -543,6 +543,7 @@ class IngestionService:
         lang: str | None = None,
         title: str | None = None,
         source_uri: str | None = None,
+        source_name: str | None = None,
         source_object_key: str | None = None,
         external_ids: dict | None = None,
         metadata: dict | None = None,
@@ -552,6 +553,8 @@ class IngestionService:
         finish_job: bool = True,
     ) -> dict:
         doc_id = doc_id or str(uuid.uuid4())
+        # The original filename: ``file_path`` is a scratch copy named after the job.
+        source = os.path.basename(source_name or file_path)
         client = create_llm()
         try:
             if job_id:
@@ -581,7 +584,7 @@ class IngestionService:
                 self.hierarchy.coalesce_title_pages(parts) if semantic else parts
             )
             tree = self.hierarchy.build(
-                assembly_parts, ranks, title=Path(file_path).stem, semantic=semantic
+                assembly_parts, ranks, title=Path(source).stem, semantic=semantic
             )
             if not semantic:
                 self.hierarchy.cap_unnumbered_nesting(tree)
@@ -678,8 +681,8 @@ class IngestionService:
                 "aliases": aliases,
                 "lookup_keys": lookup_keys,
                 "effective_date": effective_date,
-                "source": os.path.basename(file_path),
-                "source_uri": source_uri or os.path.basename(file_path),
+                "source": source,
+                "source_uri": source_uri or source,
                 "source_object_key": source_object_key,
                 "metadata": metadata or {},
                 "uploaded_at": uploaded_at,
@@ -723,7 +726,7 @@ class IngestionService:
                     "lang": lang,
                     "status": "active",
                     "external_ids": external_ids,
-                    "source_uri": source_uri or os.path.basename(file_path),
+                    "source_uri": source_uri or source,
                     "source_object_key": source_object_key,
                     "content_hash": content_hash,
                     "node_count": count,
@@ -785,6 +788,7 @@ class IngestionService:
         lang: str | None = None,
         title: str | None = None,
         source_uri: str | None = None,
+        source_name: str | None = None,
         source_object_key: str | None = None,
         external_ids: dict | None = None,
         metadata: dict | None = None,
@@ -798,6 +802,7 @@ class IngestionService:
         (structure, tagging, embedding) and are inserted next to them, tagged with the new
         version only. Old versions stay searchable untouched.
         """
+        source = os.path.basename(source_name or file_path)
         client = create_llm()
         try:
             if job_id:
@@ -842,7 +847,7 @@ class IngestionService:
                 self.hierarchy.coalesce_title_pages(parts) if semantic else parts
             )
             tree = self.hierarchy.build(
-                assembly_parts, ranks, title=Path(file_path).stem, semantic=semantic
+                assembly_parts, ranks, title=Path(source).stem, semantic=semantic
             )
             if not semantic:
                 self.hierarchy.cap_unnumbered_nesting(tree)
@@ -983,8 +988,8 @@ class IngestionService:
                 "aliases": build_aliases(name, external_ids),
                 "lookup_keys": build_lookup_keys(name, external_ids),
                 "effective_date": effective_date,
-                "source": os.path.basename(file_path),
-                "source_uri": source_uri or os.path.basename(file_path),
+                "source": source,
+                "source_uri": source_uri or source,
                 "source_object_key": source_object_key,
                 "metadata": metadata or {},
                 "uploaded_at": uploaded_at,

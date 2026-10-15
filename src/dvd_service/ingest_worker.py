@@ -216,6 +216,7 @@ class IngestWorker:
             common = dict(
                 version_override=entry.get("version"),
                 job_id=job_id,
+                source_name=entry.get("filename"),
                 source_object_key=entry.get("source_object_key"),
                 on_identity=lambda name, version: self.queue.set_checkpoint(
                     job_id, name=name, version=version
@@ -335,10 +336,10 @@ class IngestWorker:
     def _materialize(self, entry: dict, storage: DocumentStorage) -> str:
         """Write the stored original back to the scratch directory for the parser to read."""
         os.makedirs(self.settings.upload_dir, exist_ok=True)
-        filename = entry.get("filename") or f"{entry['job_id']}.docx"
-        path = os.path.join(
-            self.settings.upload_dir, f"{entry['job_id']}_{Path(filename).name}"
-        )
+        suffix = Path(entry.get("filename") or "").suffix or ".docx"
+        # The original name stays out of the path (see ``receive_file``); the pipeline gets
+        # it as ``source_name``.
+        path = os.path.join(self.settings.upload_dir, f"{entry['job_id']}{suffix}")
         data, _ = storage.download(entry["source_object_key"])
         Path(path).write_bytes(data)
         return path

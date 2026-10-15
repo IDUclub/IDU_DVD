@@ -363,6 +363,63 @@ class TestManualScopeWins:
         assert payload["document_level"] is None
 
 
+# 130 characters, 242 bytes of UTF-8 — past the 255-byte basename limit once a job id is added.
+LONG_FILENAME = ("Материалы по обоснованию расчетных показателей " * 3)[:125] + ".docx"
+
+
+class TestSourceName:
+    """The scratch copy is named after the job; the payload keeps the uploaded name."""
+
+    def test_ingest_records_the_original_filename(self, wired, sample_raw):
+        assert len(LONG_FILENAME) == 130
+        wired.ingestion.ingest(
+            "_uploads/job-1.docx",
+            sample_raw,
+            DocumentParser.content_hash(sample_raw),
+            source_name=LONG_FILENAME,
+        )
+        for _vec, payload in wired.qdrant.points.values():
+            assert payload["source"] == LONG_FILENAME
+            assert payload["source_uri"] == LONG_FILENAME
+
+    def test_update_records_the_original_filename(self, wired, sample_raw):
+        wired.ingestion.ingest(
+            "_uploads/job-1.docx",
+            sample_raw,
+            DocumentParser.content_hash(sample_raw),
+            name_override="СП 1",
+            source_name="v1.docx",
+        )
+        updated = sample_raw + [
+            {
+                "text": "Новый пункт документа.",
+                "category": "NarrativeText",
+                "html": None,
+            }
+        ]
+        wired.ingestion.update(
+            "СП 1",
+            "_uploads/job-2.docx",
+            updated,
+            DocumentParser.content_hash(updated),
+            version_override="2026",
+            source_name=LONG_FILENAME,
+        )
+        sources = {
+            payload["source"]
+            for _vec, payload in wired.qdrant.points.values()
+            if payload["version"] == "2026"
+        }
+        assert sources == {LONG_FILENAME}
+
+    def test_without_a_source_name_the_file_name_is_used(self, wired, sample_raw):
+        wired.ingestion.ingest(
+            "_uploads/doc.docx", sample_raw, DocumentParser.content_hash(sample_raw)
+        )
+        _vec, payload = next(iter(wired.qdrant.points.values()))
+        assert payload["source"] == "doc.docx"
+
+
 class TestIngest:
     def test_happy_path(self, wired, sample_raw):
         h = DocumentParser.content_hash(sample_raw)
