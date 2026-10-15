@@ -1,3 +1,9 @@
+## v0.21.3 (2026-10-15)
+
+[fix/long-upload-filename](https://github.com/IDUclub/IDU_DVD/pull/113) (#113)
+
+- fix: name upload scratch files by job id, not by the original filename
+
 ## v0.21.2 (2026-10-07)
 
 [fix/autoformat-skip-ci](https://github.com/IDUclub/IDU_DVD/pull/112) (#112)
