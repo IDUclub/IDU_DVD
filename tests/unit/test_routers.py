@@ -12,6 +12,8 @@ durable queue — so the assertions are about what landed in the queue, checked 
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -42,6 +44,10 @@ def _seed_point(qdrant, name: str = "N") -> None:
     so a test asserting a 400 has to back the registry entry with a point.
     """
     qdrant.points["p1"] = ([0.0], {"name": name, "version": "V", "doc_id": "d1"})
+
+
+# 130 characters, 242 bytes of UTF-8 — past the 255-byte basename limit once a job id is added.
+LONG_FILENAME = ("Материалы по обоснованию расчетных показателей " * 3)[:125] + ".docx"
 
 
 class FakeParser:
@@ -372,6 +378,27 @@ class TestUpload:
             == 202
         )
         assert list(tmp_path.iterdir()) == []
+
+    def test_long_cyrillic_filename_is_accepted(self, client):
+        """130 Cyrillic characters: prefixed with the job id, over the 255-byte basename limit."""
+        c, fakes = client
+        filename = LONG_FILENAME
+        received = []
+        upload_hash = fakes["parser"].upload_hash
+        fakes["parser"].upload_hash = lambda path: (
+            received.append(path) or upload_hash(path)
+        )
+
+        resp = c.post("/documents", files={"file": (filename, b"data")})
+
+        assert resp.status_code == 202
+        job_id = resp.json()["job_id"]
+        assert len(f"{job_id}_{filename}".encode()) > 255  # the old scratch name
+        [path] = received
+        assert Path(path).name == f"{job_id}.docx"
+        [entry] = fakes["queue"].pending()
+        assert entry["filename"] == filename
+        assert fakes["jobs"].store[entry["job_id"]]["filename"] == filename
 
     def test_exact_duplicate_rejected(self, client):
         c, fakes = client

@@ -145,7 +145,9 @@ async def receive_file(
             % (", ".join(settings.allowed_extensions), ext or "—"),
         )
     os.makedirs(settings.upload_dir, exist_ok=True)
-    path = os.path.join(settings.upload_dir, f"{job_id}_{file.filename}")
+    # Named by the job alone: the original name may exceed the 255-byte basename limit
+    # (Cyrillic is 2 bytes per character). It travels with the job as ``filename`` instead.
+    path = os.path.join(settings.upload_dir, f"{job_id}{ext}")
     with open(path, "wb") as f:
         shutil.copyfileobj(file.file, f)
     # Cheap text extraction BEFORE the heavy LLM pass — it powers the duplicate check. A
