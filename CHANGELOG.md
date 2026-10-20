@@ -1,3 +1,10 @@
+## v0.21.4 (2026-10-20)
+
+[fix/ICII-190-docker-log-rotation](https://github.com/IDUclub/IDU_DVD/pull/114) (#114)
+
+- fix: cap container logs at 100 MB in docker compose
+- fix: rotate the log file by size once a day, keeping logs within 100 MB
+
 ## v0.21.3 (2026-10-15)
 
 [fix/long-upload-filename](https://github.com/IDUclub/IDU_DVD/pull/113) (#113)
