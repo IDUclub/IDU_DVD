@@ -1083,3 +1083,64 @@ login page and browser favicon. The bundled default is a transparent version of
 - `GET /admin/ui/logo.png` and `GET /admin/ui/favicon.png` are public branding assets
   (PNG, `Cache-Control: no-store`); the favicon is 64×64. The bundled logo is used when
   no custom object exists. Saving refreshes both URLs in the current page immediately.
+
+
+## Document comparison
+
+`POST /library/compare` (authenticated) and MCP `compare_documents(left_doc_id, right_doc_id, ...)` compare
+shared documents and documents uploaded by the current user. Missing and inaccessible IDs
+both return 404 / ToolError; callers cannot supply another user's identity.
+
+Request: `left_doc_id`, `right_doc_id` (required), optional `left_version`, `right_version`,
+`query`, `limit` (default 60, range 1..500), `max_chars` (default 2000, range 100..10000).
+MCP accepts these fields as plain top-level tool arguments, not a nested `request`:
+`compare_documents(left_doc_id, right_doc_id, left_version=None, right_version=None,
+query=None, limit=60, max_chars=2000)`; the REST JSON body is unchanged.
+Versions are exact stored labels (also matched against the multi-valued `versions` payload).
+Use version selectors when editions share an ID; ambiguous active editions return 422 /
+ToolError. Without a selector, superseded fragments are omitted when current ones exist.
+
+Response: `mode`, `left`/`right` summaries (identity, edition, effective date, status, owner
+kind), `stats`, `sections`, `changes`, `truncated`, `topic_top_k`. Statistics cover all selected
+fragments before the output limit; unchanged pairs are counted but omitted from changes.
+Sections group by the first structure/breadcrumb element; a pair crossing sections counts
+in both. Each change includes optional left/right fragments (ID, numbering, breadcrumb,
+section, text, `text_truncated`, `amended_by`), similarity, changed word spans, and differing
+numeric expressions with units/percentages. `diff_truncated` signals clipped word changes;
+text and numeric fields respect `max_chars`. Changed numeric pairs precede other modified
+pairs, then other changes, with document order as the stable tie break.
+
+- `editions`: equal normalized names/designations (or the same ID/registry-linked edition).
+  Names ending in an edition year matching the version label are compared without that year.
+  Identical text at the same location is matched first, then moved identical text, numbering,
+  fragment-name/structure paths via ordered dictionary indexes, then mutual best text matches
+  (SequenceMatcher >= 0.62). Fuzzy fallback considers the first 128 unmatched fragments on
+  each side and at most 16 candidates per left fragment, ranked by shared tokens, length
+  difference and reading order. Quick similarity bounds reject impossible matches. Outside
+  this bounded pool, unmatched fragments remain added/removed; structural/exact passes
+  cover the entire documents.
+  Kinds: `modified`, `renumbered` (unchanged text moved or numbered differently), `added`
+  (right only), `removed` (left only).
+- `documents`: mutual best cosine matches of stored fragment vectors (>= 0.72), with stable
+  reading-order tie breaks. `similar` means paired texts have SequenceMatcher ratio >= 0.85;
+  `different` means a semantic match with lower textual overlap. `only_left`/`only_right`
+  mean no confident mutual match. Similarity in this mode is cosine, not a legal-equivalence
+  score. Identical paired texts count as unchanged.
+- `query`: embed only this topic once, retrieve up to 60 nearest non-container fragments per
+  authorized document/edition. For editions, expand each selection with the opposite side's
+  original hits' counterparts from the full authorized edition (same normalized numbering,
+  name/structure path, or identical text), then align. Expansion is not recursive and may
+  exceed 60 fragments; `topic_top_k` reports the initial retrieval limit. This prevents
+  a clause ranked on just one side being falsely reported as added/removed.
+  This is a relevance sample,
+  not exhaustive topic coverage; counts describe this selection. Containers and blank text
+  are always excluded. Without a query, compare the full selected editions. No LLM is used.
+
+Example: `{"left_doc_id":"a","right_doc_id":"b","query":"parking requirements","limit":60}`.
+For two versions: `{"left_doc_id":"a","right_doc_id":"a","left_version":"2020","right_version":"2024"}`.
+
+Structural/exact alignment uses indexes. Document-mode cosine scores use one normalized
+NumPy matrix product with quadratic score-matrix memory; edition fuzzy work is bounded.
+Semantic matches and numeric extraction are
+heuristics and do not determine legal effect or convert units. Dense vectors must have
+compatible dimensions; documents are never re-embedded by comparison.

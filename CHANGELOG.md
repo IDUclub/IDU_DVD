@@ -1,3 +1,9 @@
+## v0.22.0 (2026-10-23)
+
+[feat/ICII-151-doc-comparasion](https://github.com/IDUclub/IDU_DVD/pull/115) (#115)
+
+- feat: compare two documents or two editions of one document
+
 ## v0.21.4 (2026-10-20)
 
 [fix/ICII-190-docker-log-rotation](https://github.com/IDUclub/IDU_DVD/pull/114) (#114)
