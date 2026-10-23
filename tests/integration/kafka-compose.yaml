@@ -11,8 +11,16 @@
 # Deliberately NOT part of the main docker-compose.yaml: the app itself needs no
 # broker to run, and the real deployments use the shared IDU cluster.
 
+# Docker keeps at most 5 files of 20 MB (100 MB) of stdout/stderr per container.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   kafka:
+    logging: *default-logging
     image: confluentinc/cp-kafka:7.6.1
     environment:
       KAFKA_NODE_ID: 1
@@ -32,6 +40,7 @@ services:
       - "9092:9092"
 
   schema-registry:
+    logging: *default-logging
     image: confluentinc/cp-schema-registry:7.6.1
     depends_on:
       - kafka

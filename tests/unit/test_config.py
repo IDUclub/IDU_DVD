@@ -17,8 +17,9 @@ class TestDefaults:
         assert s.vector_size == 2048  # must match Giga-Embeddings-instruct
         assert s.embeddings_provider == "giga"
         assert s.embeddings_model == "ai-sage/Giga-Embeddings-instruct"
-        assert ".docx" in s.allowed_extensions  # OCR-free formats; PDF deferred
-        assert ".pdf" not in s.allowed_extensions
+        assert ".docx" in s.allowed_extensions
+        assert ".pdf" in s.allowed_extensions  # text layer, OCR for scanned pages
+        assert s.ocr_base_url == ""  # OCR off until configured
         assert s.redis_job_ttl == 86400
         assert Settings.model_fields["llm_concurrency"].default == 64
 

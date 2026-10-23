@@ -18,6 +18,8 @@ from src.common.auth import (
 )
 from src.dependencies import Dependencies
 from src.dvd_service.dto import (
+    CompareRequest,
+    CompareResponse,
     DeleteResponse,
     DocumentDetail,
     DocumentList,
@@ -656,6 +658,43 @@ def pending_references(name: str) -> list[dict]:
     These are completed automatically once that document is ingested.
     """
     return Dependencies.get_registry().peek_pending(normalize_designation(name))
+
+
+@mcp.tool()
+def compare_documents(
+    left_doc_id: str,
+    right_doc_id: str,
+    left_version: str | None = None,
+    right_version: str | None = None,
+    query: str | None = None,
+    limit: int = 60,
+    max_chars: int = 2000,
+    user_id: str | None = Depends(get_optional_mcp_user_id),
+) -> CompareResponse:
+    """Use when asked how two documents or editions differ, in full or on a topic.
+
+    Supply document IDs, optional left_version/right_version for editions sharing an ID,
+    and query for a topic such as parking requirements. Returns deterministic changes,
+    numeric differences and section counts for an LLM to summarize with fragment citations.
+    Editions use structural/text alignment; unrelated documents use stored-vector mutual
+    matches. Similar/different describe textual overlap, not legal equivalence. Unchanged
+    pairs are counted only. Private documents require the current authenticated owner.
+    """
+    try:
+        request = CompareRequest(
+            left_doc_id=left_doc_id,
+            right_doc_id=right_doc_id,
+            left_version=left_version,
+            right_version=right_version,
+            query=query,
+            limit=limit,
+            max_chars=max_chars,
+        )
+        return Dependencies.get_document_compare().compare(request, user_id)
+    except KeyError as exc:
+        raise ToolError("document not found") from exc
+    except ValueError as exc:
+        raise ToolError(str(exc)) from exc
 
 
 @mcp.tool()

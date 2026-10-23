@@ -4,6 +4,16 @@ The models live in dedicated modules by concern (``node_payload``, ``upload``, `
 ``document``, ``reference``); this file only marks the package and re-exports them.
 """
 
+from src.dvd_service.dto.compare import (  # noqa: F401
+    CompareChange,
+    ComparedFragment,
+    CompareDocument,
+    CompareRequest,
+    CompareResponse,
+    CompareSection,
+    CompareStats,
+    WordChange,
+)
 from src.dvd_service.dto.direct import (  # noqa: F401
     DirectDocumentIn,
     DirectFragmentIn,
@@ -25,6 +35,11 @@ from src.dvd_service.dto.document import (  # noqa: F401
 )
 from src.dvd_service.dto.node_payload import NodePayload  # noqa: F401
 from src.dvd_service.dto.reference import DocumentRef  # noqa: F401
+from src.dvd_service.dto.relation import (  # noqa: F401
+    DocumentRelations,
+    FragmentRelation,
+    RelatedRef,
+)
 from src.dvd_service.dto.scope import AdministrativeScope  # noqa: F401
 from src.dvd_service.dto.search import (  # noqa: F401
     ScopesResponse,
@@ -50,6 +65,14 @@ from src.dvd_service.dto.user_index import (  # noqa: F401
 )
 
 __all__ = [
+    "CompareChange",
+    "CompareDocument",
+    "ComparedFragment",
+    "CompareSection",
+    "CompareStats",
+    "WordChange",
+    "CompareRequest",
+    "CompareResponse",
     "NodePayload",
     "AdministrativeScope",
     "AvailableDocumentInfo",
@@ -58,6 +81,9 @@ __all__ = [
     "DirectFragmentIn",
     "DirectJobResult",
     "DocumentRef",
+    "DocumentRelations",
+    "FragmentRelation",
+    "RelatedRef",
     "DocumentInfo",
     "DocumentListResponse",
     "DocumentSummary",

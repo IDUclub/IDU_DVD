@@ -21,6 +21,7 @@ from pathlib import Path
 import structlog
 
 from src.common.config import Settings
+from src.common.logger.rotation import start_daily_log_rotation
 
 # Key under which the ISO timestamp is stored in each JSON log line (used by the
 # /system/logs date filter). Keep in sync with SystemController.
@@ -83,6 +84,7 @@ def configure_logging(settings: Settings) -> None:
 
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setFormatter(file_formatter)
+    start_daily_log_rotation(log_path)
 
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(console_formatter)

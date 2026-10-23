@@ -78,6 +78,10 @@ class DocumentSummary(AdministrativeScope):
     tags: list[str] = Field(default_factory=list)
     # proxied download link (this service, not a raw MinIO URL) — None if no source was stored
     source_file_url: str | None = None
+    # an act linked to the stored document it changes or clarifies (see AmendmentService);
+    # filled by ``GET /library/documents/{doc_id}``
+    amends: str | None = None
+    explains: str | None = None
 
 
 class DocumentFragment(BaseModel):
@@ -110,6 +114,8 @@ class DocumentFragment(BaseModel):
     references: list[DocumentRef] = Field(default_factory=list)
     text: str = ""
     table_html: str | None = None
+    # Acts whose changes the fragment carries (a consolidated edition's changed text).
+    amended_by: list[str] = Field(default_factory=list)
 
 
 class NodeDetail(DocumentFragment):

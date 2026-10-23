@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from src.dvd_service.modules.source_layout import SourceLayout
+
 
 class SourceStructure:
     HEADING = re.compile(
@@ -115,6 +117,7 @@ class SourceStructure:
             if in_toc or (leader and anchors[i].get("numbering")):
                 toc_titles.add(title)
                 anchors[i] = {"type": "toc", "numbering": ""}
+        cls._apply_layout_addresses(parts, texts, anchors)
         in_article = False
         for i, (part, text, anchor) in enumerate(zip(parts, texts, anchors)):
             if anchor.get("source_heading_level"):
@@ -155,6 +158,35 @@ class SourceStructure:
                         break
             part["_source_anchor"] = anchor
         return parts
+
+    @staticmethod
+    def _apply_layout_addresses(parts, texts, anchors):
+        """Trust the document-wide address run of a PDF conversion over a leading number.
+
+        Only parts cut by ``SourceLayout`` carry ``_layout_number``. There a decimal number
+        outside the run is a note item, a table row or a code («2 При определении …» after
+        «П р и м е ч а н и я»), and a top-level number inside it opens a section.
+        """
+        if not any("_layout_number" in p for p in parts):
+            return
+        for part, text, anchor in zip(parts, texts, anchors):
+            number = anchor.get("numbering", "")
+            if (
+                not number
+                or anchor.get("type")
+                or anchor.get("source_delimiter") == ")"
+                or not re.fullmatch(r"\d+(?:\.\d+)*", number)
+            ):
+                continue
+            layout = part.get("_layout_number")
+            if layout != number:
+                anchor.clear()
+            elif "." not in number:
+                anchor.update(
+                    type="section",
+                    source_heading_level=1,
+                    fragment_name=SourceLayout.section_title(text, number),
+                )
 
     @classmethod
     def starts_part(cls, text):

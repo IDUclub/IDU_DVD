@@ -249,7 +249,7 @@ async def upload_user_document(
     ingestion = _build_ingestion(user_id, project_id, scenario_id)
 
     job_id = str(uuid.uuid4())
-    path, _, content_hash = await receive_file(file, settings, parser, job_id)
+    path, content_hash = await receive_file(file, settings, parser, job_id)
     reject_duplicate(registry, ingestion.qdrant, content_hash, path)
     try:
         source_key = await park_source(storage, path, content_hash)
@@ -329,7 +329,7 @@ async def update_user_document(
     ingestion = _build_ingestion(user_id, project_id, scenario_id)
 
     job_id = str(uuid.uuid4())
-    path, _, content_hash = await receive_file(file, settings, parser, job_id)
+    path, content_hash = await receive_file(file, settings, parser, job_id)
     reject_duplicate(registry, ingestion.qdrant, content_hash, path)
     try:
         source_key = await park_source(storage, path, content_hash)
@@ -389,7 +389,7 @@ async def reload_user_document(
         _resolve_project, urban_api, project_id, scenario_id, user_id
     )
     job_id = str(uuid.uuid4())
-    path, _, content_hash = await receive_file(file, settings, parser, job_id)
+    path, content_hash = await receive_file(file, settings, parser, job_id)
     try:
         source_key = await park_source(storage, path, content_hash)
     except Exception as exc:  # noqa: BLE001

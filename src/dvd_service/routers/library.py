@@ -19,9 +19,12 @@ from src.common.auth import (
 )
 from src.dependencies import Dependencies
 from src.dvd_service.dto import (
+    CompareRequest,
+    CompareResponse,
     DocumentDetail,
     DocumentFragment,
     DocumentList,
+    DocumentRelations,
     DocumentUpdateRequest,
     DocumentUpdateResponse,
     FragmentUpdateRequest,
@@ -57,6 +60,21 @@ async def backfill_fragment_names(
 # Reading the library is open to any live token; hand-editing the shared corpus is not.
 AUTHENTICATED = [Depends(require_authenticated)]
 ADMIN_ONLY = [Depends(require_admin)]
+
+
+@router.post("/compare", response_model=CompareResponse, dependencies=AUTHENTICATED)
+async def compare_documents(
+    request: CompareRequest,
+    service=Depends(Dependencies.get_document_compare),
+    user_id: str | None = Depends(get_effective_user_id),
+):
+    """Compare accessible documents or editions, optionally restricted to a topic."""
+    try:
+        return await run_in_threadpool(service.compare, request, user_id)
+    except KeyError as exc:
+        raise HTTPException(404, "document not found") from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @router.get("/documents", response_model=DocumentList, dependencies=AUTHENTICATED)
@@ -111,13 +129,45 @@ async def find_documents(
 )
 async def get_document(
     doc_id: str,
+    include_superseded: bool = Query(
+        False,
+        description="Also return fragments of editions replaced by a consolidated one",
+    ),
     library: LibraryService = Depends(Dependencies.get_library),
 ):
-    """A document by id: assembled text + metadata + ordered fragments (with source grounding)."""
-    detail = await run_in_threadpool(library.get_document, doc_id)
+    """A document by id: assembled text + metadata + ordered fragments (with source grounding).
+
+    Fragments of superseded editions (replaced by one with its amendments applied) are left
+    out by default.
+    """
+    detail = await run_in_threadpool(library.get_document, doc_id, include_superseded)
     if detail is None:
         raise HTTPException(404, "document not found")
     return detail
+
+
+@router.get(
+    "/documents/{doc_id}/relations",
+    response_model=DocumentRelations,
+    dependencies=AUTHENTICATED,
+)
+async def get_document_relations(
+    doc_id: str,
+    min_weight: float = Query(
+        0.0, ge=0.0, le=1.0, description="drop weaker directed relations"
+    ),
+    library: LibraryService = Depends(Dependencies.get_library),
+):
+    """Directed semantic dependencies between the document's fragments.
+
+    ``source_id`` depends on ``target_id`` with ``weight`` (0..1): reading the target is
+    needed to understand or apply the source. Consumers building derived layers (e.g. the
+    restriction graph) take these as edges between the fragments they already hold.
+    """
+    relations = await run_in_threadpool(library.get_relations, doc_id, min_weight)
+    if relations is None:
+        raise HTTPException(404, "document not found")
+    return relations
 
 
 @router.get("/nodes/{node_id}", response_model=NodeDetail, dependencies=AUTHENTICATED)

@@ -58,6 +58,7 @@ _PAYLOAD_INDEXES: dict[str, PayloadSchemaType] = {
     "territory_type_id": PayloadSchemaType.INTEGER,
     "territory_path": PayloadSchemaType.INTEGER,
     "tagging_status": PayloadSchemaType.KEYWORD,  # find documents awaiting the backfill
+    "status": PayloadSchemaType.KEYWORD,  # superseded editions are hidden by default
     # user-scoped document index (None for the shared/regular corpus)
     "user_id": PayloadSchemaType.KEYWORD,
     "project_id": PayloadSchemaType.KEYWORD,
@@ -285,6 +286,34 @@ class QdrantRepository:
             if offset is None:
                 return
 
+    def comparison_points(self, query_filter: Filter) -> list[dict]:
+        """Paginate scoped fragments with stored dense vectors for comparison."""
+        out = []
+        offset = None
+        while True:
+            records, offset = self.client.scroll(
+                self.collection,
+                scroll_filter=query_filter,
+                limit=256,
+                offset=offset,
+                with_payload=True,
+                with_vectors=True,
+            )
+            for record in records:
+                if isinstance(record.vector, dict):
+                    raise ValueError(
+                        "document comparison requires unnamed dense vectors"
+                    )
+                out.append(
+                    {
+                        **(record.payload or {}),
+                        "id": str(record.id),
+                        "_vector": list(record.vector or []),
+                    }
+                )
+            if offset is None:
+                return out
+
     def retrieve(self, ids: Sequence[str]) -> dict[str, dict]:
         if not ids:
             return {}
@@ -413,6 +442,13 @@ class QdrantRepository:
         if point_ids:
             self.client.set_payload(
                 self.collection, payload={"versions": versions}, points=list(point_ids)
+            )
+
+    def set_status(self, point_ids: Sequence[str], status: str) -> None:
+        """Set the lifecycle ``status`` (``active`` / ``superseded``) of the given points."""
+        if point_ids:
+            self.client.set_payload(
+                self.collection, payload={"status": status}, points=list(point_ids)
             )
 
     def delete_points(self, point_ids: Sequence[str]) -> None:
@@ -632,6 +668,9 @@ class ScopedQdrantRepository:
 
     def set_versions(self, point_ids: Sequence[str], versions: list[str]) -> None:
         self._inner.set_versions(point_ids, versions)
+
+    def set_status(self, point_ids: Sequence[str], status: str) -> None:
+        self._inner.set_status(point_ids, status)
 
     def delete_points(self, point_ids: Sequence[str]) -> None:
         self._inner.delete_points(point_ids)

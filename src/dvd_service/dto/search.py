@@ -5,6 +5,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field, model_validator
 
 from src.dvd_service.dto.reference import DocumentRef
+from src.dvd_service.dto.relation import RelatedRef
 from src.dvd_service.dto.scope import AdministrativeScope
 
 
@@ -35,8 +36,13 @@ class SearchRequest(BaseModel):
         # federal documents that are in force there
     )
     tagging_status: str | None = None  # ok | pending (documents awaiting the backfill)
+    include_superseded: bool = (
+        False  # also search editions replaced by a consolidated one (asking for a
+        # ``version`` reaches any edition anyway)
+    )
     limit: int = 10
     context_height: int = 0  # how many neighbour fragments to attach before/after
+    related: bool = True  # also return the fragments the hits depend on (as extra hits)
 
     # --- user-scoped index search (project_id or scenario_id; owner comes from the token) ---
     user_id: str | None = (
@@ -127,6 +133,16 @@ class SearchHit(AdministrativeScope):
         None  # expanded text with neighbours (when context_height > 0)
     )
     table_html: str | None = None
+
+    # --- semantic relations ---
+    related: list[RelatedRef] = Field(
+        default_factory=list
+    )  # fragments this one depends on, strongest first
+    # Set on hits that were not matched by the query but pulled in by a matched hit's
+    # relation: the id of that hit, and the relation's weight and kind.
+    related_to: str | None = None
+    relation_weight: float | None = None
+    relation_kind: str | None = None
 
 
 class SearchResponse(BaseModel):
