@@ -286,6 +286,34 @@ class QdrantRepository:
             if offset is None:
                 return
 
+    def comparison_points(self, query_filter: Filter) -> list[dict]:
+        """Paginate scoped fragments with stored dense vectors for comparison."""
+        out = []
+        offset = None
+        while True:
+            records, offset = self.client.scroll(
+                self.collection,
+                scroll_filter=query_filter,
+                limit=256,
+                offset=offset,
+                with_payload=True,
+                with_vectors=True,
+            )
+            for record in records:
+                if isinstance(record.vector, dict):
+                    raise ValueError(
+                        "document comparison requires unnamed dense vectors"
+                    )
+                out.append(
+                    {
+                        **(record.payload or {}),
+                        "id": str(record.id),
+                        "_vector": list(record.vector or []),
+                    }
+                )
+            if offset is None:
+                return out
+
     def retrieve(self, ids: Sequence[str]) -> dict[str, dict]:
         if not ids:
             return {}

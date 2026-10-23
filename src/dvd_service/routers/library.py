@@ -19,6 +19,8 @@ from src.common.auth import (
 )
 from src.dependencies import Dependencies
 from src.dvd_service.dto import (
+    CompareRequest,
+    CompareResponse,
     DocumentDetail,
     DocumentFragment,
     DocumentList,
@@ -58,6 +60,21 @@ async def backfill_fragment_names(
 # Reading the library is open to any live token; hand-editing the shared corpus is not.
 AUTHENTICATED = [Depends(require_authenticated)]
 ADMIN_ONLY = [Depends(require_admin)]
+
+
+@router.post("/compare", response_model=CompareResponse, dependencies=AUTHENTICATED)
+async def compare_documents(
+    request: CompareRequest,
+    service=Depends(Dependencies.get_document_compare),
+    user_id: str | None = Depends(get_effective_user_id),
+):
+    """Compare accessible documents or editions, optionally restricted to a topic."""
+    try:
+        return await run_in_threadpool(service.compare, request, user_id)
+    except KeyError as exc:
+        raise HTTPException(404, "document not found") from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @router.get("/documents", response_model=DocumentList, dependencies=AUTHENTICATED)

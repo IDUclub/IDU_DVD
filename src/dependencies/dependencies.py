@@ -336,6 +336,12 @@ class Dependencies:
         return cls.instance().editor
 
     @classmethod
+    def get_document_compare(cls):
+        from src.dvd_service.services.document_compare import DocumentCompareService
+
+        return DocumentCompareService(cls.get_qdrant(), cls.get_registry())
+
+    @classmethod
     def get_library(cls) -> LibraryService:
         return cls.instance().library
 
