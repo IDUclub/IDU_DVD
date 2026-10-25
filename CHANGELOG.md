@@ -1,3 +1,9 @@
+## v0.22.1 (2026-10-25)
+
+[chore/prod-deploy-ocr-vars](https://github.com/IDUclub/IDU_DVD/pull/117) (#117)
+
+- ci: pass the OCR settings from the production environment to the deploy
+
 ## v0.22.0 (2026-10-23)
 
 [feat/ICII-151-doc-comparasion](https://github.com/IDUclub/IDU_DVD/pull/115) (#115)
