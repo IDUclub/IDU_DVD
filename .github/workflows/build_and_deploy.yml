@@ -114,6 +114,10 @@ jobs:
           DVD_SERVICE_AUTH_CLIENT_ID: ${{ vars.DVD_SERVICE_AUTH_CLIENT_ID }}
           DVD_SERVICE_AUTH_CLIENT_SECRET: ${{ secrets.DVD_SERVICE_AUTH_CLIENT_SECRET }}
           DVD_URBAN_API_URL: ${{ vars.DVD_URBAN_API_URL }}
+          # OCR of scanned PDF pages; an empty DVD_OCR_BASE_URL turns it off.
+          DVD_OCR_BASE_URL: ${{ vars.DVD_OCR_BASE_URL }}
+          DVD_OCR_MODEL: ${{ vars.DVD_OCR_MODEL }}
+          DVD_OCR_API_KEY: ${{ secrets.DVD_OCR_API_KEY }}
         run: |
           : > .env.overrides
           env | grep '^DVD_' | grep -vE '^(DVD_IMAGE|DVD_HOST_PORT)=' | grep -v '=$' >> .env.overrides || true
