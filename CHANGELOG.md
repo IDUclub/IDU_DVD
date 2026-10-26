@@ -1,3 +1,9 @@
+## v0.23.1 (2026-10-26)
+
+[chore/prod-deploy-partition-mode](https://github.com/IDUclub/IDU_DVD/pull/119) (#119)
+
+- ci: pass the logical partition mode from the production environment to the deploy
+
 ## v0.23.0 (2026-10-26)
 
 [feat/ICII-205-img-processing](https://github.com/IDUclub/IDU_DVD/pull/118) (#118)
