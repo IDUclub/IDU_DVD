@@ -122,6 +122,8 @@ jobs:
           DVD_OCR_BASE_URL: ${{ vars.DVD_OCR_BASE_URL }}
           DVD_OCR_MODEL: ${{ vars.DVD_OCR_MODEL }}
           DVD_OCR_API_KEY: ${{ secrets.DVD_OCR_API_KEY }}
+          # Logical fragment partitioning of the parser: boundaries (default) or ranges.
+          DVD_LOGICAL_PARTITION_MODE: ${{ vars.DVD_LOGICAL_PARTITION_MODE }}
         run: |
           : > .env.overrides
           env | grep '^DVD_' | grep -vE '^(DVD_IMAGE|DVD_HOST_PORT)=' | grep -v '=$' >> .env.overrides || true
