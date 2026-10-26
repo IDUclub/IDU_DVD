@@ -1,3 +1,10 @@
+## v0.23.2 (2026-10-26)
+
+[chore/sync-main](https://github.com/IDUclub/IDU_DVD/pull/121) (#121)
+
+- v0.22.1 (#116)
+- v0.23.1 (#120)
+
 ## v0.23.1 (2026-10-26)
 
 [chore/prod-deploy-partition-mode](https://github.com/IDUclub/IDU_DVD/pull/119) (#119)
