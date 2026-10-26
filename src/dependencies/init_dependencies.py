@@ -13,6 +13,7 @@ from minio import Minio
 
 from src.admin_service.branding import BrandingService
 from src.api_clients import AuthHelperClient, UrbanApiClient, probe_embedding_dim
+from src.api_clients.ocr_client import DotsOcrClient
 from src.broker.outbox import EventOutbox
 from src.broker.publisher import KafkaPublisher
 from src.common.auth import SyncServiceTokenAuth, build_service_auth
@@ -25,6 +26,7 @@ from src.common.db.redis_client import (
     RedisClient,
     UserIndexRegistry,
 )
+from src.common.db.relation_repository import RelationRepository
 from src.common.logger import configure_logging
 from src.dependencies.dependencies import Dependencies
 from src.dvd_service.ingest_queue import IngestQueue
@@ -34,6 +36,7 @@ from src.dvd_service.modules.references import ReferenceExtractor, ReferenceReso
 from src.dvd_service.modules.structure import StructureTagger
 from src.dvd_service.modules.tagging import VersionDetector
 from src.dvd_service.modules.territory import TerritoryResolver
+from src.dvd_service.services.amendment_service import AmendmentService
 from src.dvd_service.services.dvd_service import (
     DocumentEditorService,
     DocumentsService,
@@ -175,6 +178,8 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
 
     qdrant = QdrantRepository(s)
     qdrant.ensure_collection()
+    relations = RelationRepository(s, client=qdrant.client)
+    relations.ensure_collection()
     if s.enable_reference_linking:
         qdrant.ensure_pattern_collection()
     redis = RedisClient(s)
@@ -196,7 +201,19 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
     user_document_storage = DocumentStorage(minio_client, s.minio_bucket_user_documents)
     user_document_storage.ensure_bucket()
 
-    parser = DocumentParser(s)
+    # Scanned PDF pages go to the OCR service; without one only text-layer PDFs are read.
+    ocr = (
+        DotsOcrClient(
+            s.ocr_base_url,
+            model=s.ocr_model,
+            api_key=s.ocr_api_key.get_secret_value() if s.ocr_api_key else None,
+            timeout=s.ocr_timeout,
+            max_retries=s.ocr_max_retries,
+        )
+        if s.ocr_base_url
+        else None
+    )
+    parser = DocumentParser(s, ocr=ocr)
     structure = StructureTagger(s)
     hierarchy = HierarchyBuilder()
     version_detector = VersionDetector()
@@ -232,13 +249,19 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         s,
         outbox=outbox if publisher.enabled else None,
         territory=territory,
+        relations=relations,
     )
     search = SearchService(
-        qdrant, s, user_index_registry, territory=territory, urban_api=urban_api
+        qdrant,
+        s,
+        user_index_registry,
+        territory=territory,
+        urban_api=urban_api,
+        relations=relations,
     )
     documents = DocumentsService(qdrant, territory=territory)
     editor = DocumentEditorService(qdrant, registry, s, territory=territory)
-    library = LibraryService(qdrant, registry, territory=territory)
+    library = LibraryService(qdrant, registry, territory=territory, relations=relations)
     tags = TagsService(qdrant)
     tagging_backfill = TaggingBackfillService(
         qdrant, registry, territory, version_detector, jobs, s
@@ -286,6 +309,7 @@ def init_dependencies(s: Settings = settings) -> Dependencies:
         tags=tags,
         tagging_backfill=tagging_backfill,
         version_repair=version_repair,
+        amendments=AmendmentService(ingestion, ingest_queue, s),
         user_index_registry=user_index_registry,
         user_index_service=user_index_service,
         system=system,

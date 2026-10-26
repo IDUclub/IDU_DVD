@@ -553,3 +553,61 @@ def test_designation_code_on_the_next_line_stays_in_its_clause(parser, fake_olla
     assert parts[2]["src_ids"] == [2, 3] and parts[4]["src_ids"] == [4, 5]
     StructureTagger(parser.settings).tag(parts, fake_ollama)
     assert [p["numbering"] for p in parts] == ["6.1.11", "", "", "", "", "6.1.12"]
+
+
+def anchored_nodes(parser, rows):
+    """Source anchors and hierarchy without final assembly: ``rows`` = (text, type, number)."""
+    from src.dvd_service.modules.source_structure import SourceStructure
+
+    parts = parser.to_logical_parts(raw(*(text for text, _, _ in rows)), None)
+    SourceStructure.annotate(parts)
+    tagger = StructureTagger(parser.settings)
+    in_article = False
+    for part, (_, type_, number) in zip(parts, rows):
+        part.update(
+            raw_type=type_, numbering=number, relation="deeper", block="main", tags=[]
+        )
+        _, in_article = tagger.apply_source_anchor(part, in_article)
+        part["type"] = tagger.categorize(part["raw_type"])
+    builder = HierarchyBuilder()
+    tree = builder.build(
+        builder.coalesce_title_pages(parts),
+        tagger.numbering_ranks(parts),
+        semantic=True,
+    )
+    nodes = builder.flatten(tree)
+    by_id = {n["id"]: n for n in nodes}
+    return {
+        n["numbering"]: (
+            by_id[n["parent_id"]]["type"],
+            by_id[n["parent_id"]]["numbering"],
+        )
+        for n in nodes
+        if n.get("numbering") and n.get("parent_id") in by_id
+    }
+
+
+def test_a_heading_like_row_does_not_steal_a_clause_from_its_address(parser):
+    parents = anchored_nodes(
+        parser,
+        [
+            ("6 Транспорт", "section", "6"),
+            ("6.5 Улицы следует проектировать.", "subclause", "6.5"),
+            ("Жилая застройка", "section", ""),  # a flattened table row read as a title
+            ("6.5.17 Ширину тротуаров принимают.", "subclause", "6.5.17"),
+        ],
+    )
+    assert parents["6.5.17"] == ("subclause", "6.5")
+
+
+def test_a_top_level_address_stays_with_its_section_heading(parser):
+    parents = anchored_nodes(
+        parser,
+        [
+            ("4 Общие положения", "section", "4"),
+            ("4 Объекты размещают по плану.", "clause", "4"),
+            ("Жилая застройка", "section", ""),
+            ("4.5 Уровень ответственности принимают.", "subclause", "4.5"),
+        ],
+    )
+    assert parents["4.5"] == ("section", "4")

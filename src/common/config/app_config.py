@@ -97,6 +97,9 @@ class Settings(BaseSettings):
     llm_timeout: float = 600.0
     # None selects low for gpt-oss and leaves other models at their server default.
     llm_reasoning_effort: str | None = None
+    # Reading an amending act into edit operations (addresses, table sections, quoted new
+    # text). On gpt-oss-20b "low" loses table sections and addresses that "medium" gets right.
+    amendment_reasoning_effort: str | None = "medium"
 
     # --- Embeddings provider (vectorizer) ---
     # "giga" — the GPU giga-vectorizer service (OpenAI-compatible /v1/embeddings,
@@ -188,6 +191,33 @@ class Settings(BaseSettings):
         "ref_patterns"  # Qdrant collection for learned patterns
     )
 
+    # --- Fragment relations (directed semantic dependencies inside one document) ---
+    # Scored at ingest over cheap candidate pairs (structure, in-document references, embedding
+    # neighbours — never all pairs) and stored in their own collection next to the fragments.
+    enable_relations: bool = True
+    # heuristic — structure rules: lead-ins and their items, continuations, phrases broken
+    #   between fragments, in-document references (CPU, no calls). On questions labelled
+    #   independently of any scorer they gave most of the retrieval gain;
+    # cross_encoder — the relation-scorer service at relation_scorer_url (GPU), combined with
+    #   the rules per direction; it added ~5 pp of complete answers over the rules on a
+    #   document it was not trained on. Without a URL: heuristic;
+    # llm — the configured LLM judges groups of pairs (slow on long documents).
+    relation_scorer: Literal["heuristic", "cross_encoder", "llm"] = "heuristic"
+    relation_scorer_url: str = ""  # /v1 root of the relation-scorer service
+    relation_scorer_timeout: float = 300.0
+    relation_llm_group: int = 8  # candidate partners judged per LLM call
+    relation_knn_k: int = 8  # embedding neighbours proposed per fragment
+    relation_knn_min_cosine: float = 0.55
+    relation_sibling_full: int = 12  # sibling groups up to this size: all pairs
+    relation_sibling_window: int = 3  # larger groups: neighbours within +-window
+    relation_min_store_weight: float = 0.3  # weaker directions are not stored
+    # Search/context: a hit pulls in the fragments it depends on at least this strongly.
+    # With the rules on SP 19 (not used for tuning) complete answers to questions needing
+    # related fragments rose from 22% to 35% for ~1.3 extra fragments per response.
+    relation_context_min_weight: float = 0.5
+    relation_context_max: int = 6  # related fragments attached per hit
+    relation_context_max_total: int = 10  # related fragments added to one response
+
     # --- Parser pipeline (ported from notebooks/parser.ipynb) ---
     partition_strategy: str = "hi_res"  # 'fast' — for text formats without OCR
     languages: list[str] = ["rus", "eng"]
@@ -230,9 +260,29 @@ class Settings(BaseSettings):
 
     # --- Upload ---
     upload_dir: str = "./_uploads"
-    # Lightweight, OCR-free formats handled by unstructured. Scanned PDF/OCR is deferred
-    # (heavy torch/poppler/tesseract backends); add ".pdf" once those are provisioned.
-    allowed_extensions: list[str] = [".docx", ".txt", ".md", ".html", ".htm"]
+    # A PDF is read page by page: its text layer where it has one, OCR for scanned pages.
+    allowed_extensions: list[str] = [".docx", ".pdf", ".txt", ".md", ".html", ".htm"]
+
+    # --- OCR (scanned PDF pages) ---
+    # dots.ocr served by vLLM: OpenAI-compatible /v1/chat/completions with a page image,
+    # one page per request. Empty URL turns OCR off: a PDF with scanned pages is then refused
+    # at upload, a PDF with a text layer is still read.
+    ocr_base_url: str = ""
+    ocr_model: str = ""  # empty → the first model the server lists
+    ocr_api_key: SecretStr | None = None
+    ocr_timeout: float = 300.0
+    ocr_max_retries: int = 3
+    # Parallel page requests. The contour server handles about one page at a time.
+    ocr_concurrency: int = 1
+    ocr_dpi: int = 200  # render resolution of a scanned page
+    # Upper bound on the rendered page size. The image and the answer share the model
+    # context (dots.mocr on the contour serves 8192 tokens, ~784 pixels per image token):
+    # an A3 sheet at 200 dpi alone overflows it, so larger pages are rendered smaller.
+    ocr_max_pixels: int = 3_500_000
+    # A page whose text layer is shorter than this is treated as a scan.
+    ocr_min_text_chars: int = 30
+    # Recognized pages are cached here per file hash, so a retried job does not OCR again.
+    ocr_cache_dir: str = "./_uploads/ocr_cache"
 
     # --- Document identity defaults (general-purpose corpus metadata) ---
     # Generic fallbacks for the cross-service payload fields when the uploader omits them.
@@ -420,6 +470,11 @@ class Settings(BaseSettings):
             f"{self.qdrant_collection}__{_slug(self.embedding_model_name)}"
             f"_{self.vector_size}"
         )
+
+    @property
+    def relation_collection(self) -> str:
+        """Qdrant collection of fragment relations, paired with the fragment collection."""
+        return f"{self.effective_collection}__relations"
 
     @property
     def registry_prefix(self) -> str:

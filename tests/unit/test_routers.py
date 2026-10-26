@@ -12,6 +12,8 @@ durable queue — so the assertions are about what landed in the queue, checked 
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -44,12 +46,19 @@ def _seed_point(qdrant, name: str = "N") -> None:
     qdrant.points["p1"] = ([0.0], {"name": name, "version": "V", "doc_id": "d1"})
 
 
+# 130 characters, 242 bytes of UTF-8 — past the 255-byte basename limit once a job id is added.
+LONG_FILENAME = ("Материалы по обоснованию расчетных показателей " * 3)[:125] + ".docx"
+
+
 class FakeParser:
     def extract_raw(self, path):
         return [{"text": "x", "category": "NarrativeText", "html": None}]
 
     def content_hash(self, raw):
         return "hash-1"
+
+    def upload_hash(self, path):
+        return self.content_hash(self.extract_raw(path))
 
 
 class FakeRegistry:
@@ -76,6 +85,33 @@ class FakeRegistry:
 
     def unregister_name(self, name):
         self.names.discard(name)
+
+    def amendment_target(self, name):
+        return None
+
+
+class FakeAmendments:
+    def __init__(self):
+        self.calls = []
+
+    def unlink(self, name):
+        self.calls.append(("unlink", name))
+        return "Известный документ" if name == "Приказ" else None
+
+    def link(self, name, target, kind="amends"):
+        self.calls.append(("link", name, target, kind))
+        if target == "нет такого":
+            raise KeyError(f"документ не найден: {target}")
+        if name == target:
+            raise ValueError("документ не может изменять сам себя")
+        return {"name": name, "target": target, "kind": kind, "ops": [], "job_id": "j"}
+
+    def enqueue(self, name, *, reextract=False):
+        self.calls.append(("enqueue", name, reextract))
+        return "job-1"
+
+    def overview(self, name):
+        return {"name": name, "amendments": [], "amends": None, "editions": {}}
 
 
 class FakeJobs:
@@ -229,6 +265,7 @@ def client(tmp_path, fake_qdrant, fake_document_storage, ingest_queue):
         "documents": FakeDocuments(),
         "library": FakeLibrary(),
         "tags": FakeTags(),
+        "amendments": FakeAmendments(),
         "qdrant": fake_qdrant,
         "document_storage": fake_document_storage,
     }
@@ -249,6 +286,7 @@ def client(tmp_path, fake_qdrant, fake_document_storage, ingest_queue):
     app.dependency_overrides[Dependencies.get_documents] = lambda: fakes["documents"]
     app.dependency_overrides[Dependencies.get_library] = lambda: fakes["library"]
     app.dependency_overrides[Dependencies.get_tags] = lambda: fakes["tags"]
+    app.dependency_overrides[Dependencies.get_amendments] = lambda: fakes["amendments"]
     app.dependency_overrides[Dependencies.get_qdrant] = lambda: fakes["qdrant"]
     app.dependency_overrides[Dependencies.get_document_storage] = lambda: fakes[
         "document_storage"
@@ -341,6 +379,27 @@ class TestUpload:
         )
         assert list(tmp_path.iterdir()) == []
 
+    def test_long_cyrillic_filename_is_accepted(self, client):
+        """130 Cyrillic characters: prefixed with the job id, over the 255-byte basename limit."""
+        c, fakes = client
+        filename = LONG_FILENAME
+        received = []
+        upload_hash = fakes["parser"].upload_hash
+        fakes["parser"].upload_hash = lambda path: (
+            received.append(path) or upload_hash(path)
+        )
+
+        resp = c.post("/documents", files={"file": (filename, b"data")})
+
+        assert resp.status_code == 202
+        job_id = resp.json()["job_id"]
+        assert len(f"{job_id}_{filename}".encode()) > 255  # the old scratch name
+        [path] = received
+        assert Path(path).name == f"{job_id}.docx"
+        [entry] = fakes["queue"].pending()
+        assert entry["filename"] == filename
+        assert fakes["jobs"].store[entry["job_id"]]["filename"] == filename
+
     def test_exact_duplicate_rejected(self, client):
         c, fakes = client
         fakes["registry"].dup = True
@@ -363,7 +422,7 @@ class TestUpload:
 
     def test_unsupported_extension_rejected(self, client):
         c, _ = client
-        resp = c.post("/documents", files={"file": ("scan.pdf", b"data")})
+        resp = c.post("/documents", files={"file": ("scan.djvu", b"data")})
         assert resp.status_code == 415
 
     def test_manual_name_and_version_forwarded(self, client):
@@ -438,7 +497,7 @@ class TestUpdateDocument:
     def test_unsupported_extension_rejected(self, client):
         c, _ = client
         resp = c.patch(
-            "/documents/Известный документ", files={"file": ("scan.pdf", b"data")}
+            "/documents/Известный документ", files={"file": ("scan.djvu", b"data")}
         )
         assert resp.status_code == 415
 
@@ -483,6 +542,61 @@ class TestDeleteDocument:
     def test_unknown_name_returns_404(self, client):
         c, _ = client
         assert c.delete("/documents/нет такого").status_code == 404
+
+    def test_deleting_a_whole_document_unlinks_it_as_an_act(self, client):
+        c, fakes = client
+        c.delete("/documents/Известный документ")
+        c.delete("/documents/Известный документ", params={"version": "v2"})
+        assert fakes["amendments"].calls == [("unlink", "Известный документ")]
+
+
+class TestAmendments:
+    def test_upload_checks_the_linked_document(self, client):
+        c, _ = client
+        files = {"file": ("act.docx", b"x", "application/octet-stream")}
+        both = c.post(
+            "/documents",
+            files=files,
+            data={"amends": "Известный документ", "explains": "Известный документ"},
+        )
+        assert both.status_code == 422
+        unknown = c.post("/documents", files=files, data={"amends": "нет такого"})
+        assert unknown.status_code == 422
+        assert "не найден" in unknown.json()["detail"]
+
+    def test_link_unlink_overview_and_rebuild(self, client):
+        c, fakes = client
+        resp = c.put("/documents/Приказ/amends", json={"target": "Известный документ"})
+        assert resp.status_code == 202
+        assert "ops" not in resp.json()
+        assert (
+            c.put("/documents/Приказ/amends", json={"target": "нет такого"}).status_code
+            == 404
+        )
+        assert (
+            c.put("/documents/Приказ/amends", json={"target": "Приказ"}).status_code
+            == 422
+        )
+        assert (
+            c.put(
+                "/documents/Приказ/amends", json={"target": "x", "kind": "repeals"}
+            ).status_code
+            == 422
+        )
+        assert c.delete("/documents/Приказ/amends").json() == {
+            "name": "Приказ",
+            "target": "Известный документ",
+        }
+        assert c.delete("/documents/Другой/amends").status_code == 404
+        overview = c.get("/documents/Известный документ/amendments").json()
+        assert overview["editions"] == {}
+        assert c.get("/documents/нет такого/amendments").status_code == 404
+        rebuild = c.post(
+            "/documents/Известный документ/consolidate", params={"reextract": True}
+        )
+        assert rebuild.json() == {"job_id": "job-1", "status": "queued"}
+        assert ("enqueue", "Известный документ", True) in fakes["amendments"].calls
+        assert c.post("/documents/нет такого/consolidate").status_code == 404
 
 
 class TestDownloadSource:

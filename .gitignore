@@ -226,6 +226,9 @@ __marimo__/
 docs_data/
 test-data/
 
+# Local experiments (datasets, runs, scratch scripts)
+/experiments/
+
 # Scripts
 *.ipynb
 

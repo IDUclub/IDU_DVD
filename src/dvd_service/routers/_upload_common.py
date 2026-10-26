@@ -104,6 +104,8 @@ async def document_meta(
     territory_id: int | None = Form(
         None
     ),  # Urban API territory (level is derived from it)
+    amends: str | None = Form(None),  # stored document this act amends
+    explains: str | None = Form(None),  # stored document this act clarifies
 ) -> dict:
     """Optional per-document metadata form fields, shared by upload/update/reload."""
     return {
@@ -116,13 +118,25 @@ async def document_meta(
         "external_ids": parse_json_field("external_ids", external_ids),
         "metadata": parse_json_field("metadata", metadata),
         "territory_id": territory_id,
+        "amends": (amends or "").strip() or None,
+        "explains": (explains or "").strip() or None,
     }
+
+
+def check_link(meta: dict, registry: DocumentRegistry) -> None:
+    """``amends`` / ``explains`` name one stored document (an act is linked to it)."""
+    amends, explains = meta.get("amends"), meta.get("explains")
+    if amends and explains:
+        raise HTTPException(422, "Укажите что-то одно: amends или explains")
+    target = amends or explains
+    if target and not registry.has_name(target):
+        raise HTTPException(422, f"Изменяемый документ не найден: {target}")
 
 
 async def receive_file(
     file: UploadFile, settings: Settings, parser: DocumentParser, job_id: str
-) -> tuple[str, list[dict], str]:
-    """Validate the extension, persist the upload and pre-parse it: (path, raw, hash)."""
+) -> tuple[str, str]:
+    """Validate the extension, persist the upload and hash it: (path, content hash)."""
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in settings.allowed_extensions:
         raise HTTPException(
@@ -131,16 +145,19 @@ async def receive_file(
             % (", ".join(settings.allowed_extensions), ext or "—"),
         )
     os.makedirs(settings.upload_dir, exist_ok=True)
-    path = os.path.join(settings.upload_dir, f"{job_id}_{file.filename}")
+    # Named by the job alone: the original name may exceed the 255-byte basename limit
+    # (Cyrillic is 2 bytes per character). It travels with the job as ``filename`` instead.
+    path = os.path.join(settings.upload_dir, f"{job_id}{ext}")
     with open(path, "wb") as f:
         shutil.copyfileobj(file.file, f)
-    # Cheap text extraction BEFORE the heavy LLM pass — also powers the duplicate check.
+    # Cheap text extraction BEFORE the heavy LLM pass — it powers the duplicate check. A
+    # scanned PDF is hashed by its bytes instead: OCR runs in the worker, not in the request.
     try:
-        raw = await run_in_threadpool(parser.extract_raw, path)
+        content_hash = await run_in_threadpool(parser.upload_hash, path)
     except Exception as exc:  # noqa: BLE001
         os.remove(path)
         raise HTTPException(422, f"Не удалось разобрать файл: {exc}")
-    return path, raw, parser.content_hash(raw)
+    return path, content_hash
 
 
 def duplicate_conflict(

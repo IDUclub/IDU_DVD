@@ -8,8 +8,16 @@
 # env files — Qdrant and MinIO are contacted at startup and their absence aborts the boot.
 # The app's host port defaults to 8100 because gMART's idu_mcp already binds 8000 there.
 
+# Docker keeps at most 5 files of 20 MB (100 MB) of stdout/stderr per container.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   idu_dvd:
+    logging: *default-logging
     image: ${DVD_IMAGE}
     container_name: idu_dvd
     restart: always

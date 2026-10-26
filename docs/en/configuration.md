@@ -48,6 +48,7 @@ deliver that, each through its own protocol — Ollama's `format`, OpenAI's
 | `DVD_LLM_MAX_TOKENS` | `8192` | `provider=openai`: response budget (the counterpart of `DVD_OLLAMA_NUM_PREDICT`). There is **no** OpenAI equivalent of `num_ctx` — the context window is whatever the server was started with (`--max-model-len` in vLLM) |
 | `DVD_LLM_TIMEOUT` | `600.0` | `provider=openai`: request timeout, seconds |
 | `DVD_LLM_REASONING_EFFORT` | unset | OpenAI-compatible reasoning effort override; unset selects `low` for gpt-oss and omits the field for other models |
+| `DVD_AMENDMENT_REASONING_EFFORT` | `medium` | reasoning effort for reading an amending act into edit operations; on gpt-oss-20b `low` loses table sections and addresses |
 
 Unlike `DVD_EMBEDDINGS_PROVIDER`, these are **not** restart-required: the chat client is built per
 operation, so a change through `PUT /system/settings` is picked up by the next ingest or backfill job.
@@ -257,6 +258,27 @@ the ingestion path apart; deletion of a directly-ingested document still emits t
 | `DVD_REF_PATTERN_LEARNING` | `false` | let the LLM grow the regex pattern base (self-improvement) |
 | `DVD_REF_PATTERN_COLLECTION` | `ref_patterns` | Qdrant collection for learned patterns |
 
+### Fragment relations
+
+Directed semantic dependencies between the fragments of one document (see *Stage 6.5* in
+`pipeline.md`). Stored in their own Qdrant collection `{fragment collection}__relations`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DVD_ENABLE_RELATIONS` | `true` | build relations at ingest and use them in search |
+| `DVD_RELATION_SCORER` | `heuristic` | `heuristic`: structure rules, no model calls (CPU). `cross_encoder`: the relation-scorer service (GPU), combined per direction with the rules (the stronger wins); without `DVD_RELATION_SCORER_URL` it falls back to `heuristic`. `llm`: the configured LLM judges groups of pairs (slow) |
+| `DVD_RELATION_SCORER_URL` | — | `/v1` root of the relation-scorer service (`POST /relations/score`) |
+| `DVD_RELATION_SCORER_TIMEOUT` | `300` | seconds per scorer request |
+| `DVD_RELATION_LLM_GROUP` | `8` | candidate partners judged per LLM call (`llm` scorer) |
+| `DVD_RELATION_KNN_K` | `8` | embedding neighbours proposed per fragment |
+| `DVD_RELATION_KNN_MIN_COSINE` | `0.55` | minimum similarity of an embedding neighbour |
+| `DVD_RELATION_SIBLING_FULL` | `12` | sibling groups up to this size are paired in full |
+| `DVD_RELATION_SIBLING_WINDOW` | `3` | larger sibling groups: neighbours within ±window |
+| `DVD_RELATION_MIN_STORE_WEIGHT` | `0.3` | weaker directions are not stored |
+| `DVD_RELATION_CONTEXT_MIN_WEIGHT` | `0.5` | a search hit pulls in the fragments it depends on at least this strongly |
+| `DVD_RELATION_CONTEXT_MAX` | `6` | related fragments attached per hit |
+| `DVD_RELATION_CONTEXT_MAX_TOTAL` | `10` | related fragments added to one response |
+
 ### Pipeline
 
 | Variable | Default | Description |
@@ -285,7 +307,17 @@ the ingestion path apart; deletion of a directly-ingested document still emits t
 | `DVD_INGEST_MAX_ATTEMPTS` | `3` | processing attempts before a job is dead-lettered. Every restart mid-processing costs one attempt, which also caps how often a document that reliably kills the process can take the service down with it on boot |
 | `DVD_INGEST_PAYLOAD_PREFIX` | `queue` | MinIO key prefix for direct-ingestion payloads parked while queued |
 | `DVD_UPLOAD_DIR` | `./_uploads` | directory for temporary upload files |
-| `DVD_ALLOWED_EXTENSIONS` | `[".docx",".txt",".md",".html",".htm"]` | allowed extensions (OCR-free formats handled by `unstructured`; scanned PDF/OCR is deferred — add `".pdf"` once the heavy backends are provisioned) |
+| `DVD_ALLOWED_EXTENSIONS` | `[".docx",".pdf",".txt",".md",".html",".htm"]` | allowed extensions; a PDF is read through its text layer, scanned pages through OCR |
+| `DVD_OCR_BASE_URL` | `""` | OCR service (dots.ocr on vLLM, OpenAI-compatible); empty = OCR off, scanned PDFs refused |
+| `DVD_OCR_MODEL` | `""` | model name; empty = the first model the server lists |
+| `DVD_OCR_API_KEY` | — | Bearer key of the OCR server |
+| `DVD_OCR_TIMEOUT` | `300` | seconds per page request |
+| `DVD_OCR_MAX_RETRIES` | `3` | attempts per page on 5xx / transport errors (4xx fails at once) |
+| `DVD_OCR_CONCURRENCY` | `1` | parallel page requests; the contour server handles about one page at a time |
+| `DVD_OCR_DPI` | `200` | render resolution of a scanned page |
+| `DVD_OCR_MAX_PIXELS` | `3500000` | upper bound on the rendered page; the image and the answer share the model context, so larger sheets (A3 and up) are rendered smaller |
+| `DVD_OCR_MIN_TEXT_CHARS` | `30` | a page with a shorter text layer is treated as a scan |
+| `DVD_OCR_CACHE_DIR` | `./_uploads/ocr_cache` | recognized pages per file hash; a retried job reads them back |
 
 ### Document identity defaults
 

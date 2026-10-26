@@ -122,7 +122,7 @@ class RangePartitioner:
                 "units": [
                     {
                         "id": i,
-                        "text": u["text"],
+                        "text": u.get("clean_text", u["text"]),
                         "chars": u["char_end"] - u["char_start"],
                         "must_start": u["must_start"],
                     }
@@ -196,12 +196,19 @@ class RangePartitioner:
         for i, (start, end) in enumerate(ranges):
             selected = units[start : end + 1]
             a, b = selected[0]["char_start"], selected[-1]["char_end"]
-            text = source_text[a:b]
+            source = source_text[a:b]
+            # Page artefacts (running headers of a PDF conversion) stay in the exact source
+            # slice only; the fragment text is what the document says.
+            text = (
+                " ".join(u["clean_text"] for u in selected if u["clean_text"])
+                if all("clean_text" in u for u in selected)
+                else source
+            )
             parts.append(
                 {
                     "id": i,
                     "text": text,
-                    "source_text": text,
+                    "source_text": source,
                     "char_start": a,
                     "char_end": b,
                     "source_ids": [u["id"] for u in selected],
@@ -211,4 +218,6 @@ class RangePartitioner:
                     "_group_atomic": True,
                 }
             )
+            if "layout_number" in selected[0]:
+                parts[-1]["_layout_number"] = selected[0]["layout_number"]
         return parts

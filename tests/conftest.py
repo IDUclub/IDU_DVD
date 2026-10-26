@@ -273,6 +273,11 @@ class FakeQdrantRepo:
             vec, pl = self.points[str(pid)]
             self.points[str(pid)] = (vec, {**pl, "versions": list(versions)})
 
+    def set_status(self, point_ids, status) -> None:
+        for pid in point_ids:
+            vec, pl = self.points[str(pid)]
+            self.points[str(pid)] = (vec, {**pl, "status": status})
+
     def delete_points(self, point_ids) -> None:
         for pid in point_ids:
             self.points.pop(str(pid), None)

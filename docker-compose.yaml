@@ -1,5 +1,13 @@
+# Docker keeps at most 5 files of 20 MB (100 MB) of stdout/stderr per container.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   qdrant:
+    logging: *default-logging
     image: qdrant/qdrant:latest
     ports:
       - "6333:6333"
@@ -15,6 +23,7 @@ services:
       start_period: 20s
 
   redis:
+    logging: *default-logging
     image: redis:7-alpine
     # Redis holds the ingestion queue, so its durability is the documents' durability: with
     # snapshots alone a hard kill can lose the jobs accepted since the last save. The contour's
@@ -32,6 +41,7 @@ services:
       start_period: 5s
 
   minio:
+    logging: *default-logging
     image: minio/minio:latest
     command: server /data --console-address ":9001"
     environment:
@@ -50,6 +60,7 @@ services:
       start_period: 10s
 
   app:
+    logging: *default-logging
     build: .
     depends_on:
       qdrant:

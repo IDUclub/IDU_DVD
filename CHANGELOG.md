@@ -1,3 +1,79 @@
+## v0.22.1 (2026-10-25)
+
+[chore/prod-deploy-ocr-vars](https://github.com/IDUclub/IDU_DVD/pull/117) (#117)
+
+- ci: pass the OCR settings from the production environment to the deploy
+
+## v0.22.0 (2026-10-23)
+
+[feat/ICII-151-doc-comparasion](https://github.com/IDUclub/IDU_DVD/pull/115) (#115)
+
+- feat: compare two documents or two editions of one document
+
+## v0.21.4 (2026-10-20)
+
+[fix/ICII-190-docker-log-rotation](https://github.com/IDUclub/IDU_DVD/pull/114) (#114)
+
+- fix: cap container logs at 100 MB in docker compose
+- fix: rotate the log file by size once a day, keeping logs within 100 MB
+
+## v0.21.3 (2026-10-15)
+
+[fix/long-upload-filename](https://github.com/IDUclub/IDU_DVD/pull/113) (#113)
+
+- fix: name upload scratch files by job id, not by the original filename
+
+## v0.21.2 (2026-10-07)
+
+[fix/autoformat-skip-ci](https://github.com/IDUclub/IDU_DVD/pull/112) (#112)
+
+- ci: let auto-merge bump the version after an auto-format commit
+
+## v0.21.1 (2026-10-05)
+
+[fix/amendment-wording](https://github.com/IDUclub/IDU_DVD/pull/111) (#111)
+
+- fix: correct amendment operations by the act's own wording
+
+## v0.21.0 (2026-10-05)
+
+[feat/explanation-links](https://github.com/IDUclub/IDU_DVD/pull/110) (#110)
+
+- feat: serve and announce the document an act explains
+
+## v0.20.0 (2026-10-05)
+
+[feat/amendments](https://github.com/IDUclub/IDU_DVD/pull/109) (#109)
+
+- feat: amending acts saturate the document they change
+- fix: serve a document's current edition from the library
+
+## v0.19.1 (2026-10-05)
+
+[fix/integration-fake-on-page](https://github.com/IDUclub/IDU_DVD/pull/108) (#108)
+
+- test: accept the OCR progress callback in the integration fake parser
+
+## v0.19.0 (2026-10-05)
+
+[feat/pdf-ocr](https://github.com/IDUclub/IDU_DVD/pull/107) (#107)
+
+- feat: read PDF uploads, recognizing scanned pages with OCR
+- fix: fit OCR requests into the model context
+
+## v0.18.3 (2026-10-02)
+
+[fix/version-status-token](https://github.com/IDUclub/IDU_DVD/pull/106) (#106)
+
+- ci: set the passing version status with VERSION_STATUS_TOKEN so the merge starts the dev release
+
+## v0.18.2 (2026-10-02)
+
+[chore/versioning-policy](https://github.com/IDUclub/IDU_DVD/pull/105) (#105)
+
+- ci: bump the version on every merge into dev; releases only tag it
+- ci: bump the version in the PR branch when auto-merge is enabled
+
 ## v0.18.1 (2026-09-25)
 
 ### Fix

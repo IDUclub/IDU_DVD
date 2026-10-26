@@ -146,6 +146,7 @@ class DocumentRegistry:
     def remove_version(self, name: str, version: str) -> None:
         self.r.srem(f"{self.prefix}:versions:{name}", version)
         self.r.delete(f"{self.prefix}:blocks:{name}:{version}")
+        self.r.hdel(f"{self.prefix}:editions:{name}", version)
 
     def rename_version(self, name: str, old: str, new: str) -> None:
         """Rename an edition in this registry, retaining dedup and delta fingerprints.
@@ -166,6 +167,10 @@ class DocumentRegistry:
         if blocks is not None:
             pipe.set(f"{self.prefix}:blocks:{name}:{new}", blocks)
             pipe.delete(old_blocks)
+        edition = self.r.hget(f"{self.prefix}:editions:{name}", old)
+        if edition is not None:
+            pipe.hset(f"{self.prefix}:editions:{name}", new, edition)
+            pipe.hdel(f"{self.prefix}:editions:{name}", old)
         for key in self.r.scan_iter(match=f"{self.prefix}:hash:*"):
             raw = self.r.get(key)
             info = json.loads(raw) if raw else {}
@@ -193,6 +198,8 @@ class DocumentRegistry:
         for key in self.r.scan_iter(match=f"{self.prefix}:blocks:{name}:*"):
             self.r.delete(key)
         self.r.srem(f"{self.prefix}:names", name)
+        # Links of the acts amending it stay: the document may be uploaded again.
+        self.r.delete(f"{self.prefix}:editions:{name}")
 
     # --- source-block fingerprints (deterministic delta-update diffing) ---
     def register_blocks(self, name: str, version: str, hashes: list[str]) -> None:
@@ -270,6 +277,62 @@ class DocumentRegistry:
     def all_documents(self) -> list[dict]:
         out = [self.get_document(d) for d in self.doc_ids()]
         return [d for d in out if d]
+
+    # --- amendments and editions ---
+    # An amending act is linked to the document it amends (or explains). The link record
+    # carries the act's extracted operations, so a rebuild does not ask the LLM again, and the
+    # outcome of its last application. Each edition of a document has its own record: a
+    # consolidated edition knows which acts built it, and a replaced one is "superseded".
+    def link_amendment(self, target: str, record: dict) -> None:
+        name = record["name"]
+        previous = self.amendment_target(name)
+        if previous and previous != target:
+            self.r.hdel(f"{self.prefix}:amendments:{previous}", name)
+        self.r.hset(
+            f"{self.prefix}:amendments:{target}",
+            name,
+            json.dumps(record, ensure_ascii=False),
+        )
+        self.r.set(f"{self.prefix}:amends:{name}", target)
+
+    def unlink_amendment(self, name: str) -> str | None:
+        """Drop the link of act ``name``; returns the document it pointed at."""
+        target = self.amendment_target(name)
+        if target:
+            self.r.hdel(f"{self.prefix}:amendments:{target}", name)
+        self.r.delete(f"{self.prefix}:amends:{name}")
+        return target
+
+    def amendment_target(self, name: str) -> str | None:
+        return self.r.get(f"{self.prefix}:amends:{name}")
+
+    def amendment(self, target: str, name: str) -> dict | None:
+        v = self.r.hget(f"{self.prefix}:amendments:{target}", name)
+        return json.loads(v) if v else None
+
+    def amendments(self, target: str) -> list[dict]:
+        values = self.r.hvals(f"{self.prefix}:amendments:{target}")
+        return [json.loads(v) for v in values]
+
+    def set_edition(self, name: str, version: str, record: dict) -> None:
+        self.r.hset(
+            f"{self.prefix}:editions:{name}",
+            version,
+            json.dumps(record, ensure_ascii=False),
+        )
+
+    def edition(self, name: str, version: str) -> dict | None:
+        v = self.r.hget(f"{self.prefix}:editions:{name}", version)
+        return json.loads(v) if v else None
+
+    def editions(self, name: str) -> dict[str, dict]:
+        return {
+            version: json.loads(v)
+            for version, v in self.r.hgetall(f"{self.prefix}:editions:{name}").items()
+        }
+
+    def drop_edition(self, name: str, version: str) -> None:
+        self.r.hdel(f"{self.prefix}:editions:{name}", version)
 
     def wipe(self) -> None:
         """Delete every key under this registry's prefix (whole-index teardown)."""

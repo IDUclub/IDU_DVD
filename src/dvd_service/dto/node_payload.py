@@ -89,10 +89,14 @@ class NodePayload(BaseModel):
     )
 
     # --- version lifecycle (general-purpose) ---
-    status: str = "active"  # active | archived
+    status: str = (
+        "active"  # active | superseded (no current edition carries the fragment)
+    )
     effective_date: str | None = None
     supersedes: list[str] = Field(default_factory=list)
     superseded_by: list[str] = Field(default_factory=list)
+    # Acts whose changes this fragment carries (a consolidated edition's changed text).
+    amended_by: list[str] = Field(default_factory=list)
 
     # --- source / provenance ---
     source: str | None = None  # original filename (compat)

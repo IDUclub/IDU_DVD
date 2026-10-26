@@ -71,6 +71,10 @@ from the request body:
 | `GET /documents/available` | compact list of fully indexed shared documents |
 | `GET /user-documents/available` | compact list of fully indexed documents in a user project |
 | `PATCH /user-documents/{doc_id}/metadata` | update document-wide metadata in a user project |
+| `GET /documents/{name}/amendments` | acts that amend/explain a document, their reports, its editions |
+| `PUT /documents/{name}/amends` | link an act to the document it amends or explains |
+| `DELETE /documents/{name}/amends` | unlink an act (the document is rebuilt without it) |
+| `POST /documents/{name}/consolidate` | rebuild a document's current edition from its acts |
 | `GET /documents/{job_id}` | processing job status |
 | `GET /documents/jobs/active` | queued and currently processing jobs |
 | `GET /documents/jobs/recent` | recent jobs of every status (`?limit=20`, max 100) |
@@ -114,15 +118,19 @@ Form fields:
 - `source_uri` — source file path / URL (optional);
 - `effective_date` — effective date (optional);
 - `external_ids` — JSON object of caller-supplied ids, e.g. `{"code": "SP 19.13330.2019", "doi": "..."}` (optional);
-- `metadata` — JSON object of free-form domain attributes (optional).
+- `metadata` — JSON object of free-form domain attributes (optional);
+- `amends` / `explains` — name of a stored document this act amends / clarifies (optional,
+  one of them; unknown name — `422`). Without them an act titled "О внесении изменений в …"
+  is linked by its title (see [Amendments and editions](#amendments-and-editions)).
 
 All optional metadata is stored on every node of the document, so consumer services can join,
 filter, and cite without re-parsing. `external_ids` / `metadata` must be JSON objects (otherwise `422`).
 
 Behaviour:
 
-- Accepted formats are governed by `DVD_ALLOWED_EXTENSIONS` (default `.docx`, `.txt`, `.md`, `.html`,
-  `.htm` — OCR-free formats handled by `unstructured`). Any other format — `415`.
+- Accepted formats are governed by `DVD_ALLOWED_EXTENSIONS` (default `.docx`, `.pdf`, `.txt`, `.md`,
+  `.html`, `.htm`). Scanned PDF pages are recognized by OCR in the worker; without
+  `DVD_OCR_BASE_URL` such a PDF is refused with `422`. Any other format — `415`.
 - A file whose text fully matches an already-loaded one is rejected — `400`. The match comes from
   the Redis registry, which is trusted only while Qdrant still backs it: when a registered name has
   no points left (the collection was re-created, the Qdrant instance replaced), the entry is treated
@@ -280,6 +288,55 @@ curl -X PUT http://localhost:8000/documents/direct \
      -H "Content-Type: application/json" \
      -d '[{"name":"Регламент благоустройства","fragments":[{"text":"1 Общие положения (ред. 2)"}]}]'
 ```
+
+## Amendments and editions
+
+How acts saturate the document they change is described in the pipeline
+([Amendments and editions](pipeline.md#amendments-and-editions)).
+
+### GET /documents/{name}/amendments
+
+What amends or explains `name`, what `name` itself amends (when it is an act), and its editions:
+
+```json
+{
+  "name": "ПЗЗ МО «Город Гатчина»",
+  "amendments": [
+    {"name": "Приказ КГП ЛО № 170", "kind": "amends", "effective_date": "2023-11-20",
+     "detected": true, "status": "partial", "operations": 9,
+     "results": [{"item": "1.1.1", "action": "insert", "target": "rows",
+                  "scope": ["Статья 17.1", "Ж-2.15"], "status": "applied", "reason": ""}]}
+  ],
+  "amends": null,
+  "editions": {
+    "2019": {"status": "superseded", "consolidated": false,
+             "superseded_by": "2019 (ред. от 20.11.2023)"},
+    "2019 (ред. от 20.11.2023)": {"status": "active", "consolidated": true, "root": "2019",
+                                  "amended_by": ["Приказ КГП ЛО № 170"],
+                                  "review_required": true, "effective_date": "2023-11-20"}
+  }
+}
+```
+
+An act's `status`: `pending` (not built yet), `applied`, `partial` (some operations failed — see
+`results`), `failed`, `no_text_changes`, `included` (dated before the root edition), `missing`
+(the act was deleted), `linked` (a clarification). Unknown name — `404`.
+
+### PUT /documents/{name}/amends
+
+Link act `name` to a stored document (replacing an earlier link): `{"target": "...", "kind":
+"amends" | "explains"}`. An `amends` link queues a rebuild of the target (`job_id` in the
+response) — `202`. Unknown target — `404`; an act amending itself, or two documents amending each
+other — `422`.
+
+### DELETE /documents/{name}/amends
+
+Unlink act `name`; the document it amended is rebuilt without it. Not linked — `404`.
+
+### POST /documents/{name}/consolidate
+
+Rebuild the current edition of `name` from its root edition and linked acts (`202`, `job_id`).
+`?reextract=true` reads every act again instead of reusing its cached operations.
 
 ## GET /documents
 
@@ -561,8 +618,10 @@ Request body (`SearchRequest`):
 | `corpus` | str | null | filter by logical corpus/namespace |
 | `lang` | str | null | filter by language |
 | `tags` | list[str] | null | filter by tags (any of) |
+| `include_superseded` | bool | false | also search editions replaced by a consolidated one (a `version` filter reaches any edition anyway) |
 | `limit` | int | 10 | number of results |
 | `context_height` | int | 0 | how many fragments before and after to attach |
+| `related` | bool | true | also return the fragments the hits strongly depend on (see *Related fragments*) |
 
 Response (`SearchResponse`):
 
@@ -614,6 +673,27 @@ Besides the fields shown above, each hit also carries the general-purpose identi
 fields from the payload: `title`, `version_id`, `doc_type`, `corpus`, `lang`, `external_ids`,
 `order`, `metadata`, and the source span (`source_uri`, `char_start`, `char_end`, `page_start`,
 `page_end`, `span_id`) — so a caller can cite the exact source location of every hit.
+
+### Related fragments
+
+With `related=true` the matched hits are followed by the fragments they depend on at least
+`DVD_RELATION_CONTEXT_MIN_WEIGHT` (see *Stage 6.5* in `pipeline.md`): the list items after a
+matched lead-in, the condition stated in a sibling clause, the table a clause points at. Each comes
+back as an ordinary hit with its own address and source span, so it can be quoted on its own, plus:
+
+| Field | Description |
+|-------|-------------|
+| `related_to` | id of the matched hit that pulled this fragment in (null on matched hits) |
+| `relation_weight` | 0..1, how strongly that hit depends on this fragment |
+| `relation_kind` | `completes` / `condition` / `exception` / `refines` / `table_ref` / `definition` / `same_topic` |
+
+Matched hits list their outgoing relations in `related: [{id, weight, kind}]`, strongest first.
+Related hits come after the matched ones; their `score` is the pulling hit's score times the
+weight. At most `DVD_RELATION_CONTEXT_MAX` per hit and `DVD_RELATION_CONTEXT_MAX_TOTAL` per
+response are added; a fragment already among the hits is not repeated. `count` includes them.
+
+Structural retrieval (`POST /search/fragments`) keeps its paginated `hits` untouched and returns
+the related fragments of the current page in `related_fragments`.
 
 Examples:
 
@@ -797,7 +877,10 @@ One document as `DocumentDetail` — the `DocumentSummary` fields above plus the
 Each fragment carries `id`, `order`, `kind`, `type`, `numbering`, `depth`, `breadcrumb`,
 `parent_id`/`prev_id`/`next_id`/`child_ids`, the source grounding (`char_start`, `char_end`,
 `page_start`, `page_end`, `span_id`), `tags`, `metadata`, `references` (outgoing links to other
-documents/clauses — same shape as in search hits), `text` and `table_html`.
+documents/clauses — same shape as in search hits), `text`, `table_html` and `amended_by` (acts
+whose changes the fragment carries in a consolidated edition). Editions of a document share its
+`doc_id`; fragments of superseded editions are left out unless `?include_superseded=true`. An
+act linked to another document names it in `amends` or `explains` (otherwise both are `null`).
 
 ```json
 {
@@ -825,6 +908,28 @@ documents/clauses — same shape as in search hits), `text` and `table_html`.
 ```
 curl "http://localhost:8000/library/documents/9f63..."
 ```
+
+### GET /library/documents/{doc_id}/relations
+
+Directed semantic dependencies between the document's fragments (all its versions — they share
+the `doc_id`), `min_weight` (0..1, default 0) drops weaker ones. `404` if the document does not
+exist; an empty list if it was ingested before relations were built or they are switched off.
+
+```json
+{
+  "doc_id": "9f63...",
+  "count": 2,
+  "relations": [
+    {"source_id": "a1b2...", "target_id": "c3d4...", "doc_id": "9f63...", "weight": 0.97,
+     "kind": "completes", "confidence": 0.97, "method": "cross_encoder",
+     "candidate_sources": ["parent_child"]}
+  ]
+}
+```
+
+`source_id` depends on `target_id`: reading the target is needed to understand or apply the
+source. `candidate_sources` says why the pair was scored (`parent_child`, `grandparent`,
+`sibling`, `ref_table`, `ref_clause`, `knn`).
 
 ## System
 
@@ -978,3 +1083,64 @@ login page and browser favicon. The bundled default is a transparent version of
 - `GET /admin/ui/logo.png` and `GET /admin/ui/favicon.png` are public branding assets
   (PNG, `Cache-Control: no-store`); the favicon is 64×64. The bundled logo is used when
   no custom object exists. Saving refreshes both URLs in the current page immediately.
+
+
+## Document comparison
+
+`POST /library/compare` (authenticated) and MCP `compare_documents(left_doc_id, right_doc_id, ...)` compare
+shared documents and documents uploaded by the current user. Missing and inaccessible IDs
+both return 404 / ToolError; callers cannot supply another user's identity.
+
+Request: `left_doc_id`, `right_doc_id` (required), optional `left_version`, `right_version`,
+`query`, `limit` (default 60, range 1..500), `max_chars` (default 2000, range 100..10000).
+MCP accepts these fields as plain top-level tool arguments, not a nested `request`:
+`compare_documents(left_doc_id, right_doc_id, left_version=None, right_version=None,
+query=None, limit=60, max_chars=2000)`; the REST JSON body is unchanged.
+Versions are exact stored labels (also matched against the multi-valued `versions` payload).
+Use version selectors when editions share an ID; ambiguous active editions return 422 /
+ToolError. Without a selector, superseded fragments are omitted when current ones exist.
+
+Response: `mode`, `left`/`right` summaries (identity, edition, effective date, status, owner
+kind), `stats`, `sections`, `changes`, `truncated`, `topic_top_k`. Statistics cover all selected
+fragments before the output limit; unchanged pairs are counted but omitted from changes.
+Sections group by the first structure/breadcrumb element; a pair crossing sections counts
+in both. Each change includes optional left/right fragments (ID, numbering, breadcrumb,
+section, text, `text_truncated`, `amended_by`), similarity, changed word spans, and differing
+numeric expressions with units/percentages. `diff_truncated` signals clipped word changes;
+text and numeric fields respect `max_chars`. Changed numeric pairs precede other modified
+pairs, then other changes, with document order as the stable tie break.
+
+- `editions`: equal normalized names/designations (or the same ID/registry-linked edition).
+  Names ending in an edition year matching the version label are compared without that year.
+  Identical text at the same location is matched first, then moved identical text, numbering,
+  fragment-name/structure paths via ordered dictionary indexes, then mutual best text matches
+  (SequenceMatcher >= 0.62). Fuzzy fallback considers the first 128 unmatched fragments on
+  each side and at most 16 candidates per left fragment, ranked by shared tokens, length
+  difference and reading order. Quick similarity bounds reject impossible matches. Outside
+  this bounded pool, unmatched fragments remain added/removed; structural/exact passes
+  cover the entire documents.
+  Kinds: `modified`, `renumbered` (unchanged text moved or numbered differently), `added`
+  (right only), `removed` (left only).
+- `documents`: mutual best cosine matches of stored fragment vectors (>= 0.72), with stable
+  reading-order tie breaks. `similar` means paired texts have SequenceMatcher ratio >= 0.85;
+  `different` means a semantic match with lower textual overlap. `only_left`/`only_right`
+  mean no confident mutual match. Similarity in this mode is cosine, not a legal-equivalence
+  score. Identical paired texts count as unchanged.
+- `query`: embed only this topic once, retrieve up to 60 nearest non-container fragments per
+  authorized document/edition. For editions, expand each selection with the opposite side's
+  original hits' counterparts from the full authorized edition (same normalized numbering,
+  name/structure path, or identical text), then align. Expansion is not recursive and may
+  exceed 60 fragments; `topic_top_k` reports the initial retrieval limit. This prevents
+  a clause ranked on just one side being falsely reported as added/removed.
+  This is a relevance sample,
+  not exhaustive topic coverage; counts describe this selection. Containers and blank text
+  are always excluded. Without a query, compare the full selected editions. No LLM is used.
+
+Example: `{"left_doc_id":"a","right_doc_id":"b","query":"parking requirements","limit":60}`.
+For two versions: `{"left_doc_id":"a","right_doc_id":"a","left_version":"2020","right_version":"2024"}`.
+
+Structural/exact alignment uses indexes. Document-mode cosine scores use one normalized
+NumPy matrix product with quadratic score-matrix memory; edition fuzzy work is bounded.
+Semantic matches and numeric extraction are
+heuristics and do not determine legal effect or convert units. Dense vectors must have
+compatible dimensions; documents are never re-embedded by comparison.

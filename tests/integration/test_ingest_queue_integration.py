@@ -164,7 +164,7 @@ class TestSourceSurvivesInMinio:
         live_queue.enqueue(_entry("restored", source_object_key=key))
 
         class RecordingParser:
-            def extract_raw(self, path):
+            def extract_raw(self, path, on_page=None):
                 return [{"text": open(path, "rb").read().decode(), "category": "x"}]
 
         class CapturingIngestion:

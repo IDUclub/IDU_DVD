@@ -73,8 +73,10 @@ Dependencies(
 | `src/dvd_service/modules/hierarchy.py` | `HierarchyBuilder` (Stage 4 and node flattening) |
 | `src/dvd_service/modules/tagging.py` | `Tagger`, `VersionDetector` |
 | `src/dvd_service/modules/territory.py` | `TerritoryResolver` — Urban API territory + level of a document |
+| `src/dvd_service/modules/amendments.py` | `extract_operations` (LLM reads an act into edit operations), `apply_operations` / `Applier` (deterministic application to raw blocks) |
 | `src/dvd_service/modules/windowing.py` | `make_windows`, `reconcile` |
 | `src/dvd_service/services/dvd_service.py` | `IngestionService`, `SearchService`, `DocumentsService`, `LibraryService` |
+| `src/dvd_service/services/amendment_service.py` | `AmendmentService` — links acts to the documents they change, builds consolidated editions |
 | `src/dvd_service/services/tagging_backfill.py` | `TaggingBackfillService` — tags documents left `pending` |
 | `src/dvd_service/modules/identity.py` | document identity helpers (`normalize_key`, `make_version_id`, `make_span_id`, `build_aliases`, `build_lookup_keys`) |
 | `src/dvd_service/dto/` | `NodePayload` (`node_payload.py`) and request/response DTOs (`upload.py`, `search.py`, `document.py`, `reference.py`) |
@@ -182,7 +184,7 @@ vectorized. Payload contents (`NodePayload`):
 | `external_ids` | dict | caller-supplied ids (`{code, doi, isbn, url, …}`) — stored verbatim, not interpreted |
 | `aliases` | list[str] | human-readable designations (name + external id values) |
 | `lookup_keys` | list[str] | exact-match keys (normalized name + external id forms) for resolution |
-| `status` | str | `active` / `archived` |
+| `status` | str | `active` / `superseded` (no current edition carries the fragment; hidden from default search) |
 | `document_level` | str | administrative level: `federal` / `regional` / `municipal` — derived from the territory |
 | `territory_id` | int | Urban API territory the document applies to (federal → "Россия", 12639) |
 | `territory_name` | str | territory name |
@@ -194,6 +196,7 @@ vectorized. Payload contents (`NodePayload`):
 | `tagging_attempts` / `tagging_error` | int / str | automatic attempts made and why the last one failed |
 | `effective_date` | str | effective date, when supplied |
 | `supersedes` / `superseded_by` | list[str] | version-lifecycle links (reserved) |
+| `amended_by` | list[str] | acts whose changes the fragment carries (consolidated editions) |
 | `source` | str | source file name |
 | `source_uri` | str | source file path / URL |
 | `char_start` / `char_end` | int | offsets into the normalized source text — the fragment's source span |
@@ -245,7 +248,9 @@ Payload indexes are created on `doc_id`, `name`, `version`, `version_id`, `kind`
 - Redis: job statuses (`dvd:job:{job_id}`, with TTL, not namespaced), and the collection-scoped
   registry under `{registry_prefix}` (default `dvd:{effective_collection}`): the hash registry
   (`…:hash:{hash}`), versions (`…:versions:{name}`), the set of all document names (`…:names`, for
-  reference matching) and the pending-reference queues (`…:pending_ref:{normalized_name}`).
+  reference matching) and the pending-reference queues (`…:pending_ref:{normalized_name}`); acts linked to a document
+  (`…:amendments:{name}`, with their cached operations and last report; `…:amends:{act}` points back) and
+  per-edition records (`…:editions:{name}`: status, consolidated, root, amended_by, review_required).
 - Learned reference patterns live in a separate, durable Qdrant collection (default `ref_patterns`,
   dummy 1-d vectors used as a key/value store), so they survive a Redis wipe; the seed patterns are
   committed in `reference_patterns.py`.
