@@ -75,6 +75,8 @@ def search_filtered(
     или элемент из candidates; root_ids сохраняют выбранные элементы при ранжировании.
     allow_multiple=true только для явно множественного запроса. Пустой результат
     никогда не снимает фильтры. Личность владельца определяется транспортом.
+    По умолчанию kind=all включает text, table и figure. Для рисунков: kind=figure
+    или types=["figure"]. В hits: figure, element_type и относительный image_url.
     """
     return _fragment_search(request, user_id)
 
@@ -343,7 +345,10 @@ def search_all(
     scenario_territory_filter: bool = True,
     user_id: str = Depends(get_mcp_user_id),
 ) -> SearchResponse:
-    """Vector search across all entities (texts and tables) with filters and context height.
+    """Vector search across texts, tables and figures with filters and context height.
+
+    Figures are included by default; ``types=["figure"]`` restricts to them. Figure hits
+    expose ``kind``/``element_type="figure"``, ``figure`` and relative ``image_url``.
 
     ``document_names`` restricts results to any of the given document names. Set
     ``user_id``+``scenario_id`` to also search a user document index (combined search); add

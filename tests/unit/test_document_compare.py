@@ -81,6 +81,17 @@ def compare(s, **kwargs):
     return s.compare(CompareRequest(left_doc_id="a", right_doc_id="b", **kwargs))
 
 
+def test_figures_are_compared_as_text_fragments():
+    s = service(
+        node("l1", "a", "Рисунок 1 Схема: высота 10 м", kind="figure"),
+        node("r1", "b", "Рисунок 1 Схема: высота 12 м", kind="figure"),
+    )
+    result = compare(s)
+    assert result.stats.left_compared == result.stats.right_compared == 1
+    assert result.changes[0].kind == "modified"
+    assert "10" in result.changes[0].changed_numbers.left
+
+
 def test_editions_numbering_numeric_changes_and_sections():
     s = service(
         node("l1", "a", "Provide at least 10 spaces at 5 m.", "1"),

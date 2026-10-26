@@ -4,6 +4,36 @@
 `/docs`. Все модели запросов и ответов основаны на pydantic и описаны в каталоге
 `src/dvd_service/dto/`.
 
+## Рисунки
+
+`GET /library/figures/{node_id}/image` требует аутентификации и возвращает `image/png`
+с `Cache-Control: private`. Неизвестный узел, другой kind, отсутствующий объект и чужой
+пользовательский рисунок дают 404. Для личного документа нужен его владелец; проект
+определяется из точки или проверяется по query `project_id` / разрешённому `scenario_id`.
+Передача другого проекта не разрешает доступ.
+
+REST-поиск, MCP `search_all` / `search_filtered` и библиотечные фрагменты возвращают
+`kind="figure"`, `type="figure"`, `element_type="figure"`, относительный
+`image_url="/library/figures/{node_id}/image"` и `figure`:
+
+```json
+{"object_key":"figures/CONTENT_HASH/DOC_ID/SHA256.png","mime_type":"image/png",
+ "width":800,"height":600,"sha256":"...","page":2,"bbox":[10,20,410,320],
+ "caption":"Рисунок 1 — Схема","description":"...",
+ "description_model":"vision-model","description_generated":true}
+```
+
+page/bbox могут быть null; figure.bbox=[x0,y0,x1,y1] измеряется в PDF points от верхнего
+левого угла видимой страницы после crop и поворота, x вправо, y вниз, как в OCR-рендере.
+Прежние bbox текста OCR остаются в пикселях, текстовый слой сохраняет bbox=null.
+JSON-ответы содержат метаданные рисунка без сырых байтов и base64. Без описания: description="",
+description_model=null, description_generated=false. Индексируемый text — подпись и описание
+через перевод строки, либо «Рисунок без подписи». Для других kinds figure/image_url равны
+null. image_url не содержит host и адрес MinIO. Поиск всех сущностей включает рисунки;
+`types=["figure"]` ограничивает выдачу. REST/MCP поиска по фильтрам также принимает
+`kind="figure"` (по умолчанию all). Отдельные text/table-поиски сохраняют свои фильтры.
+Сравнение документов обрабатывает рисунки как фрагменты с текстом.
+
 ## Аутентификация
 
 Каждый эндпоинт требует Keycloak bearer-токен; он проверяется локально по JWKS реалма —

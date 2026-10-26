@@ -78,6 +78,14 @@ class SearchRequest(BaseModel):
 
 
 class SearchHit(AdministrativeScope):
+    @model_validator(mode="after")
+    def figure_link(self):
+        self.element_type = self.type
+        self.image_url = (
+            f"/library/figures/{self.id}/image" if self.kind == "figure" else None
+        )
+        return self
+
     search_text: str | None = None  # content with structural parent context
     id: str
     fragment_name: str | None = None
@@ -104,6 +112,9 @@ class SearchHit(AdministrativeScope):
     scenario_id: str | None = None
 
     kind: str
+    element_type: str | None = None
+    image_url: str | None = None
+    figure: dict | None = None
     type: str
     block: str = "main"
     numbering: str = ""

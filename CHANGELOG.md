@@ -1,3 +1,9 @@
+## v0.23.0 (2026-10-26)
+
+[feat/ICII-205-img-processing](https://github.com/IDUclub/IDU_DVD/pull/118) (#118)
+
+- feat: index document images as described, searchable figures
+
 ## v0.22.1 (2026-10-25)
 
 [chore/prod-deploy-ocr-vars](https://github.com/IDUclub/IDU_DVD/pull/117) (#117)

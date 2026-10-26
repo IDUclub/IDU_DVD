@@ -1,9 +1,12 @@
 """Preview must match the content actually passed to Qdrant by ingestion."""
 
+import io
 import json
+from unittest.mock import Mock
 
 import pytest
 from docx import Document
+from PIL import Image
 
 from scripts.preview_fragments import FragmentPreview, main
 from tests.unit.test_services import wired  # noqa: F401
@@ -24,6 +27,7 @@ def test_preview_matches_ingestion_payload(wired, tmp_path, mode):
     document.save(source)
 
     report = FragmentPreview(service.settings).build(source, wired.ollama)
+    assert '"image_bytes"' not in json.dumps(report)
     assert not wired.qdrant.points
     assert not wired.ollama.embed_calls
     assert not wired.storage.objects
@@ -54,6 +58,66 @@ def test_preview_matches_ingestion_payload(wired, tmp_path, mode):
     embedded = [text for batch in wired.ollama.embed_calls for text in batch]
     assert embedded == [node["embedding_text"] for node in report["fragments"]]
     assert "ТАБЛИЦА (HTML)" in FragmentPreview.render(report)
+
+
+@pytest.mark.parametrize("mode", ["boundaries", "ranges"])
+@pytest.mark.parametrize("vision_enabled", [False, True])
+def test_image_bytes_stay_out_of_preview_and_transport_payloads(
+    wired, tmp_path, monkeypatch, mode, vision_enabled
+):
+    import src.dvd_service.services.dvd_service as module
+    from src.dvd_service.dto import SearchRequest
+
+    service = wired.ingestion
+    service.settings.logical_partition_mode = mode
+    service.settings.vision_enabled = vision_enabled
+    vision = Mock(model="preview-vision")
+    vision.describe.return_value = "Схема: высота 12 м"
+    monkeypatch.setattr(module, "VisionClient", lambda _: vision)
+    source = tmp_path / "figure.docx"
+    png = io.BytesIO()
+    Image.new("RGB", (160, 160), "blue").save(png, format="PNG")
+    document = Document()
+    document.add_paragraph("1 Область применения")
+    document.add_paragraph().add_run().add_picture(io.BytesIO(png.getvalue()))
+    document.add_paragraph("Рисунок 1 — Схема")
+    document.save(source)
+    report = FragmentPreview(service.settings).build(source, wired.ollama)
+    preview = next(n for n in report["fragments"] if n["kind"] == "figure")
+    assert not wired.storage.objects
+    raw = service.parser.extract_raw(str(source))
+    assert any(isinstance(b.get("image_bytes"), bytes) for b in raw)
+    result = service.ingest(
+        str(source),
+        raw,
+        service.parser.content_hash(raw),
+        job_id="figure-payloads",
+    )
+    payloads = [payload for _, payload in wired.qdrant.points.values()]
+    figure = next(p for p in payloads if p["kind"] == "figure")
+    assert wired.storage.download(figure["figure"]["object_key"])[0] == png.getvalue()
+    for key in (
+        "text",
+        "kind",
+        "type",
+        "element_type",
+        "source_text",
+        "char_start",
+        "char_end",
+    ):
+        assert preview[key] == figure[key], key
+    assert preview["figure"] == {
+        k: v for k, v in figure["figure"].items() if k != "object_key"
+    }
+    search = wired.search.search(SearchRequest(query="схема"), None).model_dump()
+    library = wired.library.get_document(result["doc_id"]).model_dump()
+    job = wired.jobs.get("figure-payloads")
+    event = wired.outbox.peek()
+    assert job["status"] == "done" and event is not None
+    for artifact in (report, payloads, search, library, job, event):
+        encoded = json.dumps(artifact)
+        assert '"image_bytes"' not in encoded
+        assert '"image_base64"' not in encoded
 
 
 def test_invalid_source_fails_before_loading_llm(tmp_path):

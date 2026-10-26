@@ -39,10 +39,12 @@ class FragmentPreview:
 
     def build(self, source: Path, client: ChatClient) -> dict:
         from src.dvd_service.modules.doc_parsers import DocumentParser
+        from src.dvd_service.modules.figures import describe_figures
         from src.dvd_service.modules.fragment_structure import annotate_fragments
         from src.dvd_service.modules.hierarchy import HierarchyBuilder
+        from src.dvd_service.modules.progress import Progress
         from src.dvd_service.modules.structure import StructureTagger
-        from src.dvd_service.services.dvd_service import IngestionService
+        from src.dvd_service.services.dvd_service import IngestionService, VisionClient
 
         parser = DocumentParser(self.settings)
         structure = StructureTagger(self.settings)
@@ -51,6 +53,7 @@ class FragmentPreview:
         raw = parser.extract_raw(str(source))
         if not raw:
             raise ValueError("Документ не содержит поддерживаемого текста или таблиц")
+        describe_figures(raw, self.settings, Progress(), VisionClient)
         print(
             "Логические части и семантическое объединение…", file=sys.stderr, flush=True
         )

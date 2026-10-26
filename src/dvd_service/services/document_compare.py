@@ -242,6 +242,8 @@ class DocumentCompareService:
             status=metadata.get("status") or "active",
             owner="user" if first.get("user_id") else "shared",
         )
+        # Figures carry caption + vision description in text and use the same matching
+        # and numeric comparison as other non-container fragments.
         return (
             summary,
             [

@@ -122,7 +122,10 @@ class NodePayload(BaseModel):
     span_id: str | None = None
 
     # --- structure ---
-    kind: str = "text"  # text | table — tables are separate entities
+    kind: str = "text"  # text | table | figure
+    figure: dict | None = None
+    image_url: str | None = None
+    element_type: str | None = None
     type: str  # structural element type
     numbering: str = ""
     fragment_name: str | None = None

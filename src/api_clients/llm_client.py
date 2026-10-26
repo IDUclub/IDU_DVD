@@ -28,6 +28,18 @@ from src.common.config.app_config import LLM_PROVIDERS
 log = structlog.get_logger(__name__)
 
 
+def think_options(mode: str, effort: str | None, model: str = "") -> dict:
+    if mode == "chat_template":
+        return {
+            "chat_template_kwargs": {"enable_thinking": effort in {"medium", "high"}}
+        }
+    if mode == "off":
+        return {}
+    if not effort and "gpt-oss" in model.lower().replace("_", "-"):
+        effort = "low"
+    return {"reasoning_effort": effort} if effort else {}
+
+
 class OpenAICompatibleClient:
     """Synchronous client for an OpenAI-compatible chat endpoint.
 
@@ -43,6 +55,7 @@ class OpenAICompatibleClient:
         max_tokens: int | None = None,
         timeout: float | None = None,
         reasoning_effort: str | None = None,
+        think_mode: str | None = None,
     ) -> None:
         self.base = (base or settings.llm_base_url).rstrip("/")
         self.model = model or settings.llm_model
@@ -55,6 +68,7 @@ class OpenAICompatibleClient:
             else settings.llm_reasoning_effort
         )
         self._client = httpx.Client(timeout=self.timeout)
+        self.think_mode = think_mode or settings.llm_think_mode
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(base={self.base}, model={self.model})"
@@ -105,11 +119,9 @@ class OpenAICompatibleClient:
                 },
             },
         }
-        effort = self.reasoning_effort
-        if not effort and "gpt-oss" in (model or self.model).lower().replace("_", "-"):
-            effort = "low"
-        if effort:
-            body["reasoning_effort"] = effort
+        body.update(
+            think_options(self.think_mode, self.reasoning_effort, model or self.model)
+        )
         resp = self._client.post(
             self.base + "/chat/completions", headers=self._headers(), json=body
         )

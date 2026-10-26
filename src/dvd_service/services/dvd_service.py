@@ -22,6 +22,7 @@ from qdrant_client.models import (
 )
 
 from src.api_clients import ChatClient, UrbanApiClient, create_embedder, create_llm
+from src.api_clients.vision_client import VisionClient
 from src.broker.events import (
     DirectDocumentProcessed,
     DirectDocumentUpdated,
@@ -66,6 +67,7 @@ from src.dvd_service.dto import (
     TerritoryScope,
 )
 from src.dvd_service.modules.doc_parsers import DocumentParser
+from src.dvd_service.modules.figures import describe_figures
 from src.dvd_service.modules.fragment_structure import NAME_FIELDS, annotate_fragments
 from src.dvd_service.modules.hierarchy import HierarchyBuilder
 from src.dvd_service.modules.identity import (
@@ -113,6 +115,21 @@ def _version_condition(version: str) -> Filter:
             FieldCondition(key="version", match=MatchValue(value=version)),
         ]
     )
+
+
+def _types_condition(types: list[str]) -> FieldCondition | Filter:
+    """Match structural levels; ``figure`` means an image fragment (``kind``), not a paragraph.
+
+    The Stage-2 LLM may also type a caption paragraph as ``figure``, so that one level is
+    matched on ``kind`` to keep ``types=["figure"]`` returning only real figures.
+    """
+    levels = [t for t in types if t != "figure"]
+    conditions = (
+        [FieldCondition(key="type", match=MatchAny(any=levels))] if levels else []
+    )
+    if "figure" in types:
+        conditions.append(FieldCondition(key="kind", match=MatchValue(value="figure")))
+    return conditions[0] if len(conditions) == 1 else Filter(should=conditions)
 
 
 def build_source_url(payload: dict, name: str, version: str) -> str | None:
@@ -467,6 +484,43 @@ class IngestionService:
         except Exception as exc:  # noqa: BLE001 — orphans are skipped at read time
             log.warning("relations_delete_failed", error=str(exc))
 
+    def _describe_figures(self, raw, progress):
+        describe_figures(raw, self.settings, progress, VisionClient)
+
+    @staticmethod
+    def _figure_keys(payloads):
+        return {
+            p["figure"]["object_key"]
+            for p in payloads
+            if (p.get("figure") or {}).get("object_key")
+        }
+
+    def _cleanup_figures(self, keys):
+        for key in keys:
+            # Never remove an object while any edition still carries its figure.
+            try:
+                if not self.qdrant.figure_is_referenced(key):
+                    self.storage.delete(key)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("figure_cleanup_failed", key=key, error=str(exc))
+
+    def _store_figures(self, nodes, content_hash, doc_id, created, raw):
+        images = {
+            b["figure"]["sha256"]: b["image_bytes"]
+            for b in raw
+            if b.get("category") == "Image"
+        }
+        for node in nodes:
+            figure = node.get("figure")
+            if not figure:
+                continue
+            # doc_id isolates identical uploads, including owners of private documents.
+            key = f'figures/{content_hash}/{doc_id}/{figure["sha256"]}.png'
+            if not self.storage.exists(key):
+                created.add(key)
+                self.storage.upload(key, images[figure["sha256"]], "image/png")
+            figure["object_key"] = key
+
     def _build_points(
         self,
         nodes: list[dict],
@@ -512,6 +566,13 @@ class IngestionService:
                     breadcrumb=n["breadcrumb"],
                     tags=node_tags.get(n["id"], []),
                     table_html=n["table_html"],
+                    figure=n.get("figure"),
+                    element_type=n["type"],
+                    image_url=(
+                        f'/library/figures/{n["id"]}/image'
+                        if n["kind"] == "figure"
+                        else None
+                    ),
                     references=node_refs.get(n["id"], []),
                     src_block_ids=n.get("src_ids", []),
                     text=n["text"],
@@ -556,15 +617,21 @@ class IngestionService:
         # The original filename: ``file_path`` is a scratch copy named after the job.
         source = os.path.basename(source_name or file_path)
         client = create_llm()
+        figure_keys = set()
         try:
             if job_id:
                 self.jobs.update(job_id, status="processing")
+            has_figures = any(b.get("category") == "Image" for b in raw)
             progress = Progress(
                 self.jobs,
                 job_id,
-                total_stages=PIPELINE_STAGES,
-                stage_weights=PIPELINE_STAGE_WEIGHTS,
+                total_stages=PIPELINE_STAGES + int(has_figures),
+                stage_weights={
+                    **PIPELINE_STAGE_WEIGHTS,
+                    **({"figures": 10} if has_figures else {}),
+                },
             )
+            self._describe_figures(raw, progress)
             progress.stage("structure-markup")
             parts = self.parser.to_logical_parts(
                 raw, client, on_progress=progress.advance
@@ -689,19 +756,25 @@ class IngestionService:
                 **scope,
             }
             progress.stage("indexing")
+            self._store_figures(nodes, content_hash, doc_id, figure_keys, raw)
             points = self._build_points(
                 nodes, vectors, spans, doc_id, node_tags, node_refs, identity
             )
+            replaced_figure_keys = set()
             if replace_version:
                 # Keep the old index until parsing and embedding succeed. Originals must
                 # survive both replacement and a worker retry after an interrupted upsert.
                 try:
+                    replaced_figure_keys = self._figure_keys(
+                        self.qdrant.points_by_name(name)
+                    )
                     self.delete_document(
                         name, version, emit_event=False, keep_source=True
                     )
                 except KeyError:
                     pass
             count = self.qdrant.upsert(points)
+            self._cleanup_figures(replaced_figure_keys)
             self._store_relations(relations)
 
             # For already-loaded versions, refresh their list of other versions (including the new one)
@@ -772,6 +845,7 @@ class IngestionService:
             raise
         finally:
             client.close()
+            self._cleanup_figures(figure_keys)
 
     def update(
         self,
@@ -804,14 +878,19 @@ class IngestionService:
         """
         source = os.path.basename(source_name or file_path)
         client = create_llm()
+        figure_keys = set()
         try:
             if job_id:
                 self.jobs.update(job_id, status="processing")
+            has_figures = any(b.get("category") == "Image" for b in raw)
             progress = Progress(
                 self.jobs,
                 job_id,
-                total_stages=PIPELINE_STAGES,
-                stage_weights=PIPELINE_STAGE_WEIGHTS,
+                total_stages=PIPELINE_STAGES + int(has_figures),
+                stage_weights={
+                    **PIPELINE_STAGE_WEIGHTS,
+                    **({"figures": 10} if has_figures else {}),
+                },
             )
             existing = self.qdrant.points_by_name(name)
             if not existing:
@@ -830,6 +909,7 @@ class IngestionService:
                 existing[0].get("doc_id") or str(uuid.uuid4()),
             )
 
+            self._describe_figures(raw, progress)
             progress.stage("structure-markup")
             parts = self.parser.to_logical_parts(
                 raw, client, on_progress=progress.advance
@@ -996,6 +1076,7 @@ class IngestionService:
                 **scope,
             }
             progress.stage("indexing")
+            self._store_figures(new_nodes, content_hash, doc_id, figure_keys, raw)
             points = self._build_points(
                 new_nodes,
                 vectors,
@@ -1068,6 +1149,7 @@ class IngestionService:
             raise
         finally:
             client.close()
+            self._cleanup_figures(figure_keys)
 
     def reload(
         self,
@@ -1106,6 +1188,7 @@ class IngestionService:
                 meta["territory_id"] = inherited["territory_id"]
 
         replaced = True
+        old_figure_keys = self._figure_keys(self.qdrant.points_by_name(name))
         try:
             self.delete_document(name, emit_event=False)
         except KeyError:
@@ -1116,16 +1199,19 @@ class IngestionService:
             raise
         if job_id:
             self.jobs.update(job_id, task_progress=100, progress=1, progress_total=1)
-        result = self.ingest(
-            file_path,
-            raw,
-            content_hash,
-            version_override=version_override,
-            job_id=job_id,
-            name_override=name,
-            emit_event=False,
-            **meta,
-        )
+        try:
+            result = self.ingest(
+                file_path,
+                raw,
+                content_hash,
+                version_override=version_override,
+                job_id=job_id,
+                name_override=name,
+                emit_event=False,
+                **meta,
+            )
+        finally:
+            self._cleanup_figures(old_figure_keys)
         if self.outbox is not None:
             if replaced:
                 self.outbox.enqueue(
@@ -1405,7 +1491,9 @@ class IngestionService:
         """
         removed = {}
         if doc_id:
+            figure_keys = self._figure_keys(self.qdrant.list_by_doc(doc_id))
             removed["points_removed"] = self.qdrant.delete_by_doc(doc_id)
+            self._cleanup_figures(figure_keys)
             self._drop_relations(doc_ids=[doc_id])
             self.registry.unregister_document(doc_id)
         if name and version:
@@ -1445,6 +1533,8 @@ class IngestionService:
                 p["source_object_key"] for p in existing if p.get("source_object_key")
             }
             self.qdrant.delete_by_name(name)
+            if not keep_source:
+                self._cleanup_figures(self._figure_keys(existing))
             self._drop_relations(doc_ids=sorted(doc_ids))
             self.registry.remove_hashes(name)
             for did in doc_ids:
@@ -1491,6 +1581,10 @@ class IngestionService:
             if remaining_tags:
                 tag_groups.setdefault(tuple(remaining_tags), []).append(p["id"])
         self.qdrant.delete_points(to_delete)
+        if not keep_source:
+            self._cleanup_figures(
+                self._figure_keys(p for p in existing if p["id"] in to_delete)
+            )
         self._drop_relations(fragment_ids=to_delete)
         for tags, ids in tag_groups.items():
             self.qdrant.set_versions(ids, list(tags))
@@ -1661,7 +1755,7 @@ class SearchService:
         if req.block:
             must.append(FieldCondition(key="block", match=MatchValue(value=req.block)))
         if req.types:
-            must.append(FieldCondition(key="type", match=MatchAny(any=req.types)))
+            must.append(_types_condition(req.types))
         if req.doc_id:
             must.append(
                 FieldCondition(key="doc_id", match=MatchValue(value=req.doc_id))
@@ -1830,6 +1924,13 @@ class SearchService:
             project_id=pl.get("project_id"),
             scenario_id=pl.get("scenario_id"),
             kind=pl.get("kind", "text"),
+            element_type=pl.get("type", ""),
+            figure=pl.get("figure"),
+            image_url=(
+                f"/library/figures/{point_id}/image"
+                if pl.get("kind") == "figure"
+                else None
+            ),
             type=pl.get("type", ""),
             block=pl.get("block", "main"),
             numbering=pl.get("numbering", ""),
