@@ -10,7 +10,7 @@ Two complementary surfaces:
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from src.dvd_service.dto.reference import DocumentRef
 from src.dvd_service.dto.scope import AdministrativeScope
@@ -91,6 +91,9 @@ class DocumentFragment(BaseModel):
     id: str
     order: int = 0
     kind: str = "text"
+    element_type: str | None = None
+    image_url: str | None = None
+    figure: dict | None = None
     type: str = ""
     numbering: str = ""
     depth: int = 0
@@ -116,6 +119,14 @@ class DocumentFragment(BaseModel):
     table_html: str | None = None
     # Acts whose changes the fragment carries (a consolidated edition's changed text).
     amended_by: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def figure_link(self):
+        self.element_type = self.type
+        self.image_url = (
+            f"/library/figures/{self.id}/image" if self.kind == "figure" else None
+        )
+        return self
 
 
 class NodeDetail(DocumentFragment):

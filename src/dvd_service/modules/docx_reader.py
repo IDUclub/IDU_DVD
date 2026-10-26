@@ -11,9 +11,14 @@ from docx.oxml.ns import qn
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
+from src.dvd_service.modules.figures import CAPTION, attach_captions, image_block
+
 
 class DocxReader:
     """Counters are local to a read; never shared between documents or ingestion jobs."""
+
+    def __init__(self, max_pixels=3_500_000):
+        self.max_pixels = max_pixels
 
     @staticmethod
     def _value(element, path, default=None):
@@ -170,14 +175,64 @@ class DocxReader:
                 "source_paragraph": True,
             }
 
+        def paragraph_blocks(el, owner):
+            block = paragraph_block(Paragraph(el, owner))
+            image_tags = {qn("a:blip"), "{urn:schemas-microsoft-com:vml}imagedata"}
+            if not any(node.tag in image_tags for node in el.iter()):
+                if block:
+                    yield block
+                return
+            caption = ""
+            for neighbor in (el.getnext(), el.getprevious()):
+                if neighbor is not None and neighbor.tag == qn("w:p"):
+                    text = Paragraph(neighbor, owner).text.strip()
+                    if CAPTION.match(text):
+                        caption = text
+                        break
+            pending, first = [], True
+
+            def flush():
+                nonlocal first
+                text = "".join(pending).strip()
+                pending.clear()
+                if not text or block is None:
+                    return None
+                marker = block["source_marker"] if first else ""
+                first = False
+                return {
+                    **block,
+                    "text": f"{marker} {text}" if marker else text,
+                    "source_marker": marker,
+                }
+
+            for node in el.iter():
+                if node.tag == qn("w:t"):
+                    pending.append(node.text or "")
+                elif node.tag in {qn("w:tab"), qn("w:br"), qn("w:cr")}:
+                    pending.append("\t" if node.tag == qn("w:tab") else "\n")
+                elif node.tag in image_tags:
+                    text_block = flush()
+                    if text_block:
+                        yield text_block
+                    rid = node.get(qn("r:embed")) or node.get(qn("r:id"))
+                    part = doc.part.related_parts.get(rid)
+                    if part is not None:
+                        figure = image_block(part.blob, max_pixels=self.max_pixels)
+                        if figure:
+                            if caption:
+                                figure["figure"]["caption"] = figure["text"] = caption
+                            yield figure
+            text_block = flush()
+            if text_block:
+                yield text_block
+
         def blocks(container, owner):
             for el in container:
                 if el.tag == qn("w:p"):
-                    block = paragraph_block(Paragraph(el, owner))
-                    if block:
-                        yield block
+                    yield from paragraph_blocks(el, owner)
                 elif el.tag == qn("w:tbl"):
                     table = Table(el, owner)
+                    figures = []
                     rows, texts, active = [], [], {}
                     for row in table._tbl.tr_lst:
                         cells, column = [], 0
@@ -198,6 +253,11 @@ class DocxReader:
                                 column += span
                                 continue
                             content = list(blocks(tc, table))
+                            attach_captions(content)
+                            figures.extend(
+                                b for b in content if b["category"] == "Image"
+                            )
+                            content = [b for b in content if b["category"] != "Image"]
                             text = "\n".join(b["text"] for b in content)
                             html = "".join(
                                 b["html"] or f'<p>{escape(b["text"])}</p>'
@@ -232,9 +292,10 @@ class DocxReader:
                         "page": None,
                         "bbox": None,
                     }
+                    yield from figures
                 elif el.tag == qn("w:sdt"):
                     content = el.find(qn("w:sdtContent"))
                     if content is not None:
                         yield from blocks(content, owner)
 
-        return list(blocks(doc.element.body, doc))
+        return attach_captions(list(blocks(doc.element.body, doc)))

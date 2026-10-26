@@ -17,7 +17,7 @@ class FragmentSearchRequest(SearchRequest):
     limit: int = Field(50, ge=1, le=200)
     cursor: str | None = None
     rank_by_relevance: bool = False
-    kind: Literal["all", "text", "table"] = "all"
+    kind: Literal["all", "text", "table", "figure"] = "all"
     allow_multiple: bool = False
     root_ids: list[str] | None = Field(None, min_length=1, max_length=200)
 

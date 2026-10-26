@@ -100,6 +100,10 @@ jobs:
           DVD_LLM_BASE_URL: ${{ vars.DVD_LLM_BASE_URL }}
           DVD_LLM_MODEL: ${{ vars.DVD_LLM_MODEL }}
           DVD_LLM_API_KEY: ${{ secrets.DVD_LLM_API_KEY }}
+          DVD_LLM_THINK_MODE: ${{ vars.DVD_LLM_THINK_MODE }}
+          DVD_VISION_BASE_URL: ${{ vars.DVD_VISION_BASE_URL }}
+          DVD_VISION_MODEL: ${{ vars.DVD_VISION_MODEL }}
+          DVD_VISION_API_KEY: ${{ secrets.DVD_VISION_API_KEY }}
           DVD_KAFKA_BOOTSTRAP_SERVERS: ${{ vars.DVD_KAFKA_BOOTSTRAP_SERVERS }}
           DVD_KAFKA_SCHEMA_REGISTRY_URL: ${{ vars.DVD_KAFKA_SCHEMA_REGISTRY_URL }}
           DVD_MINIO_ENDPOINT: ${{ vars.DVD_MINIO_ENDPOINT }}

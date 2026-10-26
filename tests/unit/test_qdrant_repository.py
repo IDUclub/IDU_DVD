@@ -54,6 +54,9 @@ def test_bulk_metadata_update_preserves_vectors_and_waits_for_completion(
 
 
 class TestEnsureCollection:
+    def test_figure_references_are_indexed(self):
+        assert _PAYLOAD_INDEXES["figure.object_key"] == PayloadSchemaType.KEYWORD
+
     def test_creates_collection_and_indexes_when_absent(self, repo_and_client):
         repo, client = repo_and_client
         client.collection_exists.return_value = False
@@ -99,6 +102,18 @@ class TestEnsureCollection:
 
 
 class TestUpsert:
+    def test_figure_reference_check_is_exact(self, repo_and_client):
+        repo, client = repo_and_client
+        client.count.return_value = SimpleNamespace(count=1)
+        assert repo.figure_is_referenced("figures/key.png")
+        args = client.count.call_args.kwargs
+        assert args["exact"] is True
+        condition = args["count_filter"].must[0]
+        assert condition.key == "figure.object_key"
+        assert condition.match.value == "figures/key.png"
+        client.count.return_value = SimpleNamespace(count=0)
+        assert not repo.figure_is_referenced("figures/key.png")
+
     def test_upsert_returns_count_and_calls_client(self, repo_and_client):
         repo, client = repo_and_client
         points = [MagicMock(), MagicMock()]

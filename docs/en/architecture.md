@@ -203,7 +203,10 @@ vectorized. Payload contents (`NodePayload`):
 | `page_start` / `page_end` | int | source page(s), when the format exposes them (PDF/scan) |
 | `bbox` | list[float] | `[x0, y0, x1, y1]`, when available |
 | `span_id` | str | stable id of the source span |
-| `kind` | str | `text` or `table` |
+| `kind` | str | `text`, `table` or `figure` |
+| `figure` | dict/null | PNG object key, SHA-256, dimensions, page/bbox, caption, generated description and model provenance (see API) |
+| `image_url` | str/null | Relative authenticated `/library/figures/{node_id}/image` proxy |
+| `element_type` | str/null | Structural type; `figure` for images |
 | `type` | str | structural element type |
 | `numbering` | str | the fragment's own number |
 | `block` | str | `main` or `amendment` |

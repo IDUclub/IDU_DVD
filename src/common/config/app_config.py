@@ -9,7 +9,7 @@ import json
 import re
 from typing import Annotated, Any, Literal
 
-from pydantic import SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # Chat providers the app knows how to build (see ``create_llm``). Anything else is a
@@ -97,6 +97,21 @@ class Settings(BaseSettings):
     llm_timeout: float = 600.0
     # None selects low for gpt-oss and leaves other models at their server default.
     llm_reasoning_effort: str | None = None
+    llm_think_mode: Literal["reasoning_effort", "chat_template", "off"] = (
+        "reasoning_effort"
+    )
+    # Figures share the text LLM endpoint unless a separate vision model is configured.
+    vision_enabled: bool = True
+    vision_base_url: str = ""
+    vision_model: str = ""
+    vision_api_key: str | None = None
+    vision_max_tokens: int = Field(4096, gt=0)
+    vision_timeout: float = Field(300.0, gt=0)
+    vision_concurrency: int = Field(2, gt=0)
+    vision_max_pixels: int = Field(3_500_000, gt=0)
+    figure_min_side_px: int = Field(64, ge=0)
+    figure_min_area_px: int = Field(16_384, ge=0)
+    figure_max_per_document: int = Field(100, ge=0)
     # Reading an amending act into edit operations (addresses, table sections, quoted new
     # text). On gpt-oss-20b "low" loses table sections and addresses that "medium" gets right.
     amendment_reasoning_effort: str | None = "medium"

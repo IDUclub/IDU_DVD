@@ -14,6 +14,58 @@ parse, and the blocks are re-extracted by the worker from the original stored in
 
 ## Stage 0. Text extraction
 
+### Searchable figures
+
+DOCX DrawingML (`a:blip r:embed`) and legacy VML (`v:imagedata r:id`) images become
+raw `Image` blocks. Adjacent `Рисунок N`, `Рис. N`, `Figure N` paragraphs provide captions
+(following paragraph wins). Simple table-cell pictures follow their table, retaining cell
+captions. Original caption paragraphs remain text. Pillow converts supported formats to PNG;
+unconvertible EMF/WMF is skipped with a structured log event.
+
+Text-layer PDF pages use the existing pypdfium2 dependency to extract image page objects
+(including nested Form XObjects, up to 15 levels) and cluster path-object bounds. Regions
+are rendered with `page.render(scale=..., crop=...)` within `DVD_VISION_MAX_PIXELS`.
+Large vector regions require both sides >=64 points; page-sized frames and thin rules are
+ignored. Figures are interleaved by text-page character geometry; if a line cannot be located,
+the page's figures follow its unchanged text blocks. Image-free pages retain identical blocks.
+
+Figure `bbox=[x0,y0,x1,y1]` uses PDF points relative to the **top-left of the visible cropped,
+rotated page**, x right and y down. PDFium bottom-left bounds are transformed through enclosing
+Form matrices, the page crop offset and rotation before clipping/rendering. OCR `Picture`
+pixels use these same axes and are scaled by rendered-image dimensions into points. Cached
+OCR pages are rendered again only if their layout contains a `Picture`. Legacy OCR text bboxes
+remain in input-image pixels and text-layer blocks retain `bbox=null`. Pages are 1-based;
+DOCX page/bbox are null. Small images are filtered by configured side/area thresholds. Identical images keep
+one occurrence; images repeated on at least three pages and at least half of the document's
+pages are dropped entirely as logos. A per-document cap bounds retained images.
+
+The additional `figures` job stage describes images with a vision LLM using caption and nearby
+text as context. Its Russian prompt requests type, all readable text, verbatim numbers/units,
+labels and legend, and forbids invented details. Figures are locked units: boundary, merge,
+range and structure markup never receive their text. Each becomes a `figure` hierarchy node
+under the current section/chapter/article/appendix, with caption + description as indexed text.
+If neither is available, the indexed text is `Рисунок без подписи`. Descriptions carry model
+provenance; they are generated content, not source quotations.
+
+PNG objects use the document's existing corpus/user MinIO bucket under
+`figures/<content_hash>/<doc_id>/<sha256>.png`. The extra doc_id isolates independently owned
+uploads of identical content. Deletes, failed writes and version replacement remove objects
+only after checking that no stored point still references the key. Delta reuse retains its
+existing key. Full reload follows the existing delete-and-reingest semantics and recreates
+needed images. Cleanup is best-effort, like source-object deletion; an outage or hard process
+termination between object upload and point publication can require orphan cleanup.
+
+The same parser and ingestion pipeline serve corpus uploads, user documents and reparse from
+stored originals (`POST /documents/reparse`). For image-free documents, extraction, logical parts
+and text/block hashing are unchanged. Image hashes include image SHA-256 and caption, never the
+generated description, so vision variability cannot change deduplication or delta identities.
+
+Raw PNG bytes stay in the worker's raw blocks and are excluded when constructing hierarchy
+records. Preview, search, library, Qdrant, Redis job data and Kafka events carry metadata only;
+MinIO upload resolves image bytes from the raw blocks by image SHA-256. The authenticated image
+endpoint is the binary download surface. Amendment raw snapshots encode bytes as base64 only
+inside their existing MinIO JSON cache.
+
 `DocumentParser.extract_raw(path)` reads `.docx` through `DocxReader` (python-docx/OOXML).
 Automatic Word labels are materialized before hashing or LLM processing, including inherited
 paragraph styles, nested counters, start overrides and restarts. Paragraphs and tables retain
@@ -32,7 +84,7 @@ it is rendered at `DVD_OCR_DPI` (at most `DVD_OCR_MAX_PIXELS`) and sent to the O
 OpenAI-compatible vLLM, one page per request, `DVD_OCR_CONCURRENCY` in parallel). Its layout
 elements become blocks: titles and section headers → `Title`, list items → `ListItem`, text,
 captions, footnotes and formulas → `NarrativeText`, tables keep their HTML (`Table`); running
-headers, footers and pictures are dropped. Every block carries its `page` and `bbox`. Recognized
+headers and footers are dropped; pictures become figures. Every block carries its `page` and `bbox`. Recognized
 pages are cached under `DVD_OCR_CACHE_DIR` by the file hash, so a retried job does not OCR again;
 the job shows the `ocr` stage with page progress. A scanned PDF is not recognized in the upload
 request: its duplicate check uses the hash of the file bytes. Without `DVD_OCR_BASE_URL` a PDF

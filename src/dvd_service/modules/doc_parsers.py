@@ -15,6 +15,7 @@ import structlog
 from src.api_clients import ChatClient
 from src.common.config import Settings
 from src.dvd_service.modules.docx_reader import DocxReader
+from src.dvd_service.modules.figures import filter_figures
 from src.dvd_service.modules.pdf_reader import PdfReader, file_hash
 from src.dvd_service.modules.range_partitioning import RangePartitioner
 from src.dvd_service.modules.reference_patterns import DESIGNATION_PREFIXES
@@ -180,6 +181,7 @@ class DocumentParser:
             max_pixels=settings.ocr_max_pixels,
             min_text_chars=settings.ocr_min_text_chars,
             concurrency=settings.ocr_concurrency,
+            figure_max_pixels=settings.vision_max_pixels,
         )
 
     @property
@@ -202,9 +204,11 @@ class DocumentParser:
     def extract_raw(self, path: str, on_page=None) -> list[dict]:
         ext = os.path.splitext(str(path))[1].lower()
         if ext == ".docx":
-            return DocxReader().read(path)
+            return filter_figures(
+                DocxReader(self.settings.vision_max_pixels).read(path), self.settings
+            )
         if ext == ".pdf":
-            return self.pdf.read(path, on_page=on_page)
+            return filter_figures(self.pdf.read(path, on_page=on_page), self.settings)
         from unstructured.partition.auto import partition
 
         els = partition(
@@ -270,15 +274,24 @@ class DocumentParser:
 
     @staticmethod
     def content_hash(raw: list[dict]) -> str:
-        joined = "\n".join(b["text"] for b in raw)
+        joined = "\n".join(DocumentParser._hash_text(b) for b in raw)
         return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _hash_text(block):
+        if block.get("category") == "Image":
+            f = block["figure"]
+            return f'Image:{f["sha256"]}:{f["caption"]}'
+        return block["text"]
 
     @staticmethod
     def block_hashes(raw: list[dict]) -> list[str]:
         """Whitespace-insensitive per-block content hashes — the deterministic source-level
         fingerprint used to diff document editions (delta updates)."""
         return [
-            hashlib.sha256(" ".join(b["text"].split()).encode("utf-8")).hexdigest()
+            hashlib.sha256(
+                " ".join(DocumentParser._hash_text(b).split()).encode("utf-8")
+            ).hexdigest()
             for b in raw
         ]
 
@@ -310,7 +323,7 @@ class DocumentParser:
 
     # --- heuristics and splitting ---
     def _heuristic_boundary(self, prev, cur, prev_cat=None, cur_cat=None) -> str:
-        if cur_cat == "Table" or prev_cat == "Table":
+        if cur_cat in {"Table", "Image"} or prev_cat in {"Table", "Image"}:
             return "new"
         if SourceStructure.starts_part(cur) or SourceStructure.NOTE.match(prev):
             return "new"
@@ -369,7 +382,7 @@ class DocumentParser:
     def _split_into_segments(self, raw):
         blocks = []
         for ri, b in enumerate(raw):
-            if b["category"] == "Table" or b.get("source_paragraph"):
+            if b["category"] in {"Table", "Image"} or b.get("source_paragraph"):
                 segs = [b["text"]]
             else:
                 segs = self._split_block(b["text"])
@@ -383,6 +396,10 @@ class DocumentParser:
                         "html": b.get("html") if b["category"] == "Table" else None,
                     }
                 )
+                if b.get("category") == "Image":
+                    blocks[-1].update(
+                        figure=b["figure"], image_bytes=b.get("image_bytes")
+                    )
         return blocks
 
     # --- boundary stitching (Stage 1) ---
@@ -404,7 +421,7 @@ class DocumentParser:
             if typ in {"article", "chapter", "section"}:
                 in_article = typ == "article"
             marker = LIST_MARKER.match(text.strip())
-            eligible = block["category"] != "Table" and not typ
+            eligible = block["category"] not in {"Table", "Image"} and not typ
             number = anchor.get("numbering", "").rstrip(")")
             decimal = bool(number) and all(p.isdigit() for p in number.split("."))
             if decimal:
@@ -697,6 +714,8 @@ class DocumentParser:
                     "category": b["category"],
                     "html": b.get("html"),
                 }
+                if b.get("category") == "Image":
+                    cur.update(figure=b["figure"], image_bytes=b.get("image_bytes"))
                 if b.get("_group_atomic"):
                     cur["_group_atomic"] = True
         if cur is not None:
@@ -736,8 +755,8 @@ class DocumentParser:
         dec = reconcile(decisions)
         merged, cur = [], None
         for i, p in enumerate(parts):
-            is_table = p.get("category") == "Table"
-            prev_table = cur is not None and cur.get("category") == "Table"
+            is_table = p.get("category") in {"Table", "Image"}
+            prev_table = cur is not None and cur.get("category") in {"Table", "Image"}
             join = (
                 i > 0
                 and cur is not None
@@ -764,6 +783,8 @@ class DocumentParser:
                     "category": p.get("category", ""),
                     "html": p.get("html"),
                 }
+                if p.get("category") == "Image":
+                    cur.update(figure=p["figure"], image_bytes=p.get("image_bytes"))
                 if p.get("_group_atomic"):
                     cur["_group_atomic"] = True
         if cur is not None:
@@ -786,6 +807,39 @@ class DocumentParser:
     def to_logical_parts(
         self, raw: list[dict], client: ChatClient | None, on_progress=None
     ) -> list[dict]:
+        if any(b.get("category") == "Image" for b in raw):
+            # Partition only contiguous text runs. Images never enter boundary, merge
+            # or range prompts. Source IDs/offsets still address the entire document.
+            _, spans = self.source_index(raw)
+            parts, start = [], 0
+            while start < len(raw):
+                block = raw[start]
+                if block.get("category") == "Image":
+                    parts.append(
+                        {
+                            **block,
+                            "id": len(parts),
+                            "src_ids": [start],
+                            "source_ids": [start],
+                            "char_start": spans[start]["start"],
+                            "char_end": spans[start]["end"],
+                            "source_text": block["text"],
+                        }
+                    )
+                    start += 1
+                    continue
+                end = start + 1
+                while end < len(raw) and raw[end].get("category") != "Image":
+                    end += 1
+                for part in self.to_logical_parts(raw[start:end], client, on_progress):
+                    part["src_ids"] = [s + start for s in part.get("src_ids", [])]
+                    for key in ("char_start", "char_end"):
+                        if part.get(key) is not None:
+                            part[key] += spans[start]["start"]
+                    part["id"] = len(parts)
+                    parts.append(part)
+                start = end
+            return parts
         if self.settings.logical_partition_mode == "ranges":
             source_text, units = self.source_units(raw)
             units = self.prepare_range_units(source_text, units)

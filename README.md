@@ -132,3 +132,7 @@ The core pipeline is implemented and verified end to end on a real regulatory do
 (SP 19.13330.2019) with a local Ollama. Supported formats: `.docx`, `.pdf`, `.txt`, `.md`, `.html`
 (configurable via `DVD_ALLOWED_EXTENSIONS`); scanned PDF pages are recognized by an external OCR
 service (`DVD_OCR_BASE_URL`).
+
+DOCX/PDF images are searchable `figure` fragments: a vision model describes their content,
+PNGs are stored alongside document sources and served through authenticated library links.
+Configure `DVD_VISION_*` and `DVD_FIGURE_*`; Qwen thinking uses `DVD_LLM_THINK_MODE=chat_template`.

@@ -1,5 +1,29 @@
 # Конфигурация
 
+## Рисунки и vision
+
+| Переменная | По умолчанию | Назначение |
+|------------|--------------|------------|
+| `DVD_LLM_THINK_MODE` | `reasoning_effort` | Прежний reasoning_effort (low для gpt-oss без явного значения); `chat_template` отправляет только chat_template_kwargs.enable_thinking: true для medium/high, false для None/low/none; `off` не отправляет оба параметра. Применяется к текстовому LLM, поправкам и vision; OCR использует собственный протокол |
+| `DVD_VISION_ENABLED` | `true` | Описывать рисунки; без vision сохраняются подпись или «Рисунок без подписи» |
+| `DVD_VISION_BASE_URL` | `""` | Пустое значение использует DVD_LLM_BASE_URL; OpenAI-совместимый адрес, суффикс /v1 необязателен |
+| `DVD_VISION_MODEL` | `""` | Пустое значение использует DVD_LLM_MODEL; нужна модель с поддержкой изображений |
+| `DVD_VISION_API_KEY` | `None` | Не задано — использовать DVD_LLM_API_KEY; пустая строка — без ключа; скрывается в API настроек |
+| `DVD_VISION_MAX_TOKENS` | `4096` | Бюджет ответа |
+| `DVD_VISION_TIMEOUT` | `300.0` | Таймаут HTTP, секунды |
+| `DVD_VISION_CONCURRENCY` | `2` | Параллельные описания в одном документе |
+| `DVD_VISION_MAX_PIXELS` | `3500000` | Предел пикселей PNG, включая области PDF |
+| `DVD_FIGURE_MIN_SIDE_PX` | `64` | Минимальная короткая сторона PNG |
+| `DVD_FIGURE_MIN_AREA_PX` | `16384` | Минимальная площадь PNG |
+| `DVD_FIGURE_MAX_PER_DOCUMENT` | `100` | Максимум уникальных рисунков; 0 отключает их выдачу парсером |
+
+Vision не задаёт effort, кроме low для gpt-oss; в chat_template thinking явно выключен.
+Кэш описаний:
+`DVD_OCR_CACHE_DIR/figures/<sha256>.json`, общий для одинакового изображения и модели.
+Повторно используется и контекст первого описания; смена модели инвалидирует запись.
+Ошибки, пустые и обрезанные ответы не кэшируются. Workflow production принимает vars
+`DVD_VISION_BASE_URL`, `DVD_VISION_MODEL`, `DVD_LLM_THINK_MODE` и secret `DVD_VISION_API_KEY`.
+
 Настройки задаются классом `Settings` (`src/common/config/app_config.py`) на базе
 pydantic-settings. Значения переопределяются переменными окружения с префиксом `DVD_` или через
 файл `.env`. Имя переменной — `DVD_` плюс имя поля в верхнем регистре (например, поле
