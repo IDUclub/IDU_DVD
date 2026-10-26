@@ -10,6 +10,9 @@ from functools import partial
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import Response
+from minio.error import S3Error
+from qdrant_client.http.exceptions import UnexpectedResponse
 
 from src.api_clients import TerritoryNotFound, UrbanApiError
 from src.common.auth import (
@@ -60,6 +63,55 @@ async def backfill_fragment_names(
 # Reading the library is open to any live token; hand-editing the shared corpus is not.
 AUTHENTICATED = [Depends(require_authenticated)]
 ADMIN_ONLY = [Depends(require_admin)]
+
+
+@router.get("/figures/{node_id}/image", dependencies=AUTHENTICATED)
+async def get_figure_image(
+    node_id: str,
+    project_id: str | None = Query(None),
+    scenario_id: str | None = Query(None),
+    user_id: str | None = Depends(get_effective_user_id),
+    qdrant=Depends(Dependencies.get_qdrant),
+    storage=Depends(Dependencies.get_document_storage),
+    user_storage=Depends(Dependencies.get_user_document_storage),
+    urban_api=Depends(Dependencies.get_urban_api),
+):
+    """Image proxy; private points require their owner's project scope."""
+    try:
+        payload = (await run_in_threadpool(qdrant.retrieve, [node_id])).get(node_id)
+    except ValueError:
+        payload = None
+    except UnexpectedResponse as exc:
+        if exc.status_code not in {400, 404, 422}:
+            raise
+        payload = None
+    if not payload or payload.get("kind") != "figure":
+        raise HTTPException(404, "figure not found")
+    if payload.get("user_id"):
+        from src.dvd_service.routers.user_documents import _resolve_project
+
+        if not user_id or payload["user_id"] != user_id:
+            raise HTTPException(404, "figure not found")
+        project = await run_in_threadpool(
+            _resolve_project,
+            urban_api,
+            project_id or payload.get("project_id"),
+            scenario_id,
+            user_id,
+        )
+        if str(payload.get("project_id")) != project:
+            raise HTTPException(404, "figure not found")
+        storage = user_storage
+    key = (payload.get("figure") or {}).get("object_key")
+    if not key:
+        raise HTTPException(404, "figure not found")
+    try:
+        data, _ = await run_in_threadpool(storage.download, key)
+    except S3Error as exc:
+        raise HTTPException(404, "figure image unavailable") from exc
+    return Response(
+        content=data, media_type="image/png", headers={"Cache-Control": "private"}
+    )
 
 
 @router.post("/compare", response_model=CompareResponse, dependencies=AUTHENTICATED)

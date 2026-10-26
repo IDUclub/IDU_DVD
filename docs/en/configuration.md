@@ -56,6 +56,31 @@ operation, so a change through `PUT /system/settings` is picked up by the next i
 
 Windowed LLM stages require exactly one response per fragment ID. Failed requests and incomplete responses are retried up to three times per window. If a window still fails, ingestion reports an error before publishing the document; completed windows are not silently substituted with heuristic defaults. This is separate from the durable job retry limit.
 
+### Figures and vision
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `DVD_LLM_THINK_MODE` | `reasoning_effort` | `reasoning_effort`: existing behavior (including gpt-oss low fallback); `chat_template`: send only `chat_template_kwargs.enable_thinking`, true for medium/high and false for unset/low/none; `off`: send neither parameter. Applies to text, amendment and vision OpenAI calls; OCR retains its own protocol |
+| `DVD_VISION_ENABLED` | `true` | Describe figures; disabled/unavailable vision still indexes captions or `Рисунок без подписи` |
+| `DVD_VISION_BASE_URL` | `""` | Empty uses `DVD_LLM_BASE_URL`; OpenAI-compatible endpoint, optional `/v1` suffix |
+| `DVD_VISION_MODEL` | `""` | Empty uses `DVD_LLM_MODEL`; configure a model with image support |
+| `DVD_VISION_API_KEY` | `None` | Unset uses `DVD_LLM_API_KEY`; explicit empty string sends no key; masked in settings API |
+| `DVD_VISION_MAX_TOKENS` | `4096` | Maximum description tokens |
+| `DVD_VISION_TIMEOUT` | `300.0` | HTTP timeout in seconds |
+| `DVD_VISION_CONCURRENCY` | `2` | Parallel image descriptions per document |
+| `DVD_VISION_MAX_PIXELS` | `3500000` | Maximum normalized PNG pixels, including PDF clips |
+| `DVD_FIGURE_MIN_SIDE_PX` | `64` | Minimum shorter side of normalized image |
+| `DVD_FIGURE_MIN_AREA_PX` | `16384` | Minimum normalized image area |
+| `DVD_FIGURE_MAX_PER_DOCUMENT` | `100` | Retained unique images per document; zero disables extraction output |
+
+Vision omits reasoning effort except the gpt-oss low fallback; in `chat_template` mode
+thinking is explicitly disabled.
+Descriptions are cached in `DVD_OCR_CACHE_DIR/figures/<sha256>.json`, reused for the same
+image/model. Context from the first description is therefore reused too; changing the model
+invalidates its cache entry. Failed/empty/truncated responses are not cached. Production repo
+overrides accept `DVD_VISION_BASE_URL`, `DVD_VISION_MODEL`, `DVD_LLM_THINK_MODE` variables and
+the `DVD_VISION_API_KEY` secret.
+
 ### Ollama
 
 Used as the LLM when `DVD_LLM_PROVIDER=ollama`, and as the fallback vectorizer when

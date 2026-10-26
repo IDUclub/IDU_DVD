@@ -87,6 +87,8 @@ class HierarchyBuilder:
                     "block": p.get("block", "main"),
                     "is_table": p.get("category") == "Table",
                     "html": p.get("html"),
+                    # Bytes stay in raw blocks; hierarchy/preview nodes are payload-safe.
+                    "figure": p.get("figure"),
                     "src_ids": p.get("src_ids", []),
                     "source_text": p.get("source_text"),
                     "char_start": p.get("char_start"),
@@ -101,6 +103,18 @@ class HierarchyBuilder:
         node_by_id = {n["_id"]: n for n in nodes}
         for n in nodes[1:]:
             top = stack[-1]
+            if n["type"] == "figure":
+                parent = next(
+                    (
+                        a
+                        for a in reversed(stack)
+                        if a["type"] in {"section", "chapter", "article", "appendix"}
+                    ),
+                    nodes[0],
+                )
+                n["parent"] = parent["_id"]
+                n["depth"] = parent["depth"] + 1
+                continue
             # An LLM misclassification must not close an explicit source article.
             article = next(
                 (
@@ -293,6 +307,7 @@ class HierarchyBuilder:
                 "fragment_name": node.get("fragment_name"),
                 "is_table": node["is_table"],
                 "html": node["html"],
+                "figure": node.get("figure"),
                 "_rank": node["rank"],
                 "_block": node["block"],
                 "_src_ids": node.get("src_ids", []),
@@ -374,7 +389,8 @@ class HierarchyBuilder:
     def _source_run(nodes):
         """Return an exact contiguous source span, or None for unsafe joins."""
         if not nodes or any(
-            n.get("is_table") or n.get("category") == "Table" for n in nodes
+            n.get("is_table") or n.get("figure") or n.get("category") == "Table"
+            for n in nodes
         ):
             return None
         if any(
@@ -445,7 +461,12 @@ class HierarchyBuilder:
                 "id": nid,
                 "text": node.get("text", ""),
                 "type": node.get("type", ""),
-                "kind": "table" if node.get("is_table") else "text",
+                "kind": (
+                    "figure"
+                    if node.get("figure")
+                    else ("table" if node.get("is_table") else "text")
+                ),
+                "figure": node.get("figure"),
                 "table_html": node.get("html") if node.get("is_table") else None,
                 "numbering": node.get("numbering", "") or "",
                 "fragment_name": node.get("fragment_name"),
@@ -479,6 +500,9 @@ class HierarchyBuilder:
                     else rec["text"]
                 )
             nodes.append(rec)
+            if rec["kind"] == "figure":
+                rec["image_url"] = f"/library/figures/{nid}/image"
+                rec["element_type"] = "figure"
             if parent_rec is not None:
                 parent_rec["child_ids"].append(nid)
             label = (node.get("numbering", "") + " " + node.get("text", "")).strip()[
@@ -489,7 +513,24 @@ class HierarchyBuilder:
                     (ch, rec, node.get("text", "")[:300], depth + 1, path + [label])
                 )
 
-        # prev/next in reading order (DFS preorder = document order)
+        if any(n["kind"] == "figure" for n in nodes):
+            # Section-attached figures can occur between two descendants of a clause.
+            # Source order preserves that position independently of tree traversal.
+            by_id = {n["id"]: n for n in nodes}
+            positions = {
+                n["id"]: min(n.get("src_ids") or [float("inf")]) for n in nodes
+            }
+            for node in reversed(nodes):
+                parent_id = node["parent_id"]
+                if parent_id:
+                    positions[parent_id] = min(
+                        positions[parent_id], positions[node["id"]]
+                    )
+            nodes.sort(key=lambda n: (positions[n["id"]], n["depth"]))
+            for node in nodes:
+                node["child_ids"].sort(key=lambda i: (positions[i], by_id[i]["depth"]))
+
+        # prev/next in reading order (legacy documents keep their DFS preorder).
         for i, n in enumerate(nodes):
             n["prev_id"] = nodes[i - 1]["id"] if i > 0 else None
             n["next_id"] = nodes[i + 1]["id"] if i + 1 < len(nodes) else None

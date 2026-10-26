@@ -2,6 +2,7 @@
 
 import io
 import json
+from unittest.mock import Mock
 
 import httpx
 import pypdfium2 as pdfium
@@ -134,6 +135,15 @@ def test_text_layer_pages_are_read_without_ocr(tmp_path):
     blocks = PdfReader(ocr).read(str(path))
     assert [b["text"] for b in blocks] == [TEXT]
     assert blocks[0]["page"] == 1
+    assert blocks == [
+        {
+            "text": TEXT,
+            "category": "NarrativeText",
+            "html": None,
+            "page": 1,
+            "bbox": None,
+        }
+    ]
     assert ocr.calls == 0
 
 
@@ -145,7 +155,8 @@ def test_scanned_pages_go_to_ocr_in_page_order_and_are_cached(tmp_path):
     blocks = reader.read(
         path, on_page=lambda done, total: progress.append((done, total))
     )
-    assert [b["page"] for b in blocks] == [1, 2, 2, 2, 2, 3, 3, 3, 3]
+    assert [b["page"] for b in blocks] == [1, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3]
+    assert len([b for b in blocks if b["category"] == "Image"]) == 2
     assert blocks[0]["text"] == TEXT
     assert ocr.calls == 2
     assert progress == [(1, 2), (2, 2)]
@@ -153,6 +164,24 @@ def test_scanned_pages_go_to_ocr_in_page_order_and_are_cached(tmp_path):
     again = PdfReader(FakeOcr(layout=[]), cache_dir=str(tmp_path / "cache"))
     assert again.read(path) == blocks
     assert again.ocr.calls == 0
+
+
+@pytest.mark.parametrize("picture", [False, True])
+def test_cached_pages_render_only_when_the_layout_contains_pictures(
+    tmp_path, monkeypatch, picture
+):
+    path = _mixed_pdf(tmp_path)
+    layout = [{"category": "Text", "text": "Cached page"}]
+    if picture:
+        layout.append({"category": "Picture", "bbox": [10, 10, 110, 110]})
+    reader = PdfReader(FakeOcr(layout), cache_dir=str(tmp_path / "cache"))
+    expected = reader.read(path)
+    cached = PdfReader(FakeOcr([]), cache_dir=reader.cache_dir)
+    render = Mock(wraps=cached._png)
+    monkeypatch.setattr(cached, "_png", render)
+    assert cached.read(path) == expected
+    assert render.call_count == int(picture)
+    assert cached.ocr.calls == 0
 
 
 def test_large_pages_are_rendered_within_the_pixel_budget():

@@ -25,6 +25,7 @@ the document's readers (NormGraph reads it next to the clauses).
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -157,7 +158,8 @@ class AmendmentService:
         # gpt-oss "low" loses sections and addresses that "medium" gets right.
         if self.settings.llm_provider == "openai":
             return OpenAICompatibleClient(
-                reasoning_effort=self.settings.amendment_reasoning_effort
+                reasoning_effort=self.settings.amendment_reasoning_effort,
+                think_mode=self.settings.llm_think_mode,
             )
         return create_llm()
 
@@ -174,7 +176,12 @@ class AmendmentService:
         key = f"{RAW_PREFIX}/{content_hash}.json"
         if self.storage.exists(key):
             data, _ = self.storage.download(key)
-            return json.loads(data)
+            raw = json.loads(data)
+            for block in raw:
+                encoded = block.pop("image_base64", None)
+                if encoded is not None:
+                    block["image_bytes"] = base64.b64decode(encoded)
+            return raw
         data, _ = self.storage.download(source_key)
         suffix = Path(filename or source_key).suffix or Path(source_key).suffix
         with tempfile.TemporaryDirectory() as tmp:
@@ -185,9 +192,18 @@ class AmendmentService:
         return raw
 
     def store_raw(self, content_hash: str, raw: list[dict]) -> None:
+        # Raw snapshots remain JSON; image bytes round-trip without changing the
+        # live blocks handed to consolidation or the ordinary ingestion pipeline.
+        serialized = []
+        for block in raw:
+            copy = dict(block)
+            image = copy.pop("image_bytes", None)
+            if image is not None:
+                copy["image_base64"] = base64.b64encode(image).decode("ascii")
+            serialized.append(copy)
         self.storage.upload(
             f"{RAW_PREFIX}/{content_hash}.json",
-            json.dumps(raw, ensure_ascii=False).encode("utf-8"),
+            json.dumps(serialized, ensure_ascii=False).encode("utf-8"),
             "application/json",
         )
 

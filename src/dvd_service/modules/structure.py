@@ -238,6 +238,31 @@ class StructureTagger:
         return anchor, in_article
 
     def tag(self, parts, client: ChatClient, on_progress=None) -> list[dict]:
+        if any(p.get("category") == "Image" for p in parts):
+            text_parts = [p for p in parts if p.get("category") != "Image"]
+            original_ids = [p["id"] for p in text_parts]
+            for i, part in enumerate(text_parts):
+                part["id"] = i
+            try:
+                if text_parts:
+                    self.tag(text_parts, client, on_progress)
+            finally:
+                for part, original_id in zip(text_parts, original_ids):
+                    part["id"] = original_id
+            for index, part in enumerate(parts):
+                if part.get("category") == "Image":
+                    part.update(
+                        type="figure",
+                        raw_type="figure",
+                        numbering="",
+                        relation="same",
+                        block=(
+                            parts[index - 1].get("block", "main") if index else "main"
+                        ),
+                        tags=[],
+                        fragment_name=part["figure"]["caption"] or None,
+                    )
+            return parts
         decisions = []
         windows = list(make_windows(parts, max_items=self.settings.window_max_items))
 

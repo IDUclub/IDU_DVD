@@ -32,6 +32,7 @@ _PAYLOAD_INDEXES: dict[str, PayloadSchemaType] = {
     "versions": PayloadSchemaType.KEYWORD,  # multi-valued version tags (delta updates)
     "version_id": PayloadSchemaType.KEYWORD,
     "kind": PayloadSchemaType.KEYWORD,
+    "figure.object_key": PayloadSchemaType.KEYWORD,
     "type": PayloadSchemaType.KEYWORD,
     "block": PayloadSchemaType.KEYWORD,
     "parent_id": PayloadSchemaType.KEYWORD,
@@ -251,6 +252,18 @@ class QdrantRepository:
             if offset is None:
                 break
         return out
+
+    def figure_is_referenced(self, key: str) -> bool:
+        result = self.client.count(
+            self.collection,
+            count_filter=Filter(
+                must=[
+                    FieldCondition(key="figure.object_key", match=MatchValue(value=key))
+                ]
+            ),
+            exact=True,
+        )
+        return result.count > 0
 
     def scan_points(
         self, query_filter: Filter | None = None, max_points: int = 50000
@@ -677,3 +690,6 @@ class ScopedQdrantRepository:
 
     def retrieve(self, ids: Sequence[str]) -> dict[str, dict]:
         return self._inner.retrieve(ids)
+
+    def figure_is_referenced(self, key: str) -> bool:
+        return self._inner.figure_is_referenced(key)

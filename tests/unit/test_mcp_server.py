@@ -102,6 +102,23 @@ def _set_singleton_with_tags(fake_tags) -> None:
 
 
 class TestSearchHelper:
+    def test_default_search_includes_figures_and_passes_type_filter(self):
+        fake = FakeSearch()
+        _set_singleton_with_search(fake)
+        server.search_all("схема", types=["figure"], user_id="u1")
+        req, kind = fake.calls[-1]
+        assert kind is None and req.types == ["figure"]
+        server.search_user_index_all(
+            scenario_id="s1",
+            query="схема",
+            project_id="p1",
+            user_id="u1",
+            types=["figure"],
+        )
+        req, kind = fake.calls[-1]
+        assert kind is None and req.types == ["figure"]
+        assert req.include_shared is False
+
     def test_forwards_kind_and_query(self):
         fake = FakeSearch()
         _set_singleton_with_search(fake)

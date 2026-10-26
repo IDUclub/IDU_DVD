@@ -248,6 +248,11 @@ class UserIndexService:
         source_keys = {
             pl["source_object_key"] for pl in payloads if pl.get("source_object_key")
         }
+        figure_keys = {
+            pl["figure"]["object_key"]
+            for pl in payloads
+            if (pl.get("figure") or {}).get("object_key")
+        }
         versions_by_name: dict[str, set[str]] = {}
         for pl in payloads:
             name = pl.get("name")
@@ -259,6 +264,12 @@ class UserIndexService:
             tags.update(pl.get("versions") or [])
         points_deleted = len(payloads)
         self.qdrant.delete_by_filter(flt)
+        for key in figure_keys:
+            try:
+                if not self.qdrant.figure_is_referenced(key):
+                    self.storage.delete(key)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("figure_cleanup_failed", key=key, error=str(exc))
         for key in source_keys:
             self.storage.delete(key)
         DocumentRegistry(

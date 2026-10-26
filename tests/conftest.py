@@ -173,6 +173,12 @@ class FakeQdrantRepo:
     def retrieve(self, ids):
         return {str(i): self.points[str(i)][1] for i in ids if str(i) in self.points}
 
+    def figure_is_referenced(self, key):
+        return any(
+            (pl.get("figure") or {}).get("object_key") == key
+            for _, pl in self.points.values()
+        )
+
     def get_point(self, point_id):
         return self.points.get(str(point_id))
 

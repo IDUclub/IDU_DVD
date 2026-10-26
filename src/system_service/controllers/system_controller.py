@@ -32,6 +32,7 @@ _SENSITIVE_FIELDS: frozenset[str] = frozenset(
     {
         "qdrant_api_key",
         "llm_api_key",
+        "vision_api_key",
         "auth_helper_api_key",
         "service_auth_client_secret",
     }

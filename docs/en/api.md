@@ -3,6 +3,36 @@
 The default base URL is `http://localhost:8000`. Interactive docs (Swagger) are at `/docs`. All
 request and response models are pydantic-based and defined under `src/dvd_service/dto/`.
 
+## Figures
+
+`GET /library/figures/{node_id}/image` requires authentication and returns `image/png`.
+Unknown points, non-figures, missing image objects and inaccessible private figures return 404.
+Private figures require the authenticated owner; their stored project is inferred from the
+point, or checked against an explicit `project_id` / resolved `scenario_id` query parameter.
+An owner cannot use another project to read the point. Images use `Cache-Control: private`.
+
+REST search hits, MCP `search_all` / `search_filtered` hits and library fragments expose
+`kind="figure"`, `type="figure"`, `element_type="figure"`, relative
+`image_url="/library/figures/{node_id}/image"` and a `figure` object:
+
+```json
+{"object_key":"figures/CONTENT_HASH/DOC_ID/SHA256.png","mime_type":"image/png",
+ "width":800,"height":600,"sha256":"...","page":2,"bbox":[10,20,410,320],
+ "caption":"Рисунок 1 — Схема","description":"...",
+ "description_model":"vision-model","description_generated":true}
+```
+
+`page`/`bbox` are nullable. Figure bbox is `[x0,y0,x1,y1]` in PDF points from the top-left of
+the cropped, rotated visible page (x right, y down), matching the axes of the OCR render.
+Legacy OCR text bboxes remain in image pixels; text-layer blocks retain `bbox=null`.
+JSON responses contain figure metadata, never raw image bytes or base64. Empty descriptions use `description=""`,
+`description_model=null`, `description_generated=false`. Indexed `text` is caption + description
+joined with a newline, or `Рисунок без подписи` when both are empty. `figure`/`image_url` are
+null for other kinds. No host or MinIO URL is exposed in image_url. Default all-entity search
+includes figures; `types=["figure"]` filters them. Filter-first REST/MCP additionally accepts
+`kind="figure"` (default `all`). Dedicated text/table searches retain their kind filters.
+Document comparison treats figures as ordinary text-bearing fragments.
+
 ## Authentication
 
 Every endpoint needs a Keycloak bearer token, verified locally against the realm's JWKS —

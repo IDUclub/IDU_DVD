@@ -1468,6 +1468,19 @@ class TestSearch:
         flt = wired.search._build_filter(req, kind=None)
         assert flt is not None and len(flt.must) == 3  # block + types + shared-only
 
+    def test_build_filter_figure_type_matches_kind(self, wired):
+        # A caption paragraph the LLM typed "figure" must not pass types=["figure"].
+        only = wired.search._build_filter(
+            SearchRequest(query="q", types=["figure"]), kind=None
+        )
+        assert only.must[0].key == "kind" and only.must[0].match.value == "figure"
+        mixed = wired.search._build_filter(
+            SearchRequest(query="q", types=["clause", "figure"]), kind=None
+        )
+        level, figure = mixed.must[0].should
+        assert level.key == "type" and level.match.any == ["clause"]
+        assert figure.key == "kind" and figure.match.value == "figure"
+
     def test_build_filter_document_names(self, wired):
         req = SearchRequest(query="q", document_names=["СП 1", "СП 2"])
         flt = wired.search._build_filter(req, kind=None)
