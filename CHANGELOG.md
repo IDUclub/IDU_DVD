@@ -1,3 +1,9 @@
+## v0.24.0 (2026-10-27)
+
+[feat/ICII-205-llm-priority](https://github.com/IDUclub/IDU_DVD/pull/122) (#122)
+
+- feat(llm): приоритет vLLM для вызовов LLM при разборе документов
+
 ## v0.23.2 (2026-10-26)
 
 [chore/sync-main](https://github.com/IDUclub/IDU_DVD/pull/121) (#121)
