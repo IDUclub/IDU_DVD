@@ -134,7 +134,12 @@ class RangePartitioner:
         feedback = ""
         for attempt in range(1, 4):
             try:
-                return self.repair(client.chat(system + feedback, user, schema), units)
+                return self.repair(
+                    client.chat(
+                        system + feedback, user, schema, kind="ingest.structure"
+                    ),
+                    units,
+                )
             except Exception as exc:
                 retryable = isinstance(
                     exc, (LlmError, httpx.TransportError, ConnectionError, TimeoutError)

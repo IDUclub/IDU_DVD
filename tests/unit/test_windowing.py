@@ -94,7 +94,14 @@ def test_chat_window_rejects_incomplete_ids(ids, monkeypatch):
     monkeypatch.setattr("src.dvd_service.modules.windowing.time.sleep", lambda _: None)
     client = FakeOllama(lambda *_: {"nodes": [{"id": i} for i in ids]})
     with pytest.raises(LlmError, match="Неполное окно"):
-        chat_window(client, "system", ["a", "b"], STRUCT_SCHEMA, "nodes")
+        chat_window(
+            client,
+            "system",
+            ["a", "b"],
+            STRUCT_SCHEMA,
+            "nodes",
+            kind="ingest.structure",
+        )
     assert len(client.chat_calls) == 3
 
 
@@ -117,8 +124,22 @@ def test_chat_window_retries_bad_window_and_keeps_schema_unchanged(monkeypatch):
         return {"nodes": [{"id": 0}] if len(calls) == 2 else [{"id": 0}, {"id": 1}]}
 
     client = FakeOllama(handler)
-    chat_window(client, "sys", ["good", "window"], STRUCT_SCHEMA, "nodes")
-    chat_window(client, "sys", ["retry", "window"], STRUCT_SCHEMA, "nodes")
+    chat_window(
+        client,
+        "sys",
+        ["good", "window"],
+        STRUCT_SCHEMA,
+        "nodes",
+        kind="ingest.structure",
+    )
+    chat_window(
+        client,
+        "sys",
+        ["retry", "window"],
+        STRUCT_SCHEMA,
+        "nodes",
+        kind="ingest.structure",
+    )
     assert len(calls) == 3 and calls[0] != calls[1] == calls[2]
     assert STRUCT_SCHEMA == original
 
@@ -146,5 +167,7 @@ def test_chat_window_retries_only_transient_http_errors(
 
     client = FakeOllama(handler)
     with pytest.raises(LlmError):
-        chat_window(client, "sys", ["fragment"], STRUCT_SCHEMA, "nodes")
+        chat_window(
+            client, "sys", ["fragment"], STRUCT_SCHEMA, "nodes", kind="ingest.structure"
+        )
     assert len(client.chat_calls) == expected_calls

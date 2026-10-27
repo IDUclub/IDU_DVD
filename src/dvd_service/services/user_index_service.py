@@ -144,6 +144,7 @@ def build_user_ingestion(
         jobs,
         scoped_settings,
         outbox=scoped_outbox,
+        user_document=True,
     )
 
 

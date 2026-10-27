@@ -56,6 +56,37 @@ operation, so a change through `PUT /system/settings` is picked up by the next i
 
 Windowed LLM stages require exactly one response per fragment ID. Failed requests and incomplete responses are retried up to three times per window. If a window still fails, ingestion reports an error before publishing the document; completed windows are not silently substituted with heuristic defaults. This is separate from the durable job retry limit.
 
+### LLM request priorities
+
+`DVD_LLM_REQUEST_PRIORITY_ENABLED=true` enables the top-level `priority` field on
+OpenAI-compatible text requests. Lower numbers run earlier with vLLM
+`--scheduling-policy priority`. Set it to `false` to retain the previous request bodies.
+`DVD_LLM_REQUEST_PRIORITIES` defaults to an empty string and accepts comma-separated
+overrides, for example `ingest.relations=60,ingest.user=0`. Zero omits the field.
+Invalid entries and unknown keys are ignored with one warning per configuration.
+
+| Key | Default | Calls |
+|-----|---------|-------|
+| `ingest.structure` | `100` | Structure tagging, parser boundaries/semantic merge, range partitioning |
+| `ingest.references` | `100` | Reference extraction |
+| `ingest.relations` | `100` | LLM relation scoring |
+| `ingest.version` | `100` | Document head/version detection, including backfill and version repair |
+| `ingest.amendments` | `100` | Amendment operation extraction |
+| `ingest.vision` | `100` | Figure descriptions when `DVD_VISION_BASE_URL` is empty |
+| `ingest.user` | `20` | Overrides every ingestion key for jobs scoped by `user_id` |
+| `query` | `-100` | Reserved for query-time text calls; none currently exist |
+
+User origin is bound to each ingestion service and its clients, including clients used
+by parallel window and figure workers; concurrent corpus jobs retain their own priorities.
+An explicit `DVD_VISION_BASE_URL` disables vision priority, even if it names the same URL.
+Ollama ignores priorities. OCR (dots.ocr) and embeddings never carry priority.
+
+On HTTP 400 explicitly reporting unsupported/disabled priority scheduling, the client
+logs one warning, retries the same request once without priority, and omits it for the
+rest of that client instance's lifetime. Other HTTP errors retain their existing behavior.
+New job clients may probe support again. Both settings are wired through the example env
+files, local compose, and production workflow repository variables (`.env.overrides`).
+
 ### Figures and vision
 
 | Variable | Default | Meaning |

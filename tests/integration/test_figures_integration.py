@@ -72,7 +72,7 @@ def test_docx_figure_ingestion_search_image_and_delete(
     class VisionStub:
         model = "integration-vision-stub"
 
-        def __init__(self, _):
+        def __init__(self, _, *, user_document=False):
             pass
 
         def describe(self, data, sha256, context):

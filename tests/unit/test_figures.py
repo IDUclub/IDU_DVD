@@ -354,7 +354,7 @@ def test_pipeline_figure_payload_search_and_version_lifecycle(wired, monkeypatch
     wired.ingestion.settings.vision_enabled = True
     vision = Mock(model="vision-stub")
     vision.describe.return_value = "VISION_SENTINEL: обозначение 12 м"
-    monkeypatch.setattr(module, "VisionClient", lambda _: vision)
+    monkeypatch.setattr(module, "VisionClient", lambda _, **kwargs: vision)
     figure = image_block(png())
     figure["figure"]["caption"] = figure["text"] = "Рисунок 1 — Схема"
     raw = [{"text": "1 Область применения", "category": "NarrativeText"}, figure]
@@ -404,7 +404,7 @@ def test_disabled_or_failed_vision_keeps_captionless_figure(wired, monkeypatch):
         wired.ingestion.settings.vision_enabled = enabled
         vision = Mock()
         vision.describe.side_effect = RuntimeError("offline")
-        monkeypatch.setattr(module, "VisionClient", lambda _: vision)
+        monkeypatch.setattr(module, "VisionClient", lambda _, **kwargs: vision)
         raw = [image_block(png())]
         wired.ingestion._describe_figures(raw, Progress())
         assert raw[0]["text"] == "Рисунок без подписи"

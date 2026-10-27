@@ -22,6 +22,7 @@ import structlog
 
 from src.api_clients.base import ChatClient, LlmError
 from src.api_clients.ollama_client import OllamaClient
+from src.api_clients.request_priority import RequestPriority
 from src.common.config import settings
 from src.common.config.app_config import LLM_PROVIDERS
 
@@ -56,6 +57,8 @@ class OpenAICompatibleClient:
         timeout: float | None = None,
         reasoning_effort: str | None = None,
         think_mode: str | None = None,
+        priority_settings=None,
+        user_document: bool = False,
     ) -> None:
         self.base = (base or settings.llm_base_url).rstrip("/")
         self.model = model or settings.llm_model
@@ -69,6 +72,9 @@ class OpenAICompatibleClient:
         )
         self._client = httpx.Client(timeout=self.timeout)
         self.think_mode = think_mode or settings.llm_think_mode
+        self.priority = RequestPriority(
+            priority_settings or settings, user_document=user_document
+        )
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(base={self.base}, model={self.model})"
@@ -100,7 +106,13 @@ class OpenAICompatibleClient:
             return False
 
     def chat(
-        self, system: str, user: str, schema: dict, model: str | None = None
+        self,
+        system: str,
+        user: str,
+        schema: dict,
+        model: str | None = None,
+        *,
+        kind: str | None = None,
     ) -> dict:
         body = {
             "model": model or self.model,
@@ -122,8 +134,12 @@ class OpenAICompatibleClient:
         body.update(
             think_options(self.think_mode, self.reasoning_effort, model or self.model)
         )
-        resp = self._client.post(
-            self.base + "/chat/completions", headers=self._headers(), json=body
+        resp = self.priority.post(
+            self._client,
+            self.base + "/chat/completions",
+            body,
+            kind=kind,
+            headers=self._headers(),
         )
         resp.raise_for_status()
         choice = (resp.json().get("choices") or [{}])[0]

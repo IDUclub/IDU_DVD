@@ -23,7 +23,7 @@ class TestDocumentHead:
     )
     def test_federal_evidence_must_be_present_in_source(self, evidence, expected):
         class Client:
-            def chat(self, system, text, schema):
+            def chat(self, system, text, schema, *, kind=None):
                 return {"federal_scope_evidence": evidence, "level": "unknown"}
 
         head = VersionDetector().detect_head(

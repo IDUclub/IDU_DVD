@@ -11,6 +11,7 @@ from pathlib import Path
 import httpx
 
 from src.api_clients.llm_client import think_options
+from src.api_clients.request_priority import RequestPriority
 
 PROMPT = (
     "Опиши изображение для поиска по корпусу нормативных документов. Укажи тип: "
@@ -25,8 +26,9 @@ PROMPT = (
 
 
 class VisionClient:
-    def __init__(self, settings, transport=None):
+    def __init__(self, settings, transport=None, *, user_document: bool = False):
         self.settings = settings
+        self.priority = RequestPriority(settings, user_document=user_document)
         self.model = settings.vision_model or settings.llm_model
         self.base = (settings.vision_base_url or settings.llm_base_url).rstrip("/")
         if not self.base.endswith("/v1"):
@@ -74,7 +76,12 @@ class VisionClient:
             ],
             **think_options(self.settings.llm_think_mode, None, self.model),
         }
-        response = self.client.post(self.base + "/chat/completions", json=body)
+        if self.settings.vision_base_url:
+            response = self.client.post(self.base + "/chat/completions", json=body)
+        else:
+            response = self.priority.post(
+                self.client, self.base + "/chat/completions", body, kind="ingest.vision"
+            )
         response.raise_for_status()
         choice = response.json()["choices"][0]
         description = (choice["message"].get("content") or "").strip()

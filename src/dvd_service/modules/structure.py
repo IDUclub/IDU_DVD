@@ -163,7 +163,14 @@ class StructureTagger:
         return [str(x).strip().lower() for x in (raw or []) if str(x).strip()]
 
     def _llm_structure(self, client: ChatClient, window_texts):
-        rows = chat_window(client, STRUCT_SYSTEM, window_texts, STRUCT_SCHEMA, "nodes")
+        rows = chat_window(
+            client,
+            STRUCT_SYSTEM,
+            window_texts,
+            STRUCT_SCHEMA,
+            "nodes",
+            kind="ingest.structure",
+        )
         return {
             it["id"]: (
                 it["type"],
