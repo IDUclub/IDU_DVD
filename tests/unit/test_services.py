@@ -525,7 +525,7 @@ class TestIngest:
         )
         attempts = []
 
-        def incomplete(system, user, schema):
+        def incomplete(system, user, schema, *, kind=None):
             data = pipeline_chat_handler(system, user, schema)
             if stage in data:
                 attempts.append(user)

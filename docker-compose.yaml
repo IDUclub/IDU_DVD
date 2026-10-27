@@ -82,6 +82,8 @@ services:
       DVD_REDIS_URL: redis://redis:6379/0
       DVD_MINIO_ENDPOINT: minio:9000
       DVD_LLM_BASE_URL: http://host.docker.internal:8001/v1
+      DVD_LLM_REQUEST_PRIORITY_ENABLED: ${DVD_LLM_REQUEST_PRIORITY_ENABLED:-true}
+      DVD_LLM_REQUEST_PRIORITIES: ${DVD_LLM_REQUEST_PRIORITIES:-}
       DVD_OLLAMA_BASE: http://host.docker.internal:11434
       DVD_EMBEDDINGS_URL: http://host.docker.internal:8001
     extra_hosts:

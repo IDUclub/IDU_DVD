@@ -97,7 +97,7 @@ def test_invalid_window_is_retried_and_fails_closed(settings, monkeypatch):
     calls = []
 
     class BadClient:
-        def chat(self, system, user, schema):
+        def chat(self, system, user, schema, *, kind=None):
             calls.append(user)
             return {"fragments": []}
 
@@ -113,7 +113,7 @@ def test_retry_can_recover_from_missing_last_unit(settings, monkeypatch):
     calls = []
 
     class Client:
-        def chat(self, system, user, schema):
+        def chat(self, system, user, schema, *, kind=None):
             calls.append(system)
             return {
                 "fragments": [{"start_id": 0, "end_id": 0 if len(calls) == 1 else 1}]
@@ -156,7 +156,7 @@ def test_source_is_exact_despite_repeats_unicode_and_whitespace(parser, fake_oll
 
 def test_llm_can_group_sentences_without_returning_text(parser):
     class Client:
-        def chat(self, system, user, schema):
+        def chat(self, system, user, schema, *, kind=None):
             return {
                 "fragments": [
                     {"start_id": 0, "end_id": len(json.loads(user)["units"]) - 1}
@@ -482,7 +482,7 @@ def test_repair_cuts_structural_and_size_boundaries_without_retry(settings):
     class Client:
         calls = 0
 
-        def chat(self, system, user, schema):
+        def chat(self, system, user, schema, *, kind=None):
             self.calls += 1
             return {"fragments": [{"start_id": 0, "end_id": 3}]}
 

@@ -901,7 +901,12 @@ def extract_operations(
     operations: list[dict] = []
     seen: set[str] = set()
     for start, end in make_windows(amendment, max_chars=max_chars, overlap=2):
-        answer = client.chat(OPS_SYSTEM, _render(amendment, start, end), OPS_SCHEMA)
+        answer = client.chat(
+            OPS_SYSTEM,
+            _render(amendment, start, end),
+            OPS_SCHEMA,
+            kind="ingest.amendments",
+        )
         for op in answer.get("operations") or []:
             op = _clean(op, start, end)
             key = repr(sorted(op.items()))

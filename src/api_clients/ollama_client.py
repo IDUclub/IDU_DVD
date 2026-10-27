@@ -65,7 +65,13 @@ class OllamaClient:
             return False
 
     def chat(
-        self, system: str, user: str, schema: dict, model: str | None = None
+        self,
+        system: str,
+        user: str,
+        schema: dict,
+        model: str | None = None,
+        *,
+        kind: str | None = None,
     ) -> dict:
         resp = self._client.post(
             self.base + "/api/chat",

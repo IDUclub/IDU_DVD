@@ -160,6 +160,8 @@ class AmendmentService:
             return OpenAICompatibleClient(
                 reasoning_effort=self.settings.amendment_reasoning_effort,
                 think_mode=self.settings.llm_think_mode,
+                priority_settings=self.settings,
+                user_document=getattr(self.ingestion, "user_document", False),
             )
         return create_llm()
 

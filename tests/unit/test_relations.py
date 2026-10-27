@@ -149,7 +149,7 @@ class GroupLLM:
     def __init__(self):
         self.calls = []
 
-    def chat(self, system, user, schema):
+    def chat(self, system, user, schema, *, kind=None):
         self.calls.append(user)
         count = schema["properties"]["pairs"]["maxItems"]
         return {
@@ -177,7 +177,7 @@ def test_llm_scorer_survives_a_failed_group(settings, doc):
     settings.llm_concurrency = 1
 
     class Broken:
-        def chat(self, *a):
+        def chat(self, *a, **kwargs):
             raise RuntimeError("boom")
 
     by_id = {n["id"]: n for n in doc}

@@ -85,7 +85,7 @@ class FakeActReader:
         self.operations = operations
         self.calls = 0
 
-    def chat(self, system, user, schema, model=None):
+    def chat(self, system, user, schema, model=None, *, kind=None):
         self.calls += 1
         return {"operations": self.operations}
 

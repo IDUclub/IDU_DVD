@@ -105,7 +105,13 @@ class FakeOllama:
         self.closed = False
 
     def chat(
-        self, system: str, user: str, schema: dict, model: str | None = None
+        self,
+        system: str,
+        user: str,
+        schema: dict,
+        model: str | None = None,
+        *,
+        kind: str | None = None,
     ) -> dict:
         self.chat_calls.append((system, user, schema))
         return self._chat_handler(system, user, schema)

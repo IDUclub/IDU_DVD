@@ -73,7 +73,13 @@ def reconcile(windows_decisions):
 
 
 def chat_window(
-    client: ChatClient, system: str, texts: list[str], schema: dict, key: str
+    client: ChatClient,
+    system: str,
+    texts: list[str],
+    schema: dict,
+    key: str,
+    *,
+    kind: str,
 ) -> list[dict]:
     """Require one decision per input, retrying only the failed window up to three times."""
     if not texts:
@@ -87,7 +93,7 @@ def chat_window(
     user = "\n".join(f"[{i}] {text}" for i, text in enumerate(texts))
     for attempt in range(1, 4):
         try:
-            data = client.chat(system, user, bounded)
+            data = client.chat(system, user, bounded, kind=kind)
             rows = data.get(key) if isinstance(data, dict) else None
             if (
                 not isinstance(rows, list)

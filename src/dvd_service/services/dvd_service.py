@@ -22,6 +22,8 @@ from qdrant_client.models import (
 )
 
 from src.api_clients import ChatClient, UrbanApiClient, create_embedder, create_llm
+from src.api_clients.llm_client import OpenAICompatibleClient
+from src.api_clients.request_priority import RequestPriority
 from src.api_clients.vision_client import VisionClient
 from src.broker.events import (
     DirectDocumentProcessed,
@@ -178,6 +180,7 @@ class IngestionService:
         outbox: EventOutbox | None = None,
         territory: TerritoryResolver | None = None,
         relations: RelationRepository | None = None,
+        user_document: bool = False,
     ) -> None:
         self.parser = parser
         # Absent in hand-wired tests and scoped user indices: no relations are built.
@@ -197,6 +200,19 @@ class IngestionService:
         self.jobs = jobs
         self.settings = settings
         self.outbox = outbox
+        self.user_document = user_document
+
+    def _llm(self) -> ChatClient:
+        # Each job owns its client; pool workers share it without ambient context.
+        client = create_llm()
+        if isinstance(client, OpenAICompatibleClient):
+            client.priority = RequestPriority(
+                self.settings, user_document=self.user_document
+            )
+        return client
+
+    def _vision_client(self, settings):
+        return VisionClient(settings, user_document=self.user_document)
 
     def __repr__(self) -> str:
         return (
@@ -485,7 +501,7 @@ class IngestionService:
             log.warning("relations_delete_failed", error=str(exc))
 
     def _describe_figures(self, raw, progress):
-        describe_figures(raw, self.settings, progress, VisionClient)
+        describe_figures(raw, self.settings, progress, self._vision_client)
 
     @staticmethod
     def _figure_keys(payloads):
@@ -616,7 +632,7 @@ class IngestionService:
         doc_id = doc_id or str(uuid.uuid4())
         # The original filename: ``file_path`` is a scratch copy named after the job.
         source = os.path.basename(source_name or file_path)
-        client = create_llm()
+        client = self._llm()
         figure_keys = set()
         try:
             if job_id:
@@ -877,7 +893,7 @@ class IngestionService:
         version only. Old versions stay searchable untouched.
         """
         source = os.path.basename(source_name or file_path)
-        client = create_llm()
+        client = self._llm()
         figure_keys = set()
         try:
             if job_id:

@@ -91,7 +91,9 @@ class VersionDetector:
         """
         head_text = "\n".join(p["text"][:300] for p in parts[:head])
         try:
-            data = client.chat(HEAD_SYSTEM, head_text, HEAD_SCHEMA)
+            data = client.chat(
+                HEAD_SYSTEM, head_text, HEAD_SCHEMA, kind="ingest.version"
+            )
             name = (data.get("name") or "").strip()
             version = (data.get("version") or "").strip()
             evidence = (data.get("federal_scope_evidence") or "").strip()

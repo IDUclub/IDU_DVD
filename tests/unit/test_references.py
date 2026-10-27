@@ -25,7 +25,7 @@ class _StubLLM:
     def __init__(self, handler) -> None:
         self._handler = handler
 
-    def chat(self, system: str, user: str, schema: dict) -> dict:
+    def chat(self, system: str, user: str, schema: dict, *, kind=None) -> dict:
         return self._handler(system, user, schema)
 
 

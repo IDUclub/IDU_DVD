@@ -310,9 +310,9 @@ class LlmRelationScorer:
             )
             user = f"### A\n{_render(nodes[anchor])}\n\n{partners}"
             try:
-                rows = self.client.chat(LLM_SYSTEM, user, self._schema(len(idx)))[
-                    "pairs"
-                ]
+                rows = self.client.chat(
+                    LLM_SYSTEM, user, self._schema(len(idx)), kind="ingest.relations"
+                )["pairs"]
             except (
                 Exception
             ) as exc:  # noqa: BLE001 — one group never fails the document
