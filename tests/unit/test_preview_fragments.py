@@ -73,7 +73,7 @@ def test_image_bytes_stay_out_of_preview_and_transport_payloads(
     service.settings.vision_enabled = vision_enabled
     vision = Mock(model="preview-vision")
     vision.describe.return_value = "Схема: высота 12 м"
-    monkeypatch.setattr(module, "VisionClient", lambda _: vision)
+    monkeypatch.setattr(module, "VisionClient", lambda _, **kwargs: vision)
     source = tmp_path / "figure.docx"
     png = io.BytesIO()
     Image.new("RGB", (160, 160), "blue").save(png, format="PNG")

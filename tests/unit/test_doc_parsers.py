@@ -386,7 +386,7 @@ class TestLlmOutage:
         def __init__(self):
             self.calls = 0
 
-        def chat(self, system, user, schema, model=None):
+        def chat(self, system, user, schema, model=None, *, kind=None):
             self.calls += 1
             raise ConnectionError("[Errno 111] Connection refused")
 

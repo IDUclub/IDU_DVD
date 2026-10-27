@@ -102,7 +102,7 @@ def test_docx_to_structural_search_keeps_true_clause_and_edition(settings, tmp_p
     assert any(b["category"] == "Table" and "10 м" in b["html"] for b in raw)
 
     class AdverseLlm:
-        def chat(self, system, user, schema):
+        def chat(self, system, user, schema, *, kind=None):
             ids = [int(i) for i in re.findall(r"^\[(\d+)\]", user, re.M)]
             field = next(iter(schema["properties"]))
             if field == "blocks":

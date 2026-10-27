@@ -89,7 +89,14 @@ class ReferenceExtractor:
         )
 
     def _llm_refs(self, client: ChatClient, window_texts) -> dict[int, list[dict]]:
-        rows = chat_window(client, REF_SYSTEM, window_texts, REF_SCHEMA, "items")
+        rows = chat_window(
+            client,
+            REF_SYSTEM,
+            window_texts,
+            REF_SCHEMA,
+            "items",
+            kind="ingest.references",
+        )
         out: dict[int, list[dict]] = {}
         for it in rows:
             refs = []

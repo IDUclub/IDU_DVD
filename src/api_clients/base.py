@@ -33,7 +33,13 @@ class ChatClient(Protocol):
     model: str
 
     def chat(
-        self, system: str, user: str, schema: dict, model: str | None = None
+        self,
+        system: str,
+        user: str,
+        schema: dict,
+        model: str | None = None,
+        *,
+        kind: str | None = None,
     ) -> dict:
         """Return the model's answer parsed as JSON, constrained to ``schema``."""
 

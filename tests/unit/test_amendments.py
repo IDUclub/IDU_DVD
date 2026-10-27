@@ -308,7 +308,7 @@ class FakeClient:
         self.answers = list(answers)
         self.calls = []
 
-    def chat(self, system, user, schema, model=None):
+    def chat(self, system, user, schema, model=None, *, kind=None):
         self.calls.append(user)
         return self.answers.pop(0)
 

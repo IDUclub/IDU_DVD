@@ -641,7 +641,12 @@ class DocumentParser:
 
     def _llm_boundaries(self, client: ChatClient, window_texts):
         rows = chat_window(
-            client, BOUNDARY_SYSTEM, window_texts, BOUNDARY_SCHEMA, "blocks"
+            client,
+            BOUNDARY_SYSTEM,
+            window_texts,
+            BOUNDARY_SCHEMA,
+            "blocks",
+            kind="ingest.structure",
         )
         return {item["id"]: item["boundary"] for item in rows}
 
@@ -725,7 +730,12 @@ class DocumentParser:
     # --- semantic merge (Stage 1.5) ---
     def _llm_semantic_merge(self, client, window_texts):
         rows = chat_window(
-            client, SEMANTIC_MERGE_SYSTEM, window_texts, SEMANTIC_MERGE_SCHEMA, "parts"
+            client,
+            SEMANTIC_MERGE_SYSTEM,
+            window_texts,
+            SEMANTIC_MERGE_SCHEMA,
+            "parts",
+            kind="ingest.structure",
         )
         return {
             item["id"]: ("continuation" if item["merge_with_previous"] else "new")
